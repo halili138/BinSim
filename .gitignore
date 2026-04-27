@@ -1,0 +1,15 @@
+.vscode/
+old_data/
+debug/
+jl_old/
+bash/
+args_version/
+data/
+bash/
+latexfile/
+todo2/
+rand_mo_int/
+test/
+__pycache__/
+third_party/
+benchmark/
