@@ -137,34 +137,34 @@ extern "C"
         const BasisManager *basis = static_cast<BasisManager *>(basis_ptr);
         const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
 
-        for (int64 g = 0; g < agg->ngs; ++g)
+        const uint8 *types = agg->excit_types;
+
+        for (uint64 g = 0; g < agg->ngs; ++g)
         {
-            if (agg->excit_types[g] == 0)
+            if (types[g] == 0)
             {
                 const int64 lb = gs[g];
                 const int64 rb = gs[g + 1];
 #pragma omp parallel
+                for (int64 i = 0; i < basis->num_blocks; ++i)
                 {
-                    for (int64 i = 0; i < basis->num_blocks; ++i)
-                    {
-                        const BlockDesc &block = basis->blocks[i];
+                    const BlockDesc &block = basis->blocks[i];
 #pragma omp for schedule(guided)
-                        for (int64 a = 0; a < block.num_a; ++a)
+                    for (int64 a = 0; a < block.num_a; ++a)
+                    {
+                        uint32 astr = block.astrs[a];
+                        int64 row_ptr = block.offset + a * block.num_b;
+                        for (int64 b = 0; b < block.num_b; ++b)
                         {
-                            uint32 astr = block.astrs[a];
-                            int64 row_ptr = block.offset + a * block.num_b;
-                            for (int64 b = 0; b < block.num_b; ++b)
+                            uint32 bstr = block.bstrs[b];
+
+                            double vt = 0.0;
+                            for (int64 k = lb; k < rb; ++k)
                             {
-                                uint32 bstr = block.bstrs[b];
-
-                                double vt = 0.0;
-                                for (int64 k = lb; k < rb; ++k)
-                                {
-                                    vt += cs[k] * phase(azs[k] & astr) * phase(bzs[k] & bstr);
-                                }
-
-                                diags[row_ptr + b] += vt;
+                                vt += cs[k] * phase(azs[k] & astr) * phase(bzs[k] & bstr);
                             }
+
+                            diags[row_ptr + b] += vt;
                         }
                     }
                 }

@@ -95,12 +95,12 @@ static double grad_pure_a_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
     const double *__restrict__ rp)
 {
-    const uint16 rank = arena.rank;
     const double cd = -sin(theta);
     const double co = cos(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -233,12 +233,12 @@ static double grad_pure_b_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
     const double *__restrict__ rp)
 {
-    const uint16 rank = arena.rank;
     const double cd = -sin(theta);
     const double co = cos(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -372,12 +372,12 @@ static double grad_mixed_rn(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
     const double *__restrict__ rp)
 {
-    const uint16 rank = arena.rank;
     const double cd = -sin(theta);
     const double co = cos(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -423,6 +423,7 @@ double grad_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
@@ -431,14 +432,14 @@ double grad_pure_a(
     if (!num_routes)
         return 0.0;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         return grad_pure_a_r1(basis, routes, num_routes, arena, theta, lp, rp);
     case 2:
         return grad_pure_a_r2(basis, routes, num_routes, arena, theta, lp, rp);
     default:
-        return grad_pure_a_rn(basis, routes, num_routes, arena, theta, lp, rp);
+        return grad_pure_a_rn(basis, routes, num_routes, rank, arena, theta, lp, rp);
     }
 }
 
@@ -446,6 +447,7 @@ double grad_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
@@ -453,14 +455,14 @@ double grad_pure_b(
 {
     if (!num_routes)
         return 0.0;
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         return grad_pure_b_r1(basis, routes, num_routes, arena, theta, lp, rp);
     case 2:
         return grad_pure_b_r2(basis, routes, num_routes, arena, theta, lp, rp);
     default:
-        return grad_pure_b_rn(basis, routes, num_routes, arena, theta, lp, rp);
+        return grad_pure_b_rn(basis, routes, num_routes, rank, arena, theta, lp, rp);
     }
 }
 
@@ -468,6 +470,7 @@ double grad_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
@@ -475,13 +478,13 @@ double grad_mixed(
 {
     if (!num_routes)
         return 0.0;
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         return grad_mixed_r1(basis, routes, num_routes, arena, theta, lp, rp);
     case 2:
         return grad_mixed_r2(basis, routes, num_routes, arena, theta, lp, rp);
     default:
-        return grad_mixed_rn(basis, routes, num_routes, arena, theta, lp, rp);
+        return grad_mixed_rn(basis, routes, num_routes, rank, arena, theta, lp, rp);
     }
 }

@@ -44,8 +44,6 @@ struct MixedRoute
 
 struct GroupArena
 {
-    uint16 rank;
-
     TransR1 *r1_jumps;
     uint64 num_r1_jumps;
     double *r1_phases;
@@ -66,7 +64,12 @@ struct GroupArena
 
 struct SVDNetwork
 {
+    uint32 *azs;
+    uint32 *bzs;
+    double *cs;
+    uint64 *gs;
     uint64 ngs;
+
     uint8 *excit_types;
     uint16 *group_ranks;
 
@@ -142,7 +145,7 @@ void apply_diag_terms(
     const uint32 *__restrict__ azs,
     const uint32 *__restrict__ bzs,
     const double *__restrict__ cs,
-    const int64 n_terms,
+    const uint64 n_terms,
     const double *__restrict__ src,
     double *__restrict__ dst);
 
@@ -150,6 +153,7 @@ void hvec_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst);
@@ -158,6 +162,7 @@ void hvec_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst);
@@ -166,6 +171,7 @@ void hvec_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst);
@@ -174,6 +180,7 @@ void tvec_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec);
@@ -182,6 +189,7 @@ void tvec_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec);
@@ -190,6 +198,7 @@ void tvec_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec);
@@ -198,6 +207,7 @@ double grad_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
@@ -207,6 +217,7 @@ double grad_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,
@@ -216,6 +227,7 @@ double grad_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     const double *__restrict__ lp,

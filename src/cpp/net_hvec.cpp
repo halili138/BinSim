@@ -74,11 +74,11 @@ static void hvec_pure_a_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
 {
-    const uint16 rank = arena.rank;
     const BlockDesc *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 ir = 0; ir < num_routes; ++ir)
@@ -185,11 +185,11 @@ static void hvec_pure_b_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
 {
-    const uint16 rank = arena.rank;
     const BlockDesc *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 ir = 0; ir < num_routes; ++ir)
@@ -295,11 +295,11 @@ static void hvec_mixed_rn(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
 {
-    const uint16 rank = arena.rank;
     const double *weights = arena.rn_weights;
     const BlockDesc *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
@@ -338,7 +338,7 @@ void apply_diag_terms(
     const uint32 *__restrict__ azs,
     const uint32 *__restrict__ bzs,
     const double *__restrict__ cs,
-    const int64 n_terms,
+    const uint64 n_terms,
     const double *__restrict__ src,
     double *__restrict__ dst)
 {
@@ -357,7 +357,7 @@ void apply_diag_terms(
                 const uint32 astr = block.astrs[a];
                 const int64 row_ptr = block.offset + a * num_b;
 
-                for (int64 k = 0; k < n_terms; ++k)
+                for (uint64 k = 0; k < n_terms; ++k)
                 {
                     phase_a[k] = phase(azs[k] & astr);
                 }
@@ -368,7 +368,7 @@ void apply_diag_terms(
                     const int64 gid = row_ptr + b;
 
                     double vt = 0.0;
-                    for (int64 k = 0; k < n_terms; ++k)
+                    for (uint64 k = 0; k < n_terms; ++k)
                     {
                         vt += cs[k] * phase_a[k] * phase(bzs[k] & bstr);
                     }
@@ -386,6 +386,7 @@ void hvec_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
@@ -393,7 +394,7 @@ void hvec_pure_a(
     if (num_routes == 0)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         hvec_pure_a_r1(basis, routes, num_routes, arena, src, dst);
@@ -402,7 +403,7 @@ void hvec_pure_a(
         hvec_pure_a_r2(basis, routes, num_routes, arena, src, dst);
         break;
     default:
-        hvec_pure_a_rn(basis, routes, num_routes, arena, src, dst);
+        hvec_pure_a_rn(basis, routes, num_routes, rank, arena, src, dst);
         break;
     }
 }
@@ -411,6 +412,7 @@ void hvec_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
@@ -418,7 +420,7 @@ void hvec_pure_b(
     if (num_routes == 0)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         hvec_pure_b_r1(basis, routes, num_routes, arena, src, dst);
@@ -427,7 +429,7 @@ void hvec_pure_b(
         hvec_pure_b_r2(basis, routes, num_routes, arena, src, dst);
         break;
     default:
-        hvec_pure_b_rn(basis, routes, num_routes, arena, src, dst);
+        hvec_pure_b_rn(basis, routes, num_routes, rank, arena, src, dst);
         break;
     }
 }
@@ -436,6 +438,7 @@ void hvec_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double *__restrict__ src,
     double *__restrict__ dst)
@@ -443,7 +446,7 @@ void hvec_mixed(
     if (!num_routes)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         hvec_mixed_r1(basis, routes, num_routes, arena, src, dst);
@@ -452,7 +455,7 @@ void hvec_mixed(
         hvec_mixed_r2(basis, routes, num_routes, arena, src, dst);
         break;
     default:
-        hvec_mixed_rn(basis, routes, num_routes, arena, src, dst);
+        hvec_mixed_rn(basis, routes, num_routes, rank, arena, src, dst);
         break;
     }
 }

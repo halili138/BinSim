@@ -86,11 +86,11 @@ static void tvec_pure_a_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
 {
-    const uint16 rank = arena.rank;
     const double cd = cos(theta) - 1.0;
     const double co = sin(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -213,11 +213,11 @@ static void tvec_pure_b_rn(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
 {
-    const uint16 rank = arena.rank;
     const double cd = cos(theta) - 1.0;
     const double co = sin(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -340,11 +340,11 @@ static void tvec_mixed_rn(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
 {
-    const uint16 rank = arena.rank;
     const double cd = cos(theta) - 1.0;
     const double co = sin(theta);
     const BlockDesc *__restrict__ blocks = basis->blocks;
@@ -388,6 +388,7 @@ void tvec_pure_a(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
@@ -395,7 +396,7 @@ void tvec_pure_a(
     if (!num_routes)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         tvec_pure_a_r1(basis, routes, num_routes, arena, theta, vec);
@@ -404,7 +405,7 @@ void tvec_pure_a(
         tvec_pure_a_r2(basis, routes, num_routes, arena, theta, vec);
         break;
     default:
-        tvec_pure_a_rn(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_a_rn(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
@@ -413,6 +414,7 @@ void tvec_pure_b(
     const BasisManager *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
@@ -420,7 +422,7 @@ void tvec_pure_b(
     if (!num_routes)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         tvec_pure_b_r1(basis, routes, num_routes, arena, theta, vec);
@@ -429,7 +431,7 @@ void tvec_pure_b(
         tvec_pure_b_r2(basis, routes, num_routes, arena, theta, vec);
         break;
     default:
-        tvec_pure_b_rn(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_b_rn(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
@@ -438,6 +440,7 @@ void tvec_mixed(
     const BasisManager *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena &arena,
     const double theta,
     double *__restrict__ vec)
@@ -445,7 +448,7 @@ void tvec_mixed(
     if (!num_routes)
         return;
 
-    switch (arena.rank)
+    switch (rank)
     {
     case 1:
         tvec_mixed_r1(basis, routes, num_routes, arena, theta, vec);
@@ -454,7 +457,7 @@ void tvec_mixed(
         tvec_mixed_r2(basis, routes, num_routes, arena, theta, vec);
         break;
     default:
-        tvec_mixed_rn(basis, routes, num_routes, arena, theta, vec);
+        tvec_mixed_rn(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
