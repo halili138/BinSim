@@ -123,17 +123,16 @@ function run_vqe(mole::Mole; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     H0b = JW_hamiltonian(mole, based=0, spin="aabb")
-    ham_groups = compress_by_svd(H0b)
-
-    t = @timed ham_net = NET(basis, ham_groups, mole.orbsym)
-    @printf("Generate ham_net time: %.4f seconds\n", t.time)
+    ret = @timed ham_net = AGG(basis, H0b, mole.orbsym)
+    println("Successifully Generate Ham AGG in $(ret.time) seconds")
+    print_info(ham_net)
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
-    pool_groups = compress_by_svd(pool)
-    t = @timed pool_net = NET(basis, pool_groups, mole.orbsym)
-    @printf("Generate pool_net time: %.4f seconds\n", t.time)
-
+    println("Operator pool size: $(length(pool))")
+    ret = @timed pool_net = NET(basis, pool, mole.orbsym)
+    println("Successifully Generate Pool NET in $(ret.time) seconds")
+    
     v0 = get_hf(basis, mole.nelec, mole.orbsym)
     lv = zeros(Float64, basis.dim)
     rv = zeros(Float64, basis.dim)
@@ -153,7 +152,7 @@ function run_vqe(mole::Mole; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS
         end
 
         lv .= v0
-        result = @timed energy_objective(basis, ham_net, pool_net, idxs, x, H0b, lv, rv)
+        result = @timed energy_objective(basis, ham_net, pool_net, idxs, x, lv, rv)
         energy, grad, δ²H = result.value
         norm_g  = norm(grad)
         error   = energy - mole.e_scale
@@ -193,10 +192,9 @@ end
 
 function _adapt_vqe(
     basis::BasisManager,
-    ham_net::NET,
+    ham_net::AGG,
     pool_net::NET,
     idxs::Vector{Int64},
-    H0b::BinaryQubitAABB, 
     v0::Vector{Float64},
     lv::Vector{Float64},
     rv::Vector{Float64},
@@ -226,10 +224,10 @@ function _adapt_vqe(
     @time while !converged
         iter += 1
 
-        hvec_svd!(basis, ham_net, H0b, lv, rv)
+        hvec_direct_agg!(basis, ham_net, lv, rv)
         
         for i in eachindex(idxs)
-            zero_grads[i] = real(expect_svd(basis, pool_net, idxs[i], 0.0, lv, rv)) * 2
+            zero_grads[i] = real(grad_svd(basis, pool_net, idxs[i], 0.0, lv, rv)) * 2
         end
 
         max_idx = sortperm(abs.(zero_grads), rev=true)[1]
@@ -246,7 +244,7 @@ function _adapt_vqe(
 
         obj_func = x -> begin
             lv .= v0
-            result = @timed energy_objective(basis, ham_net, pool_net, selec_idxs, x, H0b, lv, rv)
+            result = @timed energy_objective(basis, ham_net, pool_net, selec_idxs, x, lv, rv)
             energy, gradient, δ²H = result.value
             vqe_options.verbose > 1 && show_optimze(energy, norm(gradient), δ²H, energy-e_scale)
             vqe_options.verbose > 2 && show_time(result)
@@ -316,16 +314,15 @@ function run_adapt_vqe(mole::Mole;
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     H0b = JW_hamiltonian(mole, based=0, spin="aabb")
-    ham_groups = compress_by_svd(H0b)
+    ret = @timed ham_net = AGG(basis, H0b, mole.orbsym)
+    println("Successifully Generate Ham AGG in $(ret.time) seconds")
+    print_info(ham_net)
 
-    t = @timed ham_net = NET(basis, ham_groups, mole.orbsym)
-    @printf("Generate ham_net time: %.4f seconds\n", t.time)
-
-    orbs = Orbitals(); kernel(mole, orbs, generalize=true)
-    pool = QEB(orbs)
-    pool_groups = compress_by_svd(pool)
-    t = @timed pool_net = NET(basis, pool_groups, mole.orbsym)
-    @printf("Generate pool_net time: %.4f seconds\n", t.time)
+    orbs = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool = FEB(orbs)
+    println("Operator pool size: $(length(pool))")
+    ret = @timed pool_net = NET(basis, pool, mole.orbsym)
+    println("Successifully Generate Pool NET in $(ret.time) seconds")
 
     v0 = get_hf(basis, mole.nelec, mole.orbsym)
     lv = zeros(Float64, basis.dim)
@@ -344,7 +341,6 @@ function run_adapt_vqe(mole::Mole;
         ham_net, 
         pool_net,  
         idxs, 
-        H0b, 
         v0, 
         lv, 
         rv, 

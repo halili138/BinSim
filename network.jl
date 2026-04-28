@@ -245,73 +245,6 @@ function compress_by_svd(pool_0b::Array{BinaryQubitAABB{Ti,Tv,Tg,K,V,G}, 1}, tol
     return svd_groups
 end
 
-# mutable struct NET
-#     ptr::Ptr{Cvoid}
-#     dim::Int64
-
-#     function NET(
-#         basis::BasisManager, 
-#         groups::Vector{SVDGroup{UInt32,Float64}}, 
-#         orbsym::Vector{Int64}
-#     )
-#         ngs    = length(groups)
-#         axs    = Vector{UInt32}(undef, ngs)
-#         bxs    = Vector{UInt32}(undef, ngs)
-#         ranks  = Vector{Int64}(undef,  ngs)
-#         num_as = Vector{Int64}(undef,  ngs)
-#         num_bs = Vector{Int64}(undef,  ngs)
-        
-#         flat_azs = UInt32[]
-#         flat_bzs = UInt32[]
-#         flat_wa  = Float64[]
-#         flat_wb  = Float64[]
-        
-#         for (g, group) in enumerate(groups)
-#             axs[g]    = group.ax
-#             bxs[g]    = group.bx
-#             ranks[g]  = group.rank
-            
-#             na = length(group.azs)
-#             nb = length(group.bzs)
-#             num_as[g] = na
-#             num_bs[g] = nb
-            
-#             append!(flat_azs, group.azs)
-#             append!(flat_bzs, group.bzs)
-            
-#             append!(flat_wa, vec(group.wa))
-#             append!(flat_wb, vec(group.wb))
-#         end
-        
-#         ptr = @ccall LIB_NET.create_svd_network(
-#             basis.ptr::Ptr{Cvoid},
-#             ngs::Int64,
-#             axs::Ptr{UInt32},
-#             bxs::Ptr{UInt32},
-#             ranks::Ptr{Int64},
-#             num_as::Ptr{Int64},
-#             num_bs::Ptr{Int64},
-#             flat_azs::Ptr{UInt32},
-#             flat_bzs::Ptr{UInt32},
-#             flat_wa::Ptr{Cdouble},
-#             flat_wb::Ptr{Cdouble},
-#             orbsym::Ptr{Int64},
-#         )::Ptr{Cvoid}
-        
-#         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
-        
-#         obj = new(ptr, basis.dim)
-#         finalizer(obj) do o
-#             if o.ptr != C_NULL
-#                 @ccall LIB_NET.destroy_svd_network(o.ptr::Ptr{Cvoid})::Cvoid
-#                 o.ptr = C_NULL
-#             end
-#         end
-        
-#         return obj
-#     end
-# end
-
 mutable struct NET
     ptr::Ptr{Cvoid}
     dim::Int64
@@ -385,8 +318,116 @@ mutable struct NET
         
         return obj
     end
+
+    function NET(
+        basis::BasisManager, 
+        pool_0b::Array{<:BinaryQubitAABB,1}, 
+        orbsym::Vector{Int64}, 
+        tol::Float64=1e-12,
+    )
+        groups = compress_by_svd(pool_0b, tol)
+        ngs    = length(groups)
+        ncs    = 0
+        axs    = Vector{UInt32}(undef, ngs)
+        bxs    = Vector{UInt32}(undef, ngs)
+        azs    = UInt32[]
+        bzs    = UInt32[]
+        cs     = Float64[]
+        gs     = Int64[]
+
+        ranks  = Vector{Int64}(undef,  ngs)
+        num_as = Vector{Int64}(undef,  ngs)
+        num_bs = Vector{Int64}(undef,  ngs)
+        
+        flat_azs = UInt32[]
+        flat_bzs = UInt32[]
+        flat_wa  = Float64[]
+        flat_wb  = Float64[]
+        
+        for (g, group) in enumerate(groups)
+            axs[g]    = group.ax
+            bxs[g]    = group.bx
+            ranks[g]  = group.rank
+            
+            na = length(group.azs)
+            nb = length(group.bzs)
+            num_as[g] = na
+            num_bs[g] = nb
+            
+            append!(flat_azs, group.azs)
+            append!(flat_bzs, group.bzs)
+            
+            append!(flat_wa, vec(group.wa))
+            append!(flat_wb, vec(group.wb))
+        end
+        
+        ptr = @ccall LIB_NET.create_svd_network(
+            basis.ptr::Ptr{Cvoid},
+            ncs::Int64,
+            ngs::Int64,
+            axs::Ptr{UInt32},
+            bxs::Ptr{UInt32},
+            azs::Ptr{UInt32},
+            bzs::Ptr{UInt32},
+            cs::Ptr{Cdouble},
+            gs::Ptr{Int64},
+            ranks::Ptr{Int64},
+            num_as::Ptr{Int64},
+            num_bs::Ptr{Int64},
+            flat_azs::Ptr{UInt32},
+            flat_bzs::Ptr{UInt32},
+            flat_wa::Ptr{Cdouble},
+            flat_wb::Ptr{Cdouble},
+            orbsym::Ptr{Int64},
+        )::Ptr{Cvoid}
+        
+        ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
+        
+        obj = new(ptr, basis.dim)
+        finalizer(obj) do o
+            if o.ptr != C_NULL
+                @ccall LIB_NET.destroy_svd_network(o.ptr::Ptr{Cvoid})::Cvoid
+                o.ptr = C_NULL
+            end
+        end
+        
+        return obj
+    end
 end
 
+function tvec_svd!(
+    basis::BasisManager,
+    net::NET,
+    idx::Int64,    
+    θ::Float64,    
+    vec::Vector{Float64},
+)
+    @ccall LIB_NET.tvec_svd_network(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        vec::Ptr{Cdouble}
+    )::Cvoid
+end
+
+function grad_svd(
+    basis::BasisManager,
+    net::NET,
+    idx::Int64,
+    θ::Float64,    
+    lv::Vector{Float64},
+    rv::Vector{Float64},
+)
+    return @ccall LIB_NET.grad_svd_network(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        lv::Ptr{Cdouble}, 
+        rv::Ptr{Cdouble}, 
+    )::Cdouble
+end
 
 mutable struct AGG
     ptr::Ptr{Cvoid}
@@ -503,4 +544,36 @@ function hvec_direct_agg_benchmark!(
         dst::Ptr{Cdouble},
         measure::Cint,
     )::Cvoid
+end
+
+function energy_objective(
+    basis::BasisManager,
+    ham_net::AGG,
+    pool_net::NET, 
+    idxs::Vector{Int64},
+    x::Vector{Float64},          
+    lv::Vector{Float64},
+    rv::Vector{Float64},
+)
+    nparas = length(x)
+
+    for i in 1:nparas
+        tvec_svd!(basis, pool_net, idxs[i], x[i], lv)
+    end
+
+    hvec_direct_agg!(basis, ham_net, lv, rv)
+
+    lnorm  = norm(lv) ^ 2
+    rnorm  = norm(rv) ^ 2
+    energy = real(dot(lv, rv)) / lnorm
+    δ²H    = max(0.0, rnorm / lnorm - energy ^ 2)
+    grad   = Vector{Float64}(undef, nparas)
+
+    for i in nparas:-1:1
+        tvec_svd!(basis, pool_net, idxs[i], -x[i], lv)
+        grad[i] = real(grad_svd(basis, pool_net, idxs[i], x[i], lv, rv)) * 2 / lnorm
+        tvec_svd!(basis, pool_net, idxs[i], -x[i], rv)
+    end
+
+    return energy, grad, δ²H
 end

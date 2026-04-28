@@ -42,6 +42,6 @@ include("hamiltonian.jl")
 include("network.jl")
 include("davidson.jl")
 include("ansatz.jl")
-# include("vqe.jl")
+include("vqe.jl")
 
 
