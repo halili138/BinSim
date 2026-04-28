@@ -1,5 +1,6 @@
 #include "net.hpp"
 #include <omp.h>
+#include <cmath>
 
 static void tvec_pure_a_r1(
     const BasisManager *__restrict__ basis,

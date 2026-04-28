@@ -42,11 +42,11 @@ lib/libdiag.so: extern/diag.cpp | lib
 lib/libnet.so: extern/net.cpp cpp/net_build.cpp cpp/net_hvec.cpp cpp/net_tvec.cpp cpp/net_grad.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $^
 
-# lib/libagg.so: extern/agg.cpp cpp/agg_build.cpp cpp/agg_hvec.cpp cpp/net_build.cpp cpp/net_hvec.cpp | lib
-# 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $^
-
 lib/libagg.so: extern/agg.cpp cpp/agg_build.cpp cpp/agg_hvec.cpp cpp/net_build.cpp cpp/net_hvec.cpp | lib
-	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(LIKWID_MACRO) -o $@ $^ $(LIKWID_LIBS)
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $^
+
+# lib/libagg.so: extern/agg.cpp cpp/agg_build.cpp cpp/agg_hvec.cpp cpp/net_build.cpp cpp/net_hvec.cpp | lib
+# 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(LIKWID_MACRO) -o $@ $^ $(LIKWID_LIBS)
 
 clean:
 	rm -rf lib/*.so

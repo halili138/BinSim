@@ -1,6 +1,7 @@
 #include "net.hpp"
 #include "agg.hpp"
 #include <omp.h>
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <utility>
@@ -10,9 +11,14 @@ extern "C"
 {
     void *build_direct_agg_network(
         void *basis_ptr,
+        int64 ncs,
         int64 ngs,
         const uint32 *axs,
         const uint32 *bxs,
+        const uint32 *azs,
+        const uint32 *bzs,
+        const double *cs,
+        const int64 *gs,
         const int64 *ranks,
         const int64 *num_as,
         const int64 *num_bs,
@@ -25,9 +31,18 @@ extern "C"
         BasisManager *basis = static_cast<BasisManager *>(basis_ptr);
         AggSVDNetwork *agg = new AggSVDNetwork();
 
+        agg->azs = new uint32[ncs]();
+        agg->bzs = new uint32[ncs]();
+        agg->cs = new double[ncs]();
+        agg->gs = new uint64[ngs + 1]();
         agg->ngs = ngs;
-        agg->excit_types = new uint8[ngs]();
 
+        std::copy(azs, azs + ncs, agg->azs);
+        std::copy(bzs, bzs + ncs, agg->bzs);
+        std::copy(cs, cs + ncs, agg->cs);
+        std::copy(gs, gs + ngs + 1, agg->gs);
+
+        agg->excit_types = new uint8[ngs]();
         agg->arenas = new GroupArena[ngs]();
         agg->mixed_b_rev_r1 = new TransR1 *[ngs]();
         agg->mixed_b_rev_r2 = new TransR2 *[ngs]();
@@ -128,15 +143,15 @@ extern "C"
     void get_diagonal_elements_agg(
         void *basis_ptr,
         void *agg_ptr,
-        const uint32 *__restrict__ azs,
-        const uint32 *__restrict__ bzs,
-        const double *__restrict__ cs,
-        const int64 *__restrict__ gs,
         double *__restrict__ diags)
     {
         const BasisManager *basis = static_cast<BasisManager *>(basis_ptr);
         const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
 
+        const uint32 *azs = agg->azs;
+        const uint32 *bzs = agg->bzs;
+        const double *cs = agg->cs;
+        const uint64 *gs = agg->gs;
         const uint8 *types = agg->excit_types;
 
         for (uint64 g = 0; g < agg->ngs; ++g)
@@ -175,32 +190,40 @@ extern "C"
     void hvec_direct_agg_network(
         void *__restrict__ basis_ptr,
         void *__restrict__ agg_ptr,
-        const uint32 *__restrict__ azs,
-        const uint32 *__restrict__ bzs,
-        const double *__restrict__ cs,
-        const int64 *__restrict__ gs,
         const double *__restrict__ src,
         double *__restrict__ dst)
     {
         const BasisManager *basis = static_cast<const BasisManager *>(basis_ptr);
         const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
 
+        const uint32 *azs = agg->azs;
+        const uint32 *bzs = agg->bzs;
+        const double *cs = agg->cs;
+        const uint64 *gs = agg->gs;
+        const uint8 *types = agg->excit_types;
+
 #pragma omp parallel for schedule(static)
         for (int64 i = 0; i < basis->dim; ++i)
-            dst[i] = 0.0;
-
-        for (int64 g = 0; g < agg->ngs; ++g)
         {
-            const int type = agg->excit_types[g];
-            const int64 lb = gs[g];
-            const int64 rb = gs[g + 1];
-            const int64 n_terms = rb - lb;
+            dst[i] = 0.0;
+        }
 
-            if (n_terms == 0)
-                continue;
+        for (uint64 g = 0; g < agg->ngs; ++g)
+        {
+            if (types[g] == 0)
+            {
+                const uint64 lb = gs[g];
+                const uint64 rb = gs[g + 1];
+                const uint64 n_terms = rb - lb;
 
-            if (type == 0)
-                apply_diag_terms(basis, azs + lb, bzs + lb, cs + lb, n_terms, src, dst);
+                if (n_terms != 0)
+                {
+                    apply_diag_terms(
+                        basis,
+                        azs + lb, bzs + lb, cs + lb, n_terms,
+                        src, dst);
+                }
+            }
         }
 
         hvec_aggregated_svd(agg, src, dst);
@@ -209,10 +232,6 @@ extern "C"
     void hvec_direct_agg_network_benchmark(
         void *__restrict__ basis_ptr,
         void *__restrict__ agg_ptr,
-        const uint32 *__restrict__ azs,
-        const uint32 *__restrict__ bzs,
-        const double *__restrict__ cs,
-        const int64 *__restrict__ gs,
         const double *__restrict__ src,
         double *__restrict__ dst,
         int enable_likwid)
@@ -228,22 +247,34 @@ extern "C"
         const BasisManager *basis = static_cast<const BasisManager *>(basis_ptr);
         const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
 
+        const uint32 *azs = agg->azs;
+        const uint32 *bzs = agg->bzs;
+        const double *cs = agg->cs;
+        const uint64 *gs = agg->gs;
+        const uint8 *types = agg->excit_types;
+
 #pragma omp parallel for schedule(static)
         for (int64 i = 0; i < basis->dim; ++i)
-            dst[i] = 0.0;
-
-        for (int64 g = 0; g < agg->ngs; ++g)
         {
-            const int type = agg->excit_types[g];
-            const int64 lb = gs[g];
-            const int64 rb = gs[g + 1];
-            const int64 n_terms = rb - lb;
+            dst[i] = 0.0;
+        }
 
-            if (n_terms == 0)
-                continue;
+        for (uint64 g = 0; g < agg->ngs; ++g)
+        {
+            if (types[g] == 0)
+            {
+                const uint64 lb = gs[g];
+                const uint64 rb = gs[g + 1];
+                const uint64 n_terms = rb - lb;
 
-            if (type == 0)
-                apply_diag_terms(basis, azs + lb, bzs + lb, cs + lb, n_terms, src, dst);
+                if (n_terms != 0)
+                {
+                    apply_diag_terms(
+                        basis,
+                        azs + lb, bzs + lb, cs + lb, n_terms,
+                        src, dst);
+                }
+            }
         }
 
         hvec_aggregated_svd(agg, src, dst);

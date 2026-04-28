@@ -245,16 +245,86 @@ function compress_by_svd(pool_0b::Array{BinaryQubitAABB{Ti,Tv,Tg,K,V,G}, 1}, tol
     return svd_groups
 end
 
+# mutable struct NET
+#     ptr::Ptr{Cvoid}
+#     dim::Int64
+
+#     function NET(
+#         basis::BasisManager, 
+#         groups::Vector{SVDGroup{UInt32,Float64}}, 
+#         orbsym::Vector{Int64}
+#     )
+#         ngs    = length(groups)
+#         axs    = Vector{UInt32}(undef, ngs)
+#         bxs    = Vector{UInt32}(undef, ngs)
+#         ranks  = Vector{Int64}(undef,  ngs)
+#         num_as = Vector{Int64}(undef,  ngs)
+#         num_bs = Vector{Int64}(undef,  ngs)
+        
+#         flat_azs = UInt32[]
+#         flat_bzs = UInt32[]
+#         flat_wa  = Float64[]
+#         flat_wb  = Float64[]
+        
+#         for (g, group) in enumerate(groups)
+#             axs[g]    = group.ax
+#             bxs[g]    = group.bx
+#             ranks[g]  = group.rank
+            
+#             na = length(group.azs)
+#             nb = length(group.bzs)
+#             num_as[g] = na
+#             num_bs[g] = nb
+            
+#             append!(flat_azs, group.azs)
+#             append!(flat_bzs, group.bzs)
+            
+#             append!(flat_wa, vec(group.wa))
+#             append!(flat_wb, vec(group.wb))
+#         end
+        
+#         ptr = @ccall LIB_NET.create_svd_network(
+#             basis.ptr::Ptr{Cvoid},
+#             ngs::Int64,
+#             axs::Ptr{UInt32},
+#             bxs::Ptr{UInt32},
+#             ranks::Ptr{Int64},
+#             num_as::Ptr{Int64},
+#             num_bs::Ptr{Int64},
+#             flat_azs::Ptr{UInt32},
+#             flat_bzs::Ptr{UInt32},
+#             flat_wa::Ptr{Cdouble},
+#             flat_wb::Ptr{Cdouble},
+#             orbsym::Ptr{Int64},
+#         )::Ptr{Cvoid}
+        
+#         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
+        
+#         obj = new(ptr, basis.dim)
+#         finalizer(obj) do o
+#             if o.ptr != C_NULL
+#                 @ccall LIB_NET.destroy_svd_network(o.ptr::Ptr{Cvoid})::Cvoid
+#                 o.ptr = C_NULL
+#             end
+#         end
+        
+#         return obj
+#     end
+# end
+
 mutable struct NET
     ptr::Ptr{Cvoid}
     dim::Int64
 
     function NET(
         basis::BasisManager, 
-        groups::Vector{SVDGroup{UInt32,Float64}}, 
-        orbsym::Vector{Int64}
+        A0b::BinaryQubitAABB, 
+        orbsym::Vector{Int64}, 
+        tol::Float64=1e-12,
     )
+        groups = compress_by_svd(A0b, tol)
         ngs    = length(groups)
+        ncs    = length(A0b.cs)
         axs    = Vector{UInt32}(undef, ngs)
         bxs    = Vector{UInt32}(undef, ngs)
         ranks  = Vector{Int64}(undef,  ngs)
@@ -285,9 +355,14 @@ mutable struct NET
         
         ptr = @ccall LIB_NET.create_svd_network(
             basis.ptr::Ptr{Cvoid},
+            ncs::Int64,
             ngs::Int64,
             axs::Ptr{UInt32},
             bxs::Ptr{UInt32},
+            A0b.azs::Ptr{UInt32},
+            A0b.bzs::Ptr{UInt32},
+            A0b.cs::Ptr{Cdouble},
+            A0b.gs::Ptr{Int64},
             ranks::Ptr{Int64},
             num_as::Ptr{Int64},
             num_bs::Ptr{Int64},
@@ -312,16 +387,20 @@ mutable struct NET
     end
 end
 
+
 mutable struct AGG
     ptr::Ptr{Cvoid}
     dim::Int64
 
     function AGG(
         basis::BasisManager, 
-        groups::Vector{SVDGroup{UInt32,Float64}}, 
-        orbsym::Vector{Int64}
+        A0b::BinaryQubitAABB, 
+        orbsym::Vector{Int64}, 
+        tol::Float64=1e-12,
     )      
+        groups = compress_by_svd(A0b, tol)
         ngs    = length(groups)
+        ncs    = length(A0b.cs)
         axs    = Vector{UInt32}(undef, ngs)
         bxs    = Vector{UInt32}(undef, ngs)
         ranks  = Vector{Int64}(undef,  ngs)
@@ -347,9 +426,14 @@ mutable struct AGG
 
         ptr = @ccall LIB_AGG.build_direct_agg_network(
             basis.ptr::Ptr{Cvoid}, 
+            ncs::Int64,
             ngs::Int64,
-            axs::Ptr{UInt32}, 
-            bxs::Ptr{UInt32}, 
+            axs::Ptr{UInt32},
+            bxs::Ptr{UInt32},
+            A0b.azs::Ptr{UInt32},
+            A0b.bzs::Ptr{UInt32},
+            A0b.cs::Ptr{Cdouble},
+            A0b.gs::Ptr{Int64},
             ranks::Ptr{Int64},
             num_as::Ptr{Int64}, 
             num_bs::Ptr{Int64},
@@ -374,17 +458,13 @@ mutable struct AGG
     end
 end
 
-function get_diags(basis::BasisManager, agg::AGG, H0b::BinaryQubitAABB)
+function get_diags(basis::BasisManager, agg::AGG)
     dim = basis.dim
     diags = zeros(Float64, dim)
 
     @ccall LIB_AGG.get_diagonal_elements_agg(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
-        H0b.azs::Ptr{UInt32},
-        H0b.bzs::Ptr{UInt32},
-        H0b.cs::Ptr{Cdouble},
-        H0b.gs::Ptr{Int64},
         diags::Ptr{Cdouble},
     )::Cvoid
 
@@ -394,17 +474,12 @@ end
 function hvec_direct_agg!(
     basis::BasisManager, 
     agg::AGG,
-    H0b::BinaryQubitAABB,
     src::Vector{Float64},
     dst::Vector{Float64},
 )
     @ccall LIB_AGG.hvec_direct_agg_network(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
-        H0b.azs::Ptr{UInt32},
-        H0b.bzs::Ptr{UInt32},
-        H0b.cs::Ptr{Cdouble},
-        H0b.gs::Ptr{Int64},
         src::Ptr{Cdouble},
         dst::Ptr{Cdouble},
     )::Cvoid
@@ -417,7 +492,6 @@ end
 function hvec_direct_agg_benchmark!(
     basis::BasisManager, 
     agg::AGG,
-    H0b::BinaryQubitAABB,
     src::Vector{Float64},
     dst::Vector{Float64},
     measure::Bool,
@@ -425,10 +499,6 @@ function hvec_direct_agg_benchmark!(
     @ccall LIB_AGG.hvec_direct_agg_network_benchmark(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
-        H0b.azs::Ptr{UInt32},
-        H0b.bzs::Ptr{UInt32},
-        H0b.cs::Ptr{Cdouble},
-        H0b.gs::Ptr{Int64},
         src::Ptr{Cdouble},
         dst::Ptr{Cdouble},
         measure::Cint,

@@ -121,6 +121,10 @@ struct AggBlock
 
 struct AggSVDNetwork
 {
+    uint32 *azs;
+    uint32 *bzs;
+    double *cs;
+    uint64 *gs;
     uint64 ngs;
     uint8 *excit_types;
 

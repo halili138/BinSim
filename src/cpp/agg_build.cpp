@@ -3,22 +3,18 @@
 #include <vector>
 #include <algorithm>
 
-// ==============================================================================
-// [核心修复]：所有 Flat 结构体新增 `g` 字段，并在 operator< 中加入 g 作为次级排序键！
-// 这样可以确保在同一个 dst_a (或 src_ptr) 之下，来自同一个算符组 (g) 的边紧挨在一起，
-// 极大提高 apply_agg_csr 时的 L1/L2 Cache 命中率！
-// ==============================================================================
-
 struct FlatPureA_R1
 {
     uint32 dst_a;
-    uint32 g; // <-- 新增: 记录算符组 ID
+    uint32 g;
     uint64 src_ptr;
     double pa0;
     const double *b_phases;
-    bool operator<(const FlatPureA_R1 &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        return g < o.g; // <-- 相同 dst_a 下按物理组 g 排序，恢复空间局部性！
+    bool operator<(const FlatPureA_R1 &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        return g < o.g;
     }
 };
 
@@ -29,9 +25,11 @@ struct FlatPureA_R2
     uint64 src_ptr;
     double pa0, pa1;
     const double *b_phases;
-    bool operator<(const FlatPureA_R2 &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        return g < o.g; 
+    bool operator<(const FlatPureA_R2 &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        return g < o.g;
     }
 };
 
@@ -43,15 +41,17 @@ struct FlatPureA_RN
     const double *pa_weights;
     const double *b_phases;
     uint32 rank;
-    bool operator<(const FlatPureA_RN &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        return g < o.g; 
+    bool operator<(const FlatPureA_RN &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        return g < o.g;
     }
 };
 
 struct FlatPureB_R1
 {
-    uint32 g; // <-- 新增
+    uint32 g;
     uint64 src_offset;
     uint64 src_num_b;
     const double *a_phases;
@@ -89,15 +89,18 @@ struct FlatPureB_RN
 struct FlatMixed_R1
 {
     uint32 dst_a;
-    uint32 g; // <-- 新增
+    uint32 g;
     int64 src_ptr;
     double pa0;
     const TransR1 *b_jumps;
     uint32 num_b_jumps;
-    bool operator<(const FlatMixed_R1 &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        if (src_ptr != o.src_ptr) return src_ptr < o.src_ptr;
-        return g < o.g; // 同一个 node 下挂载的 leaves 也是按物理组相连的！
+    bool operator<(const FlatMixed_R1 &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        if (src_ptr != o.src_ptr)
+            return src_ptr < o.src_ptr;
+        return g < o.g;
     }
 };
 
@@ -109,10 +112,13 @@ struct FlatMixed_R2
     double pa0, pa1;
     const TransR2 *b_jumps;
     uint32 num_b_jumps;
-    bool operator<(const FlatMixed_R2 &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        if (src_ptr != o.src_ptr) return src_ptr < o.src_ptr;
-        return g < o.g; 
+    bool operator<(const FlatMixed_R2 &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        if (src_ptr != o.src_ptr)
+            return src_ptr < o.src_ptr;
+        return g < o.g;
     }
 };
 
@@ -126,10 +132,13 @@ struct FlatMixed_RN
     const double *b_weights_base;
     uint32 num_b_jumps;
     uint32 rank;
-    bool operator<(const FlatMixed_RN &o) const { 
-        if (dst_a != o.dst_a) return dst_a < o.dst_a;
-        if (src_ptr != o.src_ptr) return src_ptr < o.src_ptr;
-        return g < o.g; 
+    bool operator<(const FlatMixed_RN &o) const
+    {
+        if (dst_a != o.dst_a)
+            return dst_a < o.dst_a;
+        if (src_ptr != o.src_ptr)
+            return src_ptr < o.src_ptr;
+        return g < o.g;
     }
 };
 
@@ -174,7 +183,8 @@ FORCE_INLINE const TransRN *emit_rev_b(int64 g, const TransRN *fwd, uint32 nb, A
 }
 
 void build_flat_pure_a(
-    int64 g, // 传入组号
+    int64 g,
+    int64 rank,
     int64 axsym,
     const BasisManager *basis,
     const TempArena &temp,
@@ -193,7 +203,7 @@ void build_flat_pure_a(
         const BlockDesc &block_dst = basis->blocks[block_dst_idx];
         uint32 g_id = static_cast<uint32>(g);
 
-        if (route.rank == 1)
+        if (rank == 1)
         {
             const double *b_phases = arena.r1_phases + route.phase_offset;
             const TransR1 *jumps = arena.r1_jumps + route.jump_offset;
@@ -210,7 +220,7 @@ void build_flat_pure_a(
                     {jumps[k].src_idx, g_id, dst_row, jumps[k].w0, b_phases});
             }
         }
-        else if (route.rank == 2)
+        else if (rank == 2)
         {
             const double *b_phases = arena.r2_phases + route.phase_offset;
             const TransR2 *jumps = arena.r2_jumps + route.jump_offset;
@@ -239,10 +249,10 @@ void build_flat_pure_a(
                 const double *pa_w = arena.rn_weights + jumps[k].w_offset;
 
                 temp_blocks[block_dst_idx].pa_rn.push_back(
-                    {jumps[k].dst_idx, g_id, src_row, pa_w, b_phases, static_cast<uint32>(route.rank)});
+                    {jumps[k].dst_idx, g_id, src_row, pa_w, b_phases, static_cast<uint32>(rank)});
 
                 temp_blocks[route.block_src_idx].pa_rn.push_back(
-                    {jumps[k].src_idx, g_id, dst_row, pa_w, b_phases, static_cast<uint32>(route.rank)});
+                    {jumps[k].src_idx, g_id, dst_row, pa_w, b_phases, static_cast<uint32>(rank)});
             }
         }
     }
@@ -250,6 +260,7 @@ void build_flat_pure_a(
 
 void build_flat_pure_b(
     int64 g,
+    int64 rank,
     int64 bxsym,
     const BasisManager *basis,
     const TempArena &temp,
@@ -267,7 +278,7 @@ void build_flat_pure_b(
         const BlockDesc &block_dst = basis->blocks[block_dst_idx];
         uint32 g_id = static_cast<uint32>(g);
 
-        if (route.rank == 1)
+        if (rank == 1)
         {
             const double *a_phases = arena.r1_phases + route.phase_offset;
             const TransR1 *jumps = arena.r1_jumps + route.jump_offset;
@@ -292,7 +303,7 @@ void build_flat_pure_b(
                      jumps[k].src_idx});
             }
         }
-        else if (route.rank == 2)
+        else if (rank == 2)
         {
             const double *a_phases = arena.r2_phases + route.phase_offset;
             const TransR2 *jumps = arena.r2_jumps + route.jump_offset;
@@ -337,7 +348,7 @@ void build_flat_pure_b(
                      a_phases,
                      jumps[k].src_idx,
                      jumps[k].dst_idx,
-                     static_cast<uint32>(route.rank)});
+                     static_cast<uint32>(rank)});
 
                 temp_blocks[route.block_src_idx].pb_rn.push_back(
                     {g_id,
@@ -347,7 +358,7 @@ void build_flat_pure_b(
                      a_phases,
                      jumps[k].dst_idx,
                      jumps[k].src_idx,
-                     static_cast<uint32>(route.rank)});
+                     static_cast<uint32>(rank)});
             }
         }
     }
@@ -355,6 +366,7 @@ void build_flat_pure_b(
 
 void build_flat_mixed(
     int64 g,
+    int64 rank,
     int64 axsym,
     int64 bxsym,
     const BasisManager *basis,
@@ -377,7 +389,7 @@ void build_flat_mixed(
 
         const BlockDesc &block_dst = basis->blocks[block_dst_idx];
 
-        if (route.rank == 1)
+        if (rank == 1)
         {
             const TransR1 *a_jumps = arena.r1_jumps + route.a_jump_offset;
             const TransR1 *b_fwd = arena.r1_jumps + route.b_jump_offset;
@@ -395,7 +407,7 @@ void build_flat_mixed(
                     {a_jumps[k].src_idx, g_id, static_cast<int64>(dst_row), a_jumps[k].w0, b_rev, route.nb});
             }
         }
-        else if (route.rank == 2)
+        else if (rank == 2)
         {
             const TransR2 *a_jumps = arena.r2_jumps + route.a_jump_offset;
             const TransR2 *b_fwd = arena.r2_jumps + route.b_jump_offset;
@@ -433,7 +445,7 @@ void build_flat_mixed(
                      b_fwd,
                      arena.rn_weights,
                      route.nb,
-                     static_cast<uint32>(route.rank)});
+                     static_cast<uint32>(rank)});
 
                 temp_blocks[route.block_src_idx].mx_rn.push_back(
                     {a_jumps[k].src_idx,
@@ -443,7 +455,7 @@ void build_flat_mixed(
                      b_rev,
                      arena.rn_weights,
                      route.nb,
-                     static_cast<uint32>(route.rank)});
+                     static_cast<uint32>(rank)});
             }
         }
     }
@@ -452,8 +464,8 @@ void build_flat_mixed(
 template <typename T_Flat, typename T_Edge>
 void compress_pure_a(std::vector<T_Flat> &flat_edges, uint32 num_a, uint32 *&offsets, T_Edge *&edges_out)
 {
-    // 现在这里的 std::sort 会自然按照 dst_a 排序，且内部按 g 归位
-    std::sort(flat_edges.begin(), flat_edges.end()); 
+    std::sort(flat_edges.begin(), flat_edges.end());
+
     size_t M = flat_edges.size();
     offsets = new uint32[num_a + 1]();
     edges_out = M ? new T_Edge[M] : nullptr;
@@ -486,7 +498,6 @@ void compress_pure_a(std::vector<T_Flat> &flat_edges, uint32 num_a, uint32 *&off
 template <typename T_Flat, typename T_Edge>
 void compress_pure_b(std::vector<T_Flat> &flat_edges, uint32 &num_edges, T_Edge *&edges_out)
 {
-    // [修复]：新增排序！保证即使是由多线程乱序推送的边，也会按组号 g 排列好
     std::sort(flat_edges.begin(), flat_edges.end());
 
     size_t M = flat_edges.size();
@@ -526,7 +537,6 @@ void compress_pure_b(std::vector<T_Flat> &flat_edges, uint32 &num_edges, T_Edge 
 template <typename T_Flat, typename T_Node, typename T_Leaf>
 void compress_mixed_csr(std::vector<T_Flat> &flat_edges, uint32 num_a, uint32 *&offsets, T_Node *&nodes, T_Leaf *&leaves)
 {
-    // 这里 sort 之后会是: dst_a -> src_ptr -> g 
     std::sort(flat_edges.begin(), flat_edges.end());
     size_t M = flat_edges.size();
 
@@ -566,7 +576,6 @@ void compress_mixed_csr(std::vector<T_Flat> &flat_edges, uint32 num_a, uint32 *&
             nodes[node_idx - 1].num_leaves++;
         }
 
-        // 因为之前排序的时候把 g 也加入了排序，所以这里的 leaves 内部顺序是完美按照 g 连贯存放的
         if constexpr (std::is_same_v<T_Leaf, Mixed_G_Leaf_R1>)
             leaves[i] = {
                 flat_edges[i].pa0,
@@ -640,6 +649,7 @@ void build_all_agg_edges(
             type = 2;
         else if (ax != 0 && bx != 0)
             type = 3;
+
         agg->excit_types[g] = type;
 
         int64 axsym = get_string_sym(ax, orbsym);
@@ -650,13 +660,23 @@ void build_all_agg_edges(
         switch (type)
         {
         case 1:
-            build_pure_a(g, ax, rank, num_as[g], num_bs[g], off_az[g], off_bz[g], off_wa[g], off_wb[g], flat_azs, flat_bzs, flat_wa, flat_wb, orbsym, basis, temp);
+            build_pure_a(
+                g, ax, rank, num_as[g], num_bs[g],
+                off_az[g], off_bz[g], off_wa[g], off_wb[g],
+                flat_azs, flat_bzs, flat_wa, flat_wb,
+                orbsym, basis, temp);
             break;
         case 2:
-            build_pure_b(g, bx, rank, num_as[g], num_bs[g], off_az[g], off_bz[g], off_wa[g], off_wb[g], flat_azs, flat_bzs, flat_wa, flat_wb, orbsym, basis, temp);
+            build_pure_b(g, bx, rank, num_as[g], num_bs[g],
+                         off_az[g], off_bz[g], off_wa[g], off_wb[g],
+                         flat_azs, flat_bzs, flat_wa, flat_wb,
+                         orbsym, basis, temp);
             break;
         case 3:
-            build_mixed(g, ax, bx, rank, num_as[g], num_bs[g], off_az[g], off_bz[g], off_wa[g], off_wb[g], flat_azs, flat_bzs, flat_wa, flat_wb, orbsym, basis, temp);
+            build_mixed(g, ax, bx, rank, num_as[g], num_bs[g],
+                        off_az[g], off_bz[g], off_wa[g], off_wb[g],
+                        flat_azs, flat_bzs, flat_wa, flat_wb,
+                        orbsym, basis, temp);
             break;
         default:
             break;
@@ -704,14 +724,14 @@ void build_all_agg_edges(
             uint32 n_r1 = 0, n_r2 = 0, n_rn = 0;
             for (const MixedRoute &r : temp.mixed_routes)
             {
-                if (r.rank == 1)
+                if (rank == 1)
                     n_r1 += r.nb;
-                else if (r.rank == 2)
+                else if (rank == 2)
                     n_r2 += r.nb;
                 else
                     n_rn += r.nb;
             }
-            
+
             if (n_r1)
                 agg->mixed_b_rev_r1[g] = new TransR1[n_r1];
             if (n_r2)
@@ -725,13 +745,13 @@ void build_all_agg_edges(
         switch (type)
         {
         case 1:
-            build_flat_pure_a(g, axsym, basis, temp, arena, local_tb);
+            build_flat_pure_a(g, rank, axsym, basis, temp, arena, local_tb);
             break;
         case 2:
-            build_flat_pure_b(g, bxsym, basis, temp, arena, local_tb);
+            build_flat_pure_b(g, rank, bxsym, basis, temp, arena, local_tb);
             break;
         case 3:
-            build_flat_mixed(g, axsym, bxsym, basis, temp, arena, local_tb, agg); 
+            build_flat_mixed(g, rank, axsym, bxsym, basis, temp, arena, local_tb, agg);
             break;
         default:
             break;
