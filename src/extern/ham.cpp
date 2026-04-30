@@ -40,19 +40,6 @@ struct PauliHash
     }
 };
 
-template <typename Tv, typename Tg>
-struct HamResult
-{
-    void *axs;  // xs 的 α 部分, half_width(Ti) 指针 (对应 Julia 的 UInt64/UInt128)
-    void *azs;  // zs 的 α 部分, half_width(Ti) 指针 (对应 Julia 的 UInt64/UInt128)
-    void *bxs;  // xs 的 β 部分, half_width(Ti) 指针 (对应 Julia 的 UInt64/UInt128)
-    void *bzs;  // zs 的 β 部分, half_width(Ti) 指针 (对应 Julia 的 UInt64/UInt128)
-    Tv *cs;     // Float64/ComplexF64
-    Tg *gs;     // xs(axs.|bxs)的分组边界 (1-based), [gs[i], gs[i+1]-1]中是同一个 x
-    size_t ncs; // cs 长度
-    size_t ngs; // gs 长度
-};
-
 template <typename Tv>
 struct SingleTerm
 {
@@ -472,7 +459,7 @@ void stage3_count_and_write(
     int nblocks, double tol,
     const DictArray<Ti, Tv> *dicts,
     TermArray<Ti, Tv> *all_terms,
-    size_t *out_nqs)
+    size_t *out_ncs)
 {
     std::vector<size_t> bucket_counts(nblocks, 0);
 
@@ -494,9 +481,9 @@ void stage3_count_and_write(
         offsets[b + 1] = offsets[b] + bucket_counts[b];
     }
 
-    size_t nqs = offsets.back();
-    *out_nqs = nqs;
-    all_terms->resize(nqs);
+    size_t ncs = offsets.back();
+    *out_ncs = ncs;
+    all_terms->resize(ncs);
 
 #pragma omp parallel for schedule(static)
     for (int b = 0; b < nblocks; ++b)
@@ -512,62 +499,40 @@ void stage3_count_and_write(
     }
 }
 
-template <typename Ti,
-          typename Tv,
-          typename Tg>
-HamResult<Tv, Tg> stage5_prepare_output(
-    size_t nqs,
-    const TermArray<Ti, Tv> *all_terms,
-    int based)
+template <typename Tv>
+struct HamResult
 {
-    size_t alloc_nnz = std::max<size_t>(1, nqs);
+    void *axs;  // xs 的 α 部分
+    void *azs;  // zs 的 α 部分
+    void *bxs;  // xs 的 β 部分
+    void *bzs;  // zs 的 β 部分
+    Tv *cs;     // Float64/ComplexF64
+    size_t ncs; // cs 长度
+};
 
+template <typename Ti,
+          typename Tv>
+HamResult<Tv> stage5_prepare_output(size_t ncs, const TermArray<Ti, Tv> *all_terms)
+{
     using Th = half_width_t<Ti>;
-
-    Tv *final_cs = (Tv *)malloc(alloc_nnz * sizeof(Tv));
+    size_t alloc_nnz = std::max<size_t>(1, ncs);
     Th *final_axs = (Th *)malloc(alloc_nnz * sizeof(Th));
     Th *final_azs = (Th *)malloc(alloc_nnz * sizeof(Th));
     Th *final_bxs = (Th *)malloc(alloc_nnz * sizeof(Th));
     Th *final_bzs = (Th *)malloc(alloc_nnz * sizeof(Th));
+    Tv *final_cs = (Tv *)malloc(alloc_nnz * sizeof(Tv));
 
-    std::vector<Tg> bounds;
-    bounds.push_back(static_cast<Tg>(based));
-
-    if (nqs > 0)
-    {
-        Ti last_x = (*all_terms)[0].q.x;
-        for (size_t i = 0; i < nqs; ++i)
-        {
-            Pauli<Ti> q = (*all_terms)[i].q;
-            if (i > 0 && q.x != last_x)
-            {
-                bounds.push_back(static_cast<Tg>(i + based));
-                last_x = q.x;
-            }
-        }
-        bounds.push_back(static_cast<Tg>(nqs + based));
-    }
-    else
-    {
-        bounds.push_back(static_cast<Tg>(based));
-    }
-
-    size_t ngs = bounds.size();
-    Tg *final_gs = (Tg *)malloc(std::max<size_t>(1, ngs) * sizeof(Tg));
-    std::copy(bounds.begin(), bounds.end(), final_gs);
-
-    if (nqs > 0)
+    if (ncs > 0)
     {
 #pragma omp parallel for
-        for (size_t i = 0; i < nqs; ++i)
+        for (size_t i = 0; i < ncs; ++i)
         {
             Pauli<Ti> q = (*all_terms)[i].q;
-
-            final_cs[i] = (*all_terms)[i].c;
             final_axs[i] = zip_even_bit_bmi2(q.x);
             final_azs[i] = zip_even_bit_bmi2(q.z);
             final_bxs[i] = zip_odd_bit_bmi2(q.x);
             final_bzs[i] = zip_odd_bit_bmi2(q.z);
+            final_cs[i] = (*all_terms)[i].c;
         }
     }
 
@@ -577,19 +542,16 @@ HamResult<Tv, Tg> stage5_prepare_output(
         (void *)final_bxs,
         (void *)final_bzs,
         final_cs,
-        final_gs,
-        nqs,
-        ngs};
+        ncs};
 }
 
-template <typename Ti, typename Tv, typename Tg>
-HamResult<Tv, Tg> generate_hamiltonian_tmpl(
+template <typename Ti, typename Tv>
+HamResult<Tv> generate_hamiltonian_tmpl(
     Tv energy_nuc,
     const Tv *one_body_mo,
     const Tv *two_body_mo,
     int norbs,
     double tol,
-    int based,
     bool verbose)
 {
     int nthreads = omp_get_max_threads();
@@ -621,8 +583,8 @@ HamResult<Tv, Tg> generate_hamiltonian_tmpl(
 
     // --- Stage 3 ---
     TermArray<Ti, Tv> all_terms;
-    size_t nqs = 0;
-    stage3_count_and_write<Ti, Tv>(nblocks, tol, &dicts, &all_terms, &nqs);
+    size_t ncs = 0;
+    stage3_count_and_write<Ti, Tv>(nblocks, tol, &dicts, &all_terms, &ncs);
 
     dicts.clear();
     dicts.shrink_to_fit();
@@ -635,7 +597,7 @@ HamResult<Tv, Tg> generate_hamiltonian_tmpl(
     auto t4 = std::chrono::high_resolution_clock::now();
 
     // --- Stage 5 ---
-    HamResult<Tv, Tg> res = stage5_prepare_output<Ti, Tv, Tg>(nqs, &all_terms, based);
+    HamResult<Tv> res = stage5_prepare_output<Ti, Tv>(ncs, &all_terms);
 
     auto t5 = std::chrono::high_resolution_clock::now();
 
@@ -652,7 +614,6 @@ HamResult<Tv, Tg> generate_hamiltonian_tmpl(
         printf("[Summary] Orbital number:       %d\n", norbs);
         printf("[Summary] Number of threads:    %d\n", nthreads);
         printf("[Summary] Bucket size:          %d\n", nblocks);
-        printf("[Summary] Number of gs:         %zu\n", res.ngs);
         printf("[Summary] Number of cs:         %zu\n", res.ncs);
 
         printf("[Time] Total:         %.4f seconds\n", t_total.count());
@@ -671,122 +632,116 @@ extern "C"
     using complex64 = std::complex<double>;
 
     // 处理最高 (31o, 62q) 的分子体系
-    HamResult<double, int64_t> generate_hamiltonian_64_128_f64(
+    HamResult<double> generate_hamiltonian_64_128_f64(
         double energy_nuc,
         const double *one_body_mo,
         const double *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 31)
         {
             std::cerr << "Error: norbs > 31 not supported for uint64 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint64, double, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint64, double>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 
     // 处理最高 (31o, 62q) 的周期性体系
-    HamResult<complex64, int64_t> generate_hamiltonian_64_128_c64(
+    HamResult<complex64> generate_hamiltonian_64_128_c64(
         complex64 energy_nuc,
         const complex64 *one_body_mo,
         const complex64 *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 31)
         {
             std::cerr << "Error: norbs > 31 not supported for uint64 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint64, complex64, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint64, complex64>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 
     // 处理最高 (63o, 126q) 的分子体系
-    HamResult<double, int64_t> generate_hamiltonian_128_256_f64(
+    HamResult<double> generate_hamiltonian_128_256_f64(
         double energy_nuc,
         const double *one_body_mo,
         const double *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 63)
         {
             std::cerr << "Error: norbs > 63 not supported for uint128 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint128, double, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint128, double>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 
     // 处理最高 (63o, 126q) 的周期性体系
-    HamResult<complex64, int64_t> generate_hamiltonian_128_256_c64(
+    HamResult<complex64> generate_hamiltonian_128_256_c64(
         complex64 energy_nuc,
         const complex64 *one_body_mo,
         const complex64 *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 63)
         {
             std::cerr << "Error: norbs > 63 not supported for uint128 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint128, complex64, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint128, complex64>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 
     // 处理最高 (127o, 254q) 的分子体系
-    HamResult<double, int64_t> generate_hamiltonian_256_512_f64(
+    HamResult<double> generate_hamiltonian_256_512_f64(
         double energy_nuc,
         const double *one_body_mo,
         const double *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 127)
         {
             std::cerr << "Error: norbs > 127 not supported for uint256 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint256, double, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint256, double>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 
     // 处理最高 (127o, 254q) 的周期性体系
-    HamResult<complex64, int64_t> generate_hamiltonian_256_512_c64(
+    HamResult<complex64> generate_hamiltonian_256_512_c64(
         complex64 energy_nuc,
         const complex64 *one_body_mo,
         const complex64 *two_body_mo,
         int norbs,
         double tol,
-        int based,
         bool verbose)
     {
         if (norbs > 127)
         {
             std::cerr << "Error: norbs > 127 not supported for uint256 backend."
                       << std::endl;
-            return {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0};
+            return {nullptr, nullptr, nullptr, nullptr, nullptr, 0};
         }
-        return generate_hamiltonian_tmpl<uint256, complex64, int64_t>(
-            energy_nuc, one_body_mo, two_body_mo, norbs, tol, based, verbose);
+        return generate_hamiltonian_tmpl<uint256, complex64>(
+            energy_nuc, one_body_mo, two_body_mo, norbs, tol, verbose);
     }
 }

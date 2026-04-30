@@ -170,35 +170,25 @@ end
 mutable struct Orbitals
     spatial_based::Array{Array{UInt16,1},1}
     spin_based::Array{Array{UInt16,1},1}
-    Ti::DataType
 
     function Orbitals()
-        new(Array{Array{UInt16,1},1}(), Array{Array{UInt16,1},1}(), UInt64)
+        new(Array{Array{UInt16,1},1}(), Array{Array{UInt16,1},1}())
     end
 end
 
 
-function kernel(mole::Mole, orbitals::Orbitals; excited_order::Int=2, symm_reduce::Bool=true, generalize::Bool=false)
-    norb = mole.norb
-
-    if 0 <= norb < 32
-        orbitals.Ti = UInt64
-    elseif 32 <= norb < 64
-        orbitals.Ti = UInt128
-    elseif 64 <= norb < 128
-        orbitals.Ti = UInt256
-    else
-        error("Maximum supported is (127o, 254q)")
-    end
-
+function kernel(
+    info::SysInfo, orbitals::Orbitals; 
+    excited_order::Int=2, symm_reduce::Bool=true, generalize::Bool=false,
+)
     if symm_reduce
         spin_orbitals = generate_ci_spin_orbitals(
-            norb, mole.nelec, mole.orbsym,
+            info.norb, info.nelec, info.orbsym,
             kmax=excited_order, generalize=generalize,
         )
     else
         spin_orbitals = generate_ci_spin_orbitals(
-            norb, mole.nelec, ones(norb),
+            info.norb, info.nelec, ones(info.norb),
             kmax=excited_order, generalize=generalize,
         )
     end
@@ -211,7 +201,7 @@ function kernel(mole::Mole, orbitals::Orbitals; excited_order::Int=2, symm_reduc
 end
 
 
-function unique_operator_pool(pool::Array{<:HostBinaryQubit,1})
+function unique_operator_pool(pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}) where {Ti,Tv,K,V}
     len = length(pool)
     index_map = Dict{eltype(pool),Int}()
     sizehint!(index_map, len)
@@ -219,7 +209,7 @@ function unique_operator_pool(pool::Array{<:HostBinaryQubit,1})
 
     count = 0
     for (i, op) in enumerate(pool)
-        if !iszero(op) && (op!=one(op))
+        if (op != zero(op)) && (op != one(op))
             if !haskey(index_map, op)
                 count += 1
                 index_map[op] = count
@@ -245,10 +235,10 @@ function spin_orbital_to_generator_terms(spin_orbital::Array{UInt16,1})
 end
 
 
-function ucc_like(orbitals::Orbitals, generator::Function, complete::Bool, Tv::DataType)
+function ucc_like(
+    orbitals::Orbitals, generator::Function, complete::Bool, Ti::DataType, Tv::DataType
+)
     spin_orbitals = orbitals.spin_based
-    Ti::DataType  = orbitals.Ti
-    Tq::DataType  = double_width(Ti)
     len = length(spin_orbitals)
 
     f = term -> begin
@@ -256,8 +246,8 @@ function ucc_like(orbitals::Orbitals, generator::Function, complete::Bool, Tv::D
         return t - t'
     end
 
-    pool = Array{HostBinaryQubit{Ti,Tv,Tq,Int},1}(undef, len)
-    @threads for i in eachindex(spin_orbitals)
+    pool = Vector{BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}}(undef, len)
+    for i in eachindex(spin_orbitals)
         pool[i] = f(spin_orbital_to_generator_terms(spin_orbitals[i]))
     end
 
@@ -267,8 +257,8 @@ function ucc_like(orbitals::Orbitals, generator::Function, complete::Bool, Tv::D
             return im * (t + t')
         end
 
-        c_pool = Array{HostBinaryQubit{Ti,Tv,Tq,Int},1}(undef, len)
-        @threads for i in eachindex(spin_orbitals)
+        c_pool = Vector{BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}}(undef, len)
+        for i in eachindex(spin_orbitals)
             c_pool[i] = f(spin_orbital_to_generator_terms(spin_orbitals[i]))
         end
 
@@ -283,15 +273,19 @@ function ucc_like(orbitals::Orbitals, generator::Function, complete::Bool, Tv::D
 end
 
 
-function FEB(orbitals::Orbitals)
+function FEB(orbitals::Orbitals; 
+    Ti::DataType=UInt32, Tv::DataType=Float64, complete::Bool=false,
+)
     println("Generate Fermion Based Excitation Operator Pool")
-    return BinaryQubitAABB.(ucc_like(orbitals, FermionOperator, false, Float64))
+    return ucc_like(orbitals, FermionOperatorAABB, complete, Ti, Tv)
 end
 
 
-function QEB(orbitals::Orbitals)
+function QEB(orbitals::Orbitals;
+    Ti::DataType=UInt32, Tv::DataType=Float64, complete::Bool=false,
+)
     println("Generate Qubit Based Excitation Operator Pool")
-    return BinaryQubitAABB.(ucc_like(orbitals, QebOperator, false, Float64))
+    return ucc_like(orbitals, QebOperatorAABB, complete, Ti, Tv)
 end
 
 

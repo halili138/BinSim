@@ -40,9 +40,10 @@ end
 function get_hf(
     basis::BasisManager,
     nelec::Tuple{Int, Int},
-    orbsym::Vector{Int},
+    orbsym::Vector{Int};
+    Tv::DataType = Float64,
 )
-    hf = zeros(Float64, basis.dim)
+    hf = zeros(Tv, basis.dim)
 
     na, nb = nelec
 
@@ -56,70 +57,29 @@ function get_hf(
         hf_bstr |= (UInt32(1) << i)
     end
 
-    hf_val = 1.0
+    hf_val = Tv(1.0)
 
-    @ccall LIB_BASIS.set_det_coeff(
-        basis.ptr::Ptr{Cvoid},
-        hf_astr::UInt32,
-        hf_bstr::UInt32,
-        hf_val::Cdouble,
-        orbsym::Ptr{Int64},
-        hf::Ptr{Cdouble},
-    )::Cvoid
+    if Tv <: Complex
+        @ccall LIB_BASIS.set_det_coeff_c64(
+            basis.ptr::Ptr{Cvoid},
+            hf_astr::UInt32,
+            hf_bstr::UInt32,
+            hf_val::Cdouble,
+            orbsym::Ptr{Int64},
+            hf::Ptr{ComplexF64},
+        )::Cvoid
+    else
+        @ccall LIB_BASIS.set_det_coeff_f64(
+            basis.ptr::Ptr{Cvoid},
+            hf_astr::UInt32,
+            hf_bstr::UInt32,
+            hf_val::Cdouble,
+            orbsym::Ptr{Int64},
+            hf::Ptr{Cdouble},
+        )::Cvoid
+    end
 
     return hf
-end
-
-function get_xs_groups(H0b::BinaryQubitAABB)
-    ngs = length(H0b.gs) - 1
-    axs = Vector{UInt32}(undef, ngs)
-    bxs = Vector{UInt32}(undef, ngs)
-    for g in 1:ngs
-        lb = H0b.gs[g] + 1
-        axs[g] = H0b.axs[lb]
-        bxs[g] = H0b.bxs[lb]
-    end
-    return axs, bxs
-end
-
-function get_xs_groups(H0b::T, pool_1b::Array{Array{T,1},1}) where T<:HostBinaryQubit{UInt64,Float64,UInt128,Int64}
-    ngs = length(H0b.gs) - 1
-    hxs = Vector{UInt64}(undef, ngs)
-    for g in 1:ngs
-        lb = H0b.gs[g] + 1
-        hxs[g] = H0b.xs[lb]
-    end
-
-    tol_xs = copy(hxs) # Use copy to avoid aliasing
-    idxs  = Int64[]
-    count = ngs
-    
-    # Hash map for O(1) exact lookups
-    xs_dict = Dict{UInt64, Int64}()
-    for (i, x) in enumerate(tol_xs)
-        xs_dict[x] = i
-    end
-
-    # 为了使用expN2和 grad2 来产生exp和梯度算符，pool里面是[op, op^2]，第一项对应原来的单个feimion算符，具有唯一的 x;
-    # I + sinθ * op + (1-cosθ) * op^2，ferimon算符，即 τ = a†a†aa - conj，其平方由常数和纯 Z 构成，不会产生新的 x，
-    # 这也是为什么其 expm 只有diag演化和唯一的off演化的原因。
-    for t in pool_1b
-        @assert (length(t[1].gs) - 1) == 1 
-        x = t[1].xs[1]
-        if haskey(xs_dict, x)
-            push!(idxs, xs_dict[x])
-        else
-            count += 1
-            push!(tol_xs, x)
-            push!(idxs, count)
-            xs_dict[x] = count
-        end
-    end
-
-    tol_axs = zip_even_bit.(tol_xs)
-    tol_bxs = zip_odd_bit.(tol_xs)
-
-    return tol_axs, tol_bxs, idxs .- 1
 end
 
 struct SVDGroup{Ti, Tv}
@@ -133,21 +93,22 @@ struct SVDGroup{Ti, Tv}
     ncs::Int
 end
 
-function compress_by_svd(A0b::BinaryQubitAABB{Ti,Tv,Tg}, tol::Float64=1e-12) where {Ti, Tv, Tg}
-    ngs = length(A0b.gs) - 1
+function compress_by_svd(A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) where {Ti,Tv,K,V}
+    gs  = get_bounds_0based(A.axs, A.bxs)
+    ngs = length(gs) - 1
 
-    svd_groups = Vector{SVDGroup{Ti, Tv}}(undef, ngs)
+    svd_groups = Vector{SVDGroup{Ti,Tv}}(undef, ngs)
 
-    @threads for g in 1:ngs
-        lb = A0b.gs[g] + 1
-        rb = A0b.gs[g + 1]
+    for g in 1:ngs
+        lb = gs[g] + 1
+        rb = gs[g + 1]
         
-        ax = A0b.axs[lb]
-        bx = A0b.bxs[lb]
+        ax = A.axs[lb]
+        bx = A.bxs[lb]
         
-        sub_azs = A0b.azs[lb:rb]
-        sub_bzs = A0b.bzs[lb:rb]
-        sub_cs  = A0b.cs[lb:rb]
+        sub_azs = A.azs[lb:rb]
+        sub_bzs = A.bzs[lb:rb]
+        sub_cs  = A.cs[lb:rb]
         
         unique_azs = unique(sub_azs)
         unique_bzs = unique(sub_bzs)
@@ -178,25 +139,57 @@ function compress_by_svd(A0b::BinaryQubitAABB{Ti,Tv,Tg}, tol::Float64=1e-12) whe
         
         for (ri, r) in enumerate(valid_idx)
             sqrt_s = sqrt(F.S[r])
-            @. wa[:, ri] = F.U[:, r] * sqrt_s
-            @. wb[:, ri] = F.Vt[r, :] * sqrt_s
+            U_col = copy(F.U[:, r])
+            Vt_row = copy(F.Vt[r, :])
+            
+            # ==== 消除复数域下的 SVD 寄生全局相位 ====
+            # 这一步是为了配合 C++ 端反向边构建时不对 shared phases 进行深拷贝
+            if Tv <: Complex
+                if ax != 0 && bx == 0
+                    # Pure A: B 弦算符是对角的 (Vt_row 必须严格为实数)
+                    max_idx = argmax(abs.(Vt_row))
+                    phase_angle = angle(Vt_row[max_idx])
+                    
+                    U_col .*= exp(im * phase_angle)
+                    Vt_row .*= exp(-im * phase_angle)
+                    
+                    # 消除机器精度误差带来的微小虚部，并保持数据类型为 Tv (ComplexF64)
+                    Vt_row = Tv.(real.(Vt_row))
+                    
+                elseif ax == 0 && bx != 0
+                    # Pure B: A 弦算符是对角的 (U_col 必须严格为实数)
+                    max_idx = argmax(abs.(U_col))
+                    phase_angle = angle(U_col[max_idx])
+                    
+                    U_col .*= exp(-im * phase_angle)
+                    Vt_row .*= exp(im * phase_angle)
+                    
+                    # 消除机器精度误差带来的微小虚部，并保持数据类型为 Tv (ComplexF64)
+                    U_col = Tv.(real.(U_col))
+                end
+            end
+            # ==========================================
+
+            @. wa[:, ri] = U_col * sqrt_s
+            @. wb[:, ri] = Vt_row * sqrt_s
         end
 
         wa[abs.(wa) .< 1e-12] .= 0
         wb[abs.(wb) .< 1e-12] .= 0
 
-        svd_groups[g] = SVDGroup{Ti, Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(sub_cs))
+        svd_groups[g] = SVDGroup{Ti,Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(sub_cs))
     end
     
     return svd_groups
 end
 
-function compress_by_svd(pool_0b::Array{BinaryQubitAABB{Ti,Tv,Tg,K,V,G}, 1}, tol::Float64=1e-12) where {Ti,Tv,Tg,K,V,G}
-    ngs = length(pool_0b)
-    svd_groups = Vector{SVDGroup{Ti, Tv}}(undef, ngs)
+function compress_by_svd(pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, tol::Float64=1e-12) where {Ti,Tv,K,V}
+    ngs = length(pool)
 
-    for (idx, op) in enumerate(pool_0b)
-        gs = op.gs
+    svd_groups = Vector{SVDGroup{Ti,Tv}}(undef, ngs)
+
+    for (idx, op) in enumerate(pool)
+        gs = get_bounds_0based(op.axs, op.bxs)
         @assert (length(gs) - 1) <= 1 "only support excitation operator with ngs <= 1"
         ax  = op.axs[end]
         bx  = op.bxs[end]
@@ -239,7 +232,7 @@ function compress_by_svd(pool_0b::Array{BinaryQubitAABB{Ti,Tv,Tg,K,V,G}, 1}, tol
         wa[abs.(wa) .< 1e-12] .= 0
         wb[abs.(wb) .< 1e-12] .= 0
 
-        svd_groups[idx] = SVDGroup{Ti, Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(cs))
+        svd_groups[idx] = SVDGroup{Ti,Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(cs))
     end
     
     return svd_groups
@@ -251,28 +244,30 @@ mutable struct NET
 
     function NET(
         basis::BasisManager, 
-        A0b::BinaryQubitAABB, 
+        A::BinaryQubitAABB{Ti,Tv,K,V}, 
         orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
-    )
-        groups = compress_by_svd(A0b, tol)
+    ) where {Ti,Tv,K,V}
+
+        bounds = get_bounds_0based(A.axs, A.bxs)
+        groups = compress_by_svd(A, tol)
         ngs    = length(groups)
-        ncs    = length(A0b.cs)
-        axs    = Vector{UInt32}(undef, ngs)
-        bxs    = Vector{UInt32}(undef, ngs)
-        ranks  = Vector{Int64}(undef,  ngs)
-        num_as = Vector{Int64}(undef,  ngs)
-        num_bs = Vector{Int64}(undef,  ngs)
+        ncs    = length(A.cs)
+        axs    = Vector{Ti}(undef, ngs)
+        bxs    = Vector{Ti}(undef, ngs)
+        ranks  = Vector{Int64}(undef, ngs)
+        num_as = Vector{Int64}(undef, ngs)
+        num_bs = Vector{Int64}(undef, ngs)
         
-        flat_azs = UInt32[]
-        flat_bzs = UInt32[]
-        flat_wa  = Float64[]
-        flat_wb  = Float64[]
+        flat_azs = Ti[]
+        flat_bzs = Ti[]
+        flat_wa  = Tv[]
+        flat_wb  = Tv[]
         
         for (g, group) in enumerate(groups)
-            axs[g]    = group.ax
-            bxs[g]    = group.bx
-            ranks[g]  = group.rank
+            axs[g]   = group.ax
+            bxs[g]   = group.bx
+            ranks[g] = group.rank
             
             na = length(group.azs)
             nb = length(group.bzs)
@@ -286,33 +281,37 @@ mutable struct NET
             append!(flat_wb, vec(group.wb))
         end
         
-        ptr = @ccall LIB_NET.create_svd_network(
-            basis.ptr::Ptr{Cvoid},
-            ncs::Int64,
-            ngs::Int64,
-            axs::Ptr{UInt32},
-            bxs::Ptr{UInt32},
-            A0b.azs::Ptr{UInt32},
-            A0b.bzs::Ptr{UInt32},
-            A0b.cs::Ptr{Cdouble},
-            A0b.gs::Ptr{Int64},
-            ranks::Ptr{Int64},
-            num_as::Ptr{Int64},
-            num_bs::Ptr{Int64},
-            flat_azs::Ptr{UInt32},
-            flat_bzs::Ptr{UInt32},
-            flat_wa::Ptr{Cdouble},
-            flat_wb::Ptr{Cdouble},
-            orbsym::Ptr{Int64},
-        )::Ptr{Cvoid}
-        
+        if Tv <: Complex
+            ptr = ccall((:create_svd_network_c64, LIB_NET), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+        else
+            ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+        end
+
         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
-        
+
         obj = new(ptr, basis.dim)
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_NET.destroy_svd_network(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
+        
+        if Tv <: Complex
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_svd_network_c64, LIB_NET), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        else
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_svd_network_f64, LIB_NET), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
             end
         end
         
@@ -321,28 +320,29 @@ mutable struct NET
 
     function NET(
         basis::BasisManager, 
-        pool_0b::Array{<:BinaryQubitAABB,1}, 
+        pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, 
         orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
-    )
-        groups = compress_by_svd(pool_0b, tol)
+    ) where {Ti,Tv,K,V}
+
+        bounds = Int64[]
+        groups = compress_by_svd(pool, tol)
         ngs    = length(groups)
         ncs    = 0
-        axs    = Vector{UInt32}(undef, ngs)
-        bxs    = Vector{UInt32}(undef, ngs)
-        azs    = UInt32[]
-        bzs    = UInt32[]
-        cs     = Float64[]
-        gs     = Int64[]
+        axs    = Vector{Ti}(undef, ngs)
+        bxs    = Vector{Ti}(undef, ngs)
+        azs    = Ti[]
+        bzs    = Ti[]
+        cs     = Tv[]
 
-        ranks  = Vector{Int64}(undef,  ngs)
-        num_as = Vector{Int64}(undef,  ngs)
-        num_bs = Vector{Int64}(undef,  ngs)
+        ranks  = Vector{Int64}(undef, ngs)
+        num_as = Vector{Int64}(undef, ngs)
+        num_bs = Vector{Int64}(undef, ngs)
         
-        flat_azs = UInt32[]
-        flat_bzs = UInt32[]
-        flat_wa  = Float64[]
-        flat_wb  = Float64[]
+        flat_azs = Ti[]
+        flat_bzs = Ti[]
+        flat_wa  = Tv[]
+        flat_wb  = Tv[]
         
         for (g, group) in enumerate(groups)
             axs[g]    = group.ax
@@ -361,36 +361,40 @@ mutable struct NET
             append!(flat_wb, vec(group.wb))
         end
         
-        ptr = @ccall LIB_NET.create_svd_network(
-            basis.ptr::Ptr{Cvoid},
-            ncs::Int64,
-            ngs::Int64,
-            axs::Ptr{UInt32},
-            bxs::Ptr{UInt32},
-            azs::Ptr{UInt32},
-            bzs::Ptr{UInt32},
-            cs::Ptr{Cdouble},
-            gs::Ptr{Int64},
-            ranks::Ptr{Int64},
-            num_as::Ptr{Int64},
-            num_bs::Ptr{Int64},
-            flat_azs::Ptr{UInt32},
-            flat_bzs::Ptr{UInt32},
-            flat_wa::Ptr{Cdouble},
-            flat_wb::Ptr{Cdouble},
-            orbsym::Ptr{Int64},
-        )::Ptr{Cvoid}
-        
+        if Tv <: Complex
+            ptr = ccall((:create_svd_network_c64, LIB_NET), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, azs, bzs, cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+        else
+            ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, azs, bzs, cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+        end
+
         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
-        
+
         obj = new(ptr, basis.dim)
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_NET.destroy_svd_network(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
+        
+        if Tv <: Complex
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_svd_network_c64, LIB_NET), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        else
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_svd_network_f64, LIB_NET), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
             end
         end
-        
+
         return obj
     end
 end
@@ -402,12 +406,28 @@ function tvec_svd!(
     θ::Float64,    
     vec::Vector{Float64},
 )
-    @ccall LIB_NET.tvec_svd_network(
+    @ccall LIB_NET.tvec_svd_network_f64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
         (idx-1)::Int64,
         θ::Cdouble,
         vec::Ptr{Cdouble}
+    )::Cvoid
+end
+
+function tvec_svd!(
+    basis::BasisManager,
+    net::NET,
+    idx::Int64,    
+    θ::Float64,    
+    vec::Vector{ComplexF64},
+)
+    @ccall LIB_NET.tvec_svd_network_c64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        vec::Ptr{ComplexF64}
     )::Cvoid
 end
 
@@ -419,7 +439,7 @@ function grad_svd(
     lv::Vector{Float64},
     rv::Vector{Float64},
 )
-    return @ccall LIB_NET.grad_svd_network(
+    return @ccall LIB_NET.grad_svd_network_f64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
         (idx-1)::Int64,
@@ -429,29 +449,50 @@ function grad_svd(
     )::Cdouble
 end
 
+function grad_svd(
+    basis::BasisManager,
+    net::NET,
+    idx::Int64,
+    θ::Float64,    
+    lv::Vector{ComplexF64},
+    rv::Vector{ComplexF64},
+)
+    return @ccall LIB_NET.grad_svd_network_c64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        lv::Ptr{ComplexF64}, 
+        rv::Ptr{ComplexF64}, 
+    )::ComplexF64
+end
+
 mutable struct AGG
     ptr::Ptr{Cvoid}
     dim::Int64
+    ValueType::DataType
 
     function AGG(
         basis::BasisManager, 
-        A0b::BinaryQubitAABB, 
+        A::BinaryQubitAABB{Ti,Tv,K,V},
         orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
-    )      
-        groups = compress_by_svd(A0b, tol)
+    ) where {Ti,Tv,K,V}
+
+        bounds = get_bounds_0based(A.axs, A.bxs)
+        groups = compress_by_svd(A, tol)
         ngs    = length(groups)
-        ncs    = length(A0b.cs)
-        axs    = Vector{UInt32}(undef, ngs)
-        bxs    = Vector{UInt32}(undef, ngs)
-        ranks  = Vector{Int64}(undef,  ngs)
-        num_as = Vector{Int64}(undef,  ngs)
-        num_bs = Vector{Int64}(undef,  ngs)
+        ncs    = length(A.cs)
+        axs    = Vector{Ti}(undef, ngs)
+        bxs    = Vector{Ti}(undef, ngs)
+        ranks  = Vector{Int64}(undef, ngs)
+        num_as = Vector{Int64}(undef, ngs)
+        num_bs = Vector{Int64}(undef, ngs)
         
-        flat_azs = UInt32[]
-        flat_bzs = UInt32[]
-        flat_wa  = Float64[]
-        flat_wb  = Float64[]
+        flat_azs = Ti[]
+        flat_bzs = Ti[]
+        flat_wa  = Tv[]
+        flat_wb  = Tv[]
         
         for (g, group) in enumerate(groups)
             axs[g] = group.ax
@@ -465,49 +506,61 @@ mutable struct AGG
             append!(flat_wb, vec(group.wb))
         end
 
-        ptr = @ccall LIB_AGG.build_direct_agg_network(
-            basis.ptr::Ptr{Cvoid}, 
-            ncs::Int64,
-            ngs::Int64,
-            axs::Ptr{UInt32},
-            bxs::Ptr{UInt32},
-            A0b.azs::Ptr{UInt32},
-            A0b.bzs::Ptr{UInt32},
-            A0b.cs::Ptr{Cdouble},
-            A0b.gs::Ptr{Int64},
-            ranks::Ptr{Int64},
-            num_as::Ptr{Int64}, 
-            num_bs::Ptr{Int64},
-            flat_azs::Ptr{UInt32}, 
-            flat_bzs::Ptr{UInt32},
-            flat_wa::Ptr{Cdouble}, 
-            flat_wb::Ptr{Cdouble},
-            orbsym::Ptr{Int64},
-        )::Ptr{Cvoid}
-        
-        ptr == C_NULL && error("Failed to create C++ AGG.")
-        
-        obj = new(ptr, basis.dim)
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_AGG.destroy_direct_agg_network(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
+        if Tv <: Complex
+            ptr = ccall((:build_direct_agg_network_c64, LIB_AGG), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+        else
+            ptr = ccall((:build_direct_agg_network_f64, LIB_AGG), Ptr{Cvoid}, 
+                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
+                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         end
 
+        ptr == C_NULL && error("Failed to create C++ AGGNetwork.")
+
+        obj = new(ptr, basis.dim, Tv)
+        
+        if Tv <: Complex
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_direct_agg_network_c64, LIB_AGG), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        else
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_direct_agg_network_f64, LIB_AGG), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        end
+        
         return obj
     end
 end
 
 function get_diags(basis::BasisManager, agg::AGG)
-    dim = basis.dim
-    diags = zeros(Float64, dim)
+    dim   = basis.dim
+    diags = zeros(agg.ValueType, dim)
 
-    @ccall LIB_AGG.get_diagonal_elements_agg(
-        basis.ptr::Ptr{Cvoid},
-        agg.ptr::Ptr{Cvoid},
-        diags::Ptr{Cdouble},
-    )::Cvoid
+    if agg.ValueType <: Complex
+        @ccall LIB_AGG.get_diagonal_elements_agg_c64(
+            basis.ptr::Ptr{Cvoid},
+            agg.ptr::Ptr{Cvoid},
+            diags::Ptr{ComplexF64},
+        )::Cvoid
+    else
+        @ccall LIB_AGG.get_diagonal_elements_agg_f64(
+            basis.ptr::Ptr{Cvoid},
+            agg.ptr::Ptr{Cvoid},
+            diags::Ptr{Cdouble},
+        )::Cvoid
+    end
 
     return diags
 end
@@ -518,7 +571,7 @@ function hvec_direct_agg!(
     src::Vector{Float64},
     dst::Vector{Float64},
 )
-    @ccall LIB_AGG.hvec_direct_agg_network(
+    @ccall LIB_AGG.hvec_direct_agg_network_f64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
         src::Ptr{Cdouble},
@@ -526,8 +579,26 @@ function hvec_direct_agg!(
     )::Cvoid
 end
 
+function hvec_direct_agg!(
+    basis::BasisManager, 
+    agg::AGG,
+    src::Vector{ComplexF64},
+    dst::Vector{ComplexF64},
+)
+    @ccall LIB_AGG.hvec_direct_agg_network_c64(
+        basis.ptr::Ptr{Cvoid},
+        agg.ptr::Ptr{Cvoid},
+        src::Ptr{ComplexF64},
+        dst::Ptr{ComplexF64},
+    )::Cvoid
+end
+
 function print_info(agg::AGG)
-    @ccall LIB_AGG.print_agg_network_info(agg.ptr::Ptr{Cvoid})::Cvoid
+    if agg.ValueType <: Complex
+        @ccall LIB_AGG.print_agg_network_info_c64(agg.ptr::Ptr{Cvoid})::Cvoid
+    else
+        @ccall LIB_AGG.print_agg_network_info_f64(agg.ptr::Ptr{Cvoid})::Cvoid
+    end
 end
 
 function hvec_direct_agg_benchmark!(
@@ -537,11 +608,27 @@ function hvec_direct_agg_benchmark!(
     dst::Vector{Float64},
     measure::Bool,
 )
-    @ccall LIB_AGG.hvec_direct_agg_network_benchmark(
+    @ccall LIB_AGG.hvec_direct_agg_network_benchmark_f64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
         src::Ptr{Cdouble},
         dst::Ptr{Cdouble},
+        measure::Cint,
+    )::Cvoid
+end
+
+function hvec_direct_agg_benchmark!(
+    basis::BasisManager, 
+    agg::AGG,
+    src::Vector{ComplexF64},
+    dst::Vector{ComplexF64},
+    measure::Bool,
+)
+    @ccall LIB_AGG.hvec_direct_agg_network_benchmark_c64(
+        basis.ptr::Ptr{Cvoid},
+        agg.ptr::Ptr{Cvoid},
+        src::Ptr{ComplexF64},
+        dst::Ptr{ComplexF64},
         measure::Cint,
     )::Cvoid
 end
@@ -552,9 +639,9 @@ function energy_objective(
     pool_net::NET, 
     idxs::Vector{Int64},
     x::Vector{Float64},          
-    lv::Vector{Float64},
-    rv::Vector{Float64},
-)
+    lv::Vector{Tv},
+    rv::Vector{Tv},
+) where Tv
     nparas = length(x)
 
     for i in 1:nparas

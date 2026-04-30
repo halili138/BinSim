@@ -1,0 +1,38 @@
+include("../binsim.jl")
+using Arpack
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    pbc = Pbc()
+    pbc.name   = "1d-h"
+    pbc.ratio  = 1.0
+    pbc.basis  = "gth-szv"
+    pbc.pseudo = "gth-pade"
+    pbc.mesh   = [4,1,1]
+    pbc.scaled_center = [0,0,0]
+
+    build(pbc)
+
+    # pbc.orbsym = ones(Int64, pbc.norb)
+    # basis = BasisManager(pbc.norb, pbc.nelec, pbc.orbsym)
+    # psi_space = basis.dim * 8 / (1 << 30)
+    # @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
+
+    ham = JW_hamiltonian(pbc)
+    ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
+    ham_sp = to_sparse_matrix(ham, pbc.norb, pbc.nelec)
+    λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
+    println(λ)
+    # ret = @timed agg = AGG(basis, ham, pbc.orbsym)
+    # println("Successifully Generate AGG in $(ret.time) seconds")
+    # print_info(agg)
+
+    # hf = get_hf(basis, pbc.nelec, pbc.orbsym, Tv=ComplexF64)
+    # diags = get_diags(basis, agg)
+
+    # aop! = (src::Array{ComplexF64,1}, dst::Array{ComplexF64,1}) -> begin
+    #     hvec_direct_agg!(basis, agg, src, dst)
+    # end
+
+    # @time davidson(aop!, hf, diags)
+end
+

@@ -9,9 +9,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     psi_space = basis.dim * 8 / (1 << 30)
-    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, basis.dim*8/(1<<30))
-    H0b = JW_hamiltonian(mole, based=0, spin="aabb")
-    ret = @timed agg = AGG(basis, H0b, mole.orbsym)
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
+
+    ham = JW_hamiltonian(mole)
+
+    ret = @timed agg = AGG(basis, ham, mole.orbsym)
     println("Successifully Generate AGG in $(ret.time) seconds")
     print_info(agg)
 
@@ -38,8 +40,8 @@ end
 #     build(mole)
 
 #     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
-#     H0b = JW_hamiltonian(mole, based=0, spin="aabb")
-#     agg = AGG(basis, H0b, mole.orbsym)
+#     ham = JW_hamiltonian(mole)
+#     agg = AGG(basis, ham, mole.orbsym)
     
 #     hf = get_hf(basis, mole.nelec, mole.orbsym)
 #     diags = get_diags(basis, agg)

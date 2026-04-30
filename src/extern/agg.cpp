@@ -1,15 +1,22 @@
-#include "net.hpp"
-#include "agg.hpp"
-#include <omp.h>
-#include <algorithm>
-#include <iostream>
-#include <iomanip>
-#include <utility>
-#include <likwid-marker.h>
+#include "agg_build.hpp"
+#include "agg_hvec.hpp"
 
 extern "C"
 {
-    void *build_direct_agg_network(
+    void init_likwid()
+    {
+        LIKWID_MARKER_INIT;
+    }
+
+    void close_likwid()
+    {
+        LIKWID_MARKER_CLOSE;
+    }
+}
+
+extern "C"
+{
+    void *build_direct_agg_network_f64(
         void *basis_ptr,
         int64 ncs,
         int64 ngs,
@@ -28,381 +35,157 @@ extern "C"
         const double *flat_wb,
         const int64 *orbsym)
     {
-        BasisManager *basis = static_cast<BasisManager *>(basis_ptr);
-        AggSVDNetwork *agg = new AggSVDNetwork();
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
 
-        agg->azs = new uint32[ncs]();
-        agg->bzs = new uint32[ncs]();
-        agg->cs = new double[ncs]();
-        agg->gs = new uint64[ngs + 1]();
-        agg->ngs = ngs;
-
-        std::copy(azs, azs + ncs, agg->azs);
-        std::copy(bzs, bzs + ncs, agg->bzs);
-        std::copy(cs, cs + ncs, agg->cs);
-        std::copy(gs, gs + ngs + 1, agg->gs);
-
-        agg->excit_types = new uint8[ngs]();
-        agg->arenas = new GroupArena[ngs]();
-        agg->mixed_b_rev_r1 = new TransR1 *[ngs]();
-        agg->mixed_b_rev_r2 = new TransR2 *[ngs]();
-        agg->mixed_b_rev_rn = new TransRN *[ngs]();
-
-        agg->num_blocks = basis->num_blocks;
-        agg->blocks = new AggBlock[agg->num_blocks]();
-
-        for (int64 i = 0; i < agg->num_blocks; ++i)
-        {
-            agg->blocks[i].num_a = basis->blocks[i].num_a;
-            agg->blocks[i].num_b = basis->blocks[i].num_b;
-            agg->blocks[i].offset_dst = basis->blocks[i].offset;
-        }
-
-        build_all_agg_edges(ngs, axs, bxs, ranks, num_as, num_bs,
-                            flat_azs, flat_bzs, flat_wa, flat_wb,
-                            orbsym, basis, agg);
-
-        return static_cast<void *>(agg);
+        return build_direct_agg_network<uint32, double>(
+            basis,
+            ncs, ngs,
+            axs, bxs, azs, bzs, cs, gs,
+            ranks, num_as, num_bs,
+            flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
     }
 
-    void destroy_direct_agg_network(void *agg_ptr)
+    void destroy_direct_agg_network_f64(void *agg_ptr)
     {
         if (!agg_ptr)
             return;
-        AggSVDNetwork *agg = static_cast<AggSVDNetwork *>(agg_ptr);
 
-        if (agg->blocks)
-        {
-            for (uint64 i = 0; i < agg->num_blocks; ++i)
-            {
-                AggBlock &b = agg->blocks[i];
-                // 释放 CSR Offsets 和 Edges
-                delete[] b.pure_a_r1_offsets;
-                delete[] b.pure_a_r1_edges;
-                delete[] b.pure_a_r2_offsets;
-                delete[] b.pure_a_r2_edges;
-                delete[] b.pure_a_rn_offsets;
-                delete[] b.pure_a_rn_edges;
+        AggSVDNetwork<uint32, double> *agg = static_cast<AggSVDNetwork<uint32, double> *>(agg_ptr);
 
-                delete[] b.pure_b_r1_edges;
-                delete[] b.pure_b_r2_edges;
-                delete[] b.pure_b_rn_edges;
-
-                delete[] b.mixed_r1_ax_offsets;
-                delete[] b.mixed_r1_ax_nodes;
-                delete[] b.mixed_r1_g_leaves;
-                delete[] b.mixed_r2_ax_offsets;
-                delete[] b.mixed_r2_ax_nodes;
-                delete[] b.mixed_r2_g_leaves;
-                delete[] b.mixed_rn_ax_offsets;
-                delete[] b.mixed_rn_ax_nodes;
-                delete[] b.mixed_rn_g_leaves;
-            }
-            delete[] agg->blocks;
-        }
-
-        if (agg->arenas)
-        {
-            for (uint64 g = 0; g < agg->ngs; ++g)
-            {
-                GroupArena &a = agg->arenas[g];
-                delete[] a.r1_jumps;
-                delete[] a.r1_phases;
-                delete[] a.r2_jumps;
-                delete[] a.r2_phases;
-                delete[] a.rn_jumps;
-                delete[] a.rn_weights;
-                delete[] a.rn_phases;
-            }
-            delete[] agg->arenas;
-        }
-
-        if (agg->mixed_b_rev_r1)
-        {
-            for (uint64 g = 0; g < agg->ngs; ++g)
-                delete[] agg->mixed_b_rev_r1[g];
-            delete[] agg->mixed_b_rev_r1;
-        }
-        if (agg->mixed_b_rev_r2)
-        {
-            for (uint64 g = 0; g < agg->ngs; ++g)
-                delete[] agg->mixed_b_rev_r2[g];
-            delete[] agg->mixed_b_rev_r2;
-        }
-        if (agg->mixed_b_rev_rn)
-        {
-            for (uint64 g = 0; g < agg->ngs; ++g)
-                delete[] agg->mixed_b_rev_rn[g];
-            delete[] agg->mixed_b_rev_rn;
-        }
-
-        delete[] agg->excit_types;
-        delete agg;
+        destroy_direct_agg_network<uint32, double>(agg);
     }
 
-    void get_diagonal_elements_agg(
+    void get_diagonal_elements_agg_f64(
         void *basis_ptr,
         void *agg_ptr,
         double *__restrict__ diags)
     {
-        const BasisManager *basis = static_cast<BasisManager *>(basis_ptr);
-        const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, double> *agg = static_cast<const AggSVDNetwork<uint32, double> *>(agg_ptr);
 
-        const uint32 *azs = agg->azs;
-        const uint32 *bzs = agg->bzs;
-        const double *cs = agg->cs;
-        const uint64 *gs = agg->gs;
-        const uint8 *types = agg->excit_types;
-
-        for (uint64 g = 0; g < agg->ngs; ++g)
-        {
-            if (types[g] == 0)
-            {
-                const int64 lb = gs[g];
-                const int64 rb = gs[g + 1];
-#pragma omp parallel
-                for (int64 i = 0; i < basis->num_blocks; ++i)
-                {
-                    const BlockDesc &block = basis->blocks[i];
-#pragma omp for schedule(guided)
-                    for (int64 a = 0; a < block.num_a; ++a)
-                    {
-                        uint32 astr = block.astrs[a];
-                        int64 row_ptr = block.offset + a * block.num_b;
-                        for (int64 b = 0; b < block.num_b; ++b)
-                        {
-                            uint32 bstr = block.bstrs[b];
-
-                            double vt = 0.0;
-                            for (int64 k = lb; k < rb; ++k)
-                            {
-                                vt += cs[k] * phase(azs[k] & astr) * phase(bzs[k] & bstr);
-                            }
-
-                            diags[row_ptr + b] += vt;
-                        }
-                    }
-                }
-            }
-        }
+        get_diagonal_elements_agg<uint32, double>(basis, agg, diags);
     }
 
-    void hvec_direct_agg_network(
+    void hvec_direct_agg_network_f64(
         void *__restrict__ basis_ptr,
         void *__restrict__ agg_ptr,
         const double *__restrict__ src,
         double *__restrict__ dst)
     {
-        const BasisManager *basis = static_cast<const BasisManager *>(basis_ptr);
-        const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, double> *agg = static_cast<const AggSVDNetwork<uint32, double> *>(agg_ptr);
 
-        const uint32 *azs = agg->azs;
-        const uint32 *bzs = agg->bzs;
-        const double *cs = agg->cs;
-        const uint64 *gs = agg->gs;
-        const uint8 *types = agg->excit_types;
-
-#pragma omp parallel for schedule(static)
-        for (int64 i = 0; i < basis->dim; ++i)
-        {
-            dst[i] = 0.0;
-        }
-
-        for (uint64 g = 0; g < agg->ngs; ++g)
-        {
-            if (types[g] == 0)
-            {
-                const uint64 lb = gs[g];
-                const uint64 rb = gs[g + 1];
-                const uint64 n_terms = rb - lb;
-
-                if (n_terms != 0)
-                {
-                    apply_diag_terms(
-                        basis,
-                        azs + lb, bzs + lb, cs + lb, n_terms,
-                        src, dst);
-                }
-            }
-        }
-
-        hvec_aggregated_svd(agg, src, dst);
+        hvec_direct_agg_network<uint32, double>(basis, agg, src, dst);
     }
 
-    void hvec_direct_agg_network_benchmark(
+    void hvec_direct_agg_network_benchmark_f64(
         void *__restrict__ basis_ptr,
         void *__restrict__ agg_ptr,
         const double *__restrict__ src,
         double *__restrict__ dst,
         int enable_likwid)
     {
-        if (enable_likwid)
-        {
-#pragma omp parallel
-            {
-                LIKWID_MARKER_START("hvec_direct_agg");
-            }
-        }
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, double> *agg = static_cast<const AggSVDNetwork<uint32, double> *>(agg_ptr);
 
-        const BasisManager *basis = static_cast<const BasisManager *>(basis_ptr);
-        const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
-
-        const uint32 *azs = agg->azs;
-        const uint32 *bzs = agg->bzs;
-        const double *cs = agg->cs;
-        const uint64 *gs = agg->gs;
-        const uint8 *types = agg->excit_types;
-
-#pragma omp parallel for schedule(static)
-        for (int64 i = 0; i < basis->dim; ++i)
-        {
-            dst[i] = 0.0;
-        }
-
-        for (uint64 g = 0; g < agg->ngs; ++g)
-        {
-            if (types[g] == 0)
-            {
-                const uint64 lb = gs[g];
-                const uint64 rb = gs[g + 1];
-                const uint64 n_terms = rb - lb;
-
-                if (n_terms != 0)
-                {
-                    apply_diag_terms(
-                        basis,
-                        azs + lb, bzs + lb, cs + lb, n_terms,
-                        src, dst);
-                }
-            }
-        }
-
-        hvec_aggregated_svd(agg, src, dst);
-
-        if (enable_likwid)
-        {
-#pragma omp parallel
-            {
-                LIKWID_MARKER_STOP("hvec_direct_agg");
-            }
-        }
+        hvec_direct_agg_network_benchmark<uint32, double>(basis, agg, src, dst, enable_likwid);
     }
 
-    void print_agg_network_info(void *agg_ptr)
+    void print_agg_network_info_f64(void *agg_ptr)
     {
-        const AggSVDNetwork *agg = static_cast<const AggSVDNetwork *>(agg_ptr);
-
-        if (!agg)
+        if (!agg_ptr)
             return;
 
-        uint64_t c_pa_r1 = 0, c_pa_r2 = 0, c_pa_rn = 0;
-        uint64_t c_pb_r1 = 0, c_pb_r2 = 0, c_pb_rn = 0;
-        uint64_t c_mx_r1 = 0, c_mx_r2 = 0, c_mx_rn = 0;
+        const AggSVDNetwork<uint32, double> *agg = static_cast<const AggSVDNetwork<uint32, double> *>(agg_ptr);
 
-        size_t mem_blocks = agg->num_blocks * sizeof(AggBlock);
+        print_agg_network_info<uint32, double>(agg);
+    }
+}
 
-        for (uint64_t i = 0; i < agg->num_blocks; ++i)
-        {
-            const AggBlock &b = agg->blocks[i];
+extern "C"
+{
+    void *build_direct_agg_network_c64(
+        void *basis_ptr,
+        int64 ncs,
+        int64 ngs,
+        const uint32 *axs,
+        const uint32 *bxs,
+        const uint32 *azs,
+        const uint32 *bzs,
+        const complexf64 *cs,
+        const int64 *gs,
+        const int64 *ranks,
+        const int64 *num_as,
+        const int64 *num_bs,
+        const uint32 *flat_azs,
+        const uint32 *flat_bzs,
+        const complexf64 *flat_wa,
+        const complexf64 *flat_wb,
+        const int64 *orbsym)
+    {
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
 
-            c_pb_r1 += b.num_pure_b_r1;
-            mem_blocks += b.num_pure_b_r1 * sizeof(PureB_Edge_R1);
-            c_pb_r2 += b.num_pure_b_r2;
-            mem_blocks += b.num_pure_b_r2 * sizeof(PureB_Edge_R2);
-            c_pb_rn += b.num_pure_b_rn;
-            mem_blocks += b.num_pure_b_rn * sizeof(PureB_Edge_RN);
-
-            mem_blocks += (b.num_a + 1) * sizeof(uint32) * 9;
-
-            if (b.pure_a_r1_offsets)
-            {
-                uint32 n = b.pure_a_r1_offsets[b.num_a];
-                c_pa_r1 += n;
-                mem_blocks += n * sizeof(PureA_Edge_R1);
-            }
-            if (b.pure_a_r2_offsets)
-            {
-                uint32 n = b.pure_a_r2_offsets[b.num_a];
-                c_pa_r2 += n;
-                mem_blocks += n * sizeof(PureA_Edge_R2);
-            }
-            if (b.pure_a_rn_offsets)
-            {
-                uint32 n = b.pure_a_rn_offsets[b.num_a];
-                c_pa_rn += n;
-                mem_blocks += n * sizeof(PureA_Edge_RN);
-            }
-
-            if (b.mixed_r1_ax_offsets)
-            {
-                uint32 n_nodes = b.mixed_r1_ax_offsets[b.num_a];
-                uint32 n_leaves = n_nodes ? (b.mixed_r1_ax_nodes[n_nodes - 1].leaf_offset + b.mixed_r1_ax_nodes[n_nodes - 1].num_leaves) : 0;
-                c_mx_r1 += n_leaves;
-                mem_blocks += n_nodes * sizeof(Mixed_Ax_Node) + n_leaves * sizeof(Mixed_G_Leaf_R1);
-            }
-            if (b.mixed_r2_ax_offsets)
-            {
-                uint32 n_nodes = b.mixed_r2_ax_offsets[b.num_a];
-                uint32 n_leaves = n_nodes ? (b.mixed_r2_ax_nodes[n_nodes - 1].leaf_offset + b.mixed_r2_ax_nodes[n_nodes - 1].num_leaves) : 0;
-                c_mx_r2 += n_leaves;
-                mem_blocks += n_nodes * sizeof(Mixed_Ax_Node) + n_leaves * sizeof(Mixed_G_Leaf_R2);
-            }
-            if (b.mixed_rn_ax_offsets)
-            {
-                uint32 n_nodes = b.mixed_rn_ax_offsets[b.num_a];
-                uint32 n_leaves = n_nodes ? (b.mixed_rn_ax_nodes[n_nodes - 1].leaf_offset + b.mixed_rn_ax_nodes[n_nodes - 1].num_leaves) : 0;
-                c_mx_rn += n_leaves;
-                mem_blocks += n_nodes * sizeof(Mixed_Ax_Node) + n_leaves * sizeof(Mixed_G_Leaf_RN);
-            }
-        }
-
-        size_t mem_arenas = agg->ngs * sizeof(GroupArena);
-        size_t mem_rev = agg->ngs * sizeof(TransR1 *) * 3;
-
-        for (uint64 g = 0; g < agg->ngs; ++g)
-        {
-            const GroupArena &a = agg->arenas[g];
-            mem_arenas += a.num_r1_jumps * sizeof(TransR1) + a.num_r1_phases * sizeof(double) +
-                          a.num_r2_jumps * sizeof(TransR2) + a.num_r2_phases * sizeof(double) +
-                          a.num_rn_jumps * sizeof(TransRN) + a.num_rn_weights * sizeof(double) + a.num_rn_phases * sizeof(double);
-        }
-
-        size_t mem_base = sizeof(AggSVDNetwork) + agg->ngs * sizeof(uint8);
-        size_t mem_total = mem_arenas + mem_blocks + mem_rev + mem_base;
-
-        double gb = 1024.0 * 1024.0 * 1024.0;
-        double mb = 1024.0 * 1024.0;
-
-        std::cout << "\n===========================================================\n";
-        std::cout << "     [ AGG Network Memory & Topology Report(CSR version)]  \n";
-        std::cout << "===========================================================\n";
-        std::cout << "[1] General Information\n";
-        std::cout << "  - Number of Groups (ngs) : " << agg->ngs << "\n";
-        std::cout << "  - Number of Symm Blocks  : " << agg->num_blocks << "\n\n";
-
-        std::cout << "[2] Edge Topology (Valid Edges Count)\n";
-        std::cout << "  - Pure A Edges : R1(" << c_pa_r1 << "), R2(" << c_pa_r2 << "), RN(" << c_pa_rn << ")\n";
-        std::cout << "  - Pure B Edges : R1(" << c_pb_r1 << "), R2(" << c_pb_r2 << "), RN(" << c_pb_rn << ")\n";
-        std::cout << "  - Mixed Edges  : R1(" << c_mx_r1 << "), R2(" << c_mx_r2 << "), RN(" << c_mx_rn << ")\n\n";
-
-        std::cout << "[3] Memory Footprint (Absolute Raw Pointer Cost)\n";
-        std::cout << std::fixed << std::setprecision(2);
-        std::cout << "  - SVD Arenas (Weights/Phases) : " << (mem_arenas / gb) << " GB\n";
-        std::cout << "  - Agg Blocks (CSR Edges)      : " << (mem_blocks / gb) << " GB\n";
-        std::cout << "  - Mixed Rev Jumps Pointers    : " << (mem_rev / mb) << " MB\n";
-        std::cout << "  - Base Struct Overhead        : " << (mem_base / mb) << " MB\n";
-        std::cout << "  ---------------------------------------------------------\n";
-        std::cout << "  - TOTAL PHYSICAL MEMORY       : " << (mem_total / gb) << " GB\n";
-        std::cout << "===========================================================\n\n";
+        return build_direct_agg_network<uint32, complexf64>(
+            basis,
+            ncs, ngs,
+            axs, bxs, azs, bzs, cs, gs,
+            ranks, num_as, num_bs,
+            flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
     }
 
-    void init_likwid()
+    void destroy_direct_agg_network_c64(void *agg_ptr)
     {
-        LIKWID_MARKER_INIT;
+        if (!agg_ptr)
+            return;
+
+        AggSVDNetwork<uint32, complexf64> *agg = static_cast<AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
+
+        destroy_direct_agg_network<uint32, complexf64>(agg);
     }
 
-    void close_likwid()
+    void get_diagonal_elements_agg_c64(
+        void *basis_ptr,
+        void *agg_ptr,
+        complexf64 *__restrict__ diags)
     {
-        LIKWID_MARKER_CLOSE;
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, complexf64> *agg = static_cast<const AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
+
+        get_diagonal_elements_agg<uint32, complexf64>(basis, agg, diags);
+    }
+
+    void hvec_direct_agg_network_c64(
+        void *__restrict__ basis_ptr,
+        void *__restrict__ agg_ptr,
+        const complexf64 *__restrict__ src,
+        complexf64 *__restrict__ dst)
+    {
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, complexf64> *agg = static_cast<const AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
+
+        hvec_direct_agg_network<uint32, complexf64>(basis, agg, src, dst);
+    }
+
+    void hvec_direct_agg_network_benchmark_c64(
+        void *__restrict__ basis_ptr,
+        void *__restrict__ agg_ptr,
+        const complexf64 *__restrict__ src,
+        complexf64 *__restrict__ dst,
+        int enable_likwid)
+    {
+        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
+        const AggSVDNetwork<uint32, complexf64> *agg = static_cast<const AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
+
+        hvec_direct_agg_network_benchmark<uint32, complexf64>(basis, agg, src, dst, enable_likwid);
+    }
+
+    void print_agg_network_info_c64(void *agg_ptr)
+    {
+        if (!agg_ptr)
+            return;
+
+        const AggSVDNetwork<uint32, complexf64> *agg = static_cast<const AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
+
+        print_agg_network_info<uint32, complexf64>(agg);
     }
 }
