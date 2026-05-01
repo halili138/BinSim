@@ -13,3 +13,4 @@ rand_mo_int/
 test/
 __pycache__/
 third_party/
+temp/

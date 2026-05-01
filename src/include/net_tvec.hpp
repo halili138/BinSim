@@ -3,6 +3,122 @@
 
 template <typename Ti,
           typename Tv>
+void tvec_diag_r1(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    Tv *__restrict__ vec)
+{
+    const double cd = cos(theta) - 1.0;
+    const double co = sin(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+#pragma omp parallel
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransR1<Ti, Tv> *aj = arena.r1_jumps + R.a_jump_offset;
+        const TransR1<Ti, Tv> *bj = arena.r1_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransR1<Ti, Tv> &ja = aj[ia];
+                const TransR1<Ti, Tv> &jb = bj[ib];
+                const Tv vt = ja.w0 * jb.w0;
+                const Tv u = fast_diag_exp<Tv>(vt, theta);
+                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                vec[idx] *= u;
+            }
+        }
+    }
+}
+
+template <typename Ti,
+          typename Tv>
+void tvec_diag_r2(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    Tv *__restrict__ vec)
+{
+    const double cd = cos(theta) - 1.0;
+    const double co = sin(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+#pragma omp parallel
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransR2<Ti, Tv> *aj = arena.r2_jumps + R.a_jump_offset;
+        const TransR2<Ti, Tv> *bj = arena.r2_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransR2<Ti, Tv> &ja = aj[ia];
+                const TransR2<Ti, Tv> &jb = bj[ib];
+                const Tv vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
+                const Tv u = fast_diag_exp<Tv>(vt, theta);
+                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                vec[idx] *= u;
+            }
+        }
+    }
+}
+
+template <typename Ti,
+          typename Tv>
+void tvec_diag_rn(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const uint16 rank,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    Tv *__restrict__ vec)
+{
+    const double cd = cos(theta) - 1.0;
+    const double co = sin(theta);
+    const Tv *weights = arena.rn_weights;
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+#pragma omp parallel
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransRN<Ti> *aj = arena.rn_jumps + R.a_jump_offset;
+        const TransRN<Ti> *bj = arena.rn_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransRN<Ti> &ja = aj[ia];
+                const Tv *wa = weights + ja.w_offset;
+                const TransRN<Ti> &jb = bj[ib];
+                const Tv *wb = weights + jb.w_offset;
+                Tv vt = {};
+                for (uint16 r = 0; r < rank; ++r)
+                {
+                    vt += wa[r] * wb[r];
+                }
+                const Tv u = fast_diag_exp<Tv>(vt, theta);
+                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                vec[idx] *= u;
+            }
+        }
+    }
+}
+
+template <typename Ti,
+          typename Tv>
 void tvec_pure_a_r1(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
@@ -413,6 +529,34 @@ void tvec_mixed_rn(
 
 template <typename Ti,
           typename Tv>
+void tvec_diag(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const uint16 rank,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    Tv *__restrict__ vec)
+{
+    if (!num_routes)
+        return;
+
+    switch (rank)
+    {
+    case 1:
+        tvec_diag_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        break;
+    case 2:
+        tvec_diag_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        break;
+    default:
+        tvec_diag_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
+    }
+}
+
+template <typename Ti,
+          typename Tv>
 void tvec_pure_a(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
@@ -508,6 +652,15 @@ void tvec_svd_network(
 
     switch (type)
     {
+    case 0:
+        tvec_diag<Ti, Tv>(
+            basis,
+            net->mixed_routes[idx],
+            net->num_mixed_routes[idx],
+            net->group_ranks[idx],
+            net->arenas[idx],
+            theta, vec);
+        break;
     case 1:
         tvec_pure_a<Ti, Tv>(
             basis,

@@ -2,6 +2,131 @@
 
 template <typename Ti,
           typename Tv>
+Tv grad_diag_r1(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    const Tv *__restrict__ lp,
+    const Tv *__restrict__ rp)
+{
+    const double cd = -sin(theta);
+    const double co = cos(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+    Tv res = {};
+#pragma omp parallel reduction(+ : res)
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransR1<Ti, Tv> *aj = arena.r1_jumps + R.a_jump_offset;
+        const TransR1<Ti, Tv> *bj = arena.r1_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransR1<Ti, Tv> &ja = aj[ia];
+                const TransR1<Ti, Tv> &jb = bj[ib];
+                const Tv vt = ja.w0 * jb.w0;
+                const Tv du = fast_diag_grad<Tv>(vt, theta);
+                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                res += math_conj(lp[si] * du) * rp[si];
+            }
+        }
+    }
+    return res;
+}
+
+template <typename Ti,
+          typename Tv>
+Tv grad_diag_r2(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    const Tv *__restrict__ lp,
+    const Tv *__restrict__ rp)
+{
+    const double cd = -sin(theta);
+    const double co = cos(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+    Tv res = {};
+#pragma omp parallel reduction(+ : res)
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransR2<Ti, Tv> *aj = arena.r2_jumps + R.a_jump_offset;
+        const TransR2<Ti, Tv> *bj = arena.r2_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransR2<Ti, Tv> &ja = aj[ia];
+                const TransR2<Ti, Tv> &jb = bj[ib];
+                const Tv vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
+                const Tv du = fast_diag_grad<Tv>(vt, theta);
+                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                res += math_conj(lp[si] * du) * rp[si];
+            }
+        }
+    }
+    return res;
+}
+
+template <typename Ti,
+          typename Tv>
+Tv grad_diag_rn(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const uint16 rank,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    const Tv *__restrict__ lp,
+    const Tv *__restrict__ rp)
+{
+    const double cd = -sin(theta);
+    const double co = cos(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+    const Tv *weights = arena.rn_weights;
+    Tv res = {};
+#pragma omp parallel reduction(+ : res)
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const TransRN<Ti> *aj = arena.rn_jumps + R.a_jump_offset;
+        const TransRN<Ti> *bj = arena.rn_jumps + R.b_jump_offset;
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                const TransRN<Ti> &ja = aj[ia];
+                const Tv *wa = weights + ja.w_offset;
+                const TransRN<Ti> &jb = bj[ib];
+                const Tv *wb = weights + jb.w_offset;
+                Tv vt = {};
+                for (uint16 r = 0; r < rank; ++r)
+                {
+                    vt += wa[r] * wb[r];
+                }
+                const Tv du = fast_diag_grad<Tv>(vt, theta);
+                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                res += math_conj(lp[si] * du) * rp[si];
+            }
+        }
+    }
+    return res;
+}
+
+template <typename Ti,
+          typename Tv>
 Tv grad_pure_a_r1(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
@@ -464,6 +589,32 @@ Tv grad_mixed_rn(
 
 template <typename Ti,
           typename Tv>
+Tv grad_diag(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const uint16 rank,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    const Tv *__restrict__ lp,
+    const Tv *__restrict__ rp)
+{
+    if (!num_routes)
+        return {};
+
+    switch (rank)
+    {
+    case 1:
+        return grad_diag_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, lp, rp);
+    case 2:
+        return grad_diag_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, lp, rp);
+    default:
+        return grad_diag_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+    }
+}
+
+template <typename Ti,
+          typename Tv>
 Tv grad_pure_a(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
@@ -551,37 +702,52 @@ Tv grad_svd_network(
     const Tv *__restrict__ rp)
 {
     int type = net->excit_types[idx];
+    Tv res = {};
 
     switch (type)
     {
-    case 1:
-        return grad_pure_a<Ti, Tv>(
-            basis,
-            net->pure_a_routes[idx],
-            net->num_pure_a_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, lp, rp);
-    case 2:
-        return grad_pure_b<Ti, Tv>(
-            basis,
-            net->pure_b_routes[idx],
-            net->num_pure_b_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, lp, rp);
-    case 3:
-        return grad_mixed<Ti, Tv>(
+    case 0:
+        res = grad_diag<Ti, Tv>(
             basis,
             net->mixed_routes[idx],
             net->num_mixed_routes[idx],
             net->group_ranks[idx],
             net->arenas[idx],
             theta, lp, rp);
+        break;
+    case 1:
+        res = grad_pure_a<Ti, Tv>(
+            basis,
+            net->pure_a_routes[idx],
+            net->num_pure_a_routes[idx],
+            net->group_ranks[idx],
+            net->arenas[idx],
+            theta, lp, rp);
+        break;
+    case 2:
+        res = grad_pure_b<Ti, Tv>(
+            basis,
+            net->pure_b_routes[idx],
+            net->num_pure_b_routes[idx],
+            net->group_ranks[idx],
+            net->arenas[idx],
+            theta, lp, rp);
+        break;
+    case 3:
+        res = grad_mixed<Ti, Tv>(
+            basis,
+            net->mixed_routes[idx],
+            net->num_mixed_routes[idx],
+            net->group_ranks[idx],
+            net->arenas[idx],
+            theta, lp, rp);
+        break;
     default:
-        std::cerr << "Error: Unexpected type = " << static_cast<int>(type)
+        std::cerr << "Error: Unexpected type = " << type
                   << " when grad_svd"
                   << std::endl;
-        return {};
+        break;
     }
+
+    return res;
 }

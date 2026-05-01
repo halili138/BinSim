@@ -9,6 +9,43 @@
 #pragma omp declare reduction(+ : std::complex<double> : omp_out += omp_in) \
     initializer(omp_priv = std::complex<double>(0.0, 0.0))
 
+template <typename Tv>
+FORCE_INLINE Tv fast_diag_exp(const Tv& vt, double theta)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+        // 实数域（分子体系）：对角线严格为 0，exp(0) == 1.0
+        // 为了极致性能，编译器遇到 type=double 会直接把整个内层循环优化为 1.0！
+        return static_cast<Tv>(1.0); 
+    }
+    else
+    {
+        // 复数域（周期性体系）：对角线必定是纯虚数，直接提取虚部
+        double val = vt.imag() * theta;
+        
+        // 使用实数的 cos 和 sin，彻底避开昂贵的 __cexp 库函数调用
+        return Tv(std::cos(val), std::sin(val));
+    }
+}
+
+// 同样的，给梯度也准备一个极速导数版本
+template <typename Tv>
+FORCE_INLINE Tv fast_diag_grad(const Tv& vt, double theta)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+        // 实数域下导数也必定为 0
+        return static_cast<Tv>(0.0);
+    }
+    else
+    {
+        // 导数公式: dU = v_t * exp(v_t * theta)
+        double val = vt.imag() * theta;
+        Tv u(std::cos(val), std::sin(val));
+        return vt * u;
+    }
+}
+
 template <typename Ti,
           typename Tv>
 struct TransR1
