@@ -7,14 +7,9 @@ extern "C"
 {
     void *create_svd_network_f64(
         void *basis_ptr,
-        int64 ncs,
         int64 ngs,
         const uint32 *axs,
         const uint32 *bxs,
-        const uint32 *azs,
-        const uint32 *bzs,
-        const double *cs,
-        const int64 *gs,
         const int64 *ranks,
         const int64 *num_as,
         const int64 *num_bs,
@@ -28,7 +23,7 @@ extern "C"
 
         return create_svd_network<uint32, double>(
             basis,
-            ncs, ngs, axs, bxs, azs, bzs, cs, gs,
+            ngs, axs, bxs,
             ranks, num_as, num_bs,
             flat_azs, flat_bzs, flat_wa, flat_wb,
             orbsym);
@@ -42,17 +37,6 @@ extern "C"
         SVDNetwork<uint32, double> *net = static_cast<SVDNetwork<uint32, double> *>(net_ptr);
 
         destroy_svd_network<uint32, double>(net);
-    }
-
-    void get_diagonal_elements_svd_network_f64(
-        void *__restrict__ basis_ptr,
-        void *__restrict__ net_ptr,
-        double *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-        const SVDNetwork<uint32, double> *net = static_cast<const SVDNetwork<uint32, double> *>(net_ptr);
-
-        get_diagonal_elements_svd_network<uint32, double>(basis, net, diags);
     }
 
     void hvec_svd_network_f64(
@@ -99,14 +83,9 @@ extern "C"
 {
     void *create_svd_network_c64(
         void *basis_ptr,
-        int64 ncs,
         int64 ngs,
         const uint32 *axs,
         const uint32 *bxs,
-        const uint32 *azs,
-        const uint32 *bzs,
-        const complexf64 *cs,
-        const int64 *gs,
         const int64 *ranks,
         const int64 *num_as,
         const int64 *num_bs,
@@ -120,7 +99,7 @@ extern "C"
 
         return create_svd_network<uint32, complexf64>(
             basis,
-            ncs, ngs, axs, bxs, azs, bzs, cs, gs,
+            ngs, axs, bxs,
             ranks, num_as, num_bs,
             flat_azs, flat_bzs, flat_wa, flat_wb,
             orbsym);
@@ -134,17 +113,6 @@ extern "C"
         SVDNetwork<uint32, complexf64> *net = static_cast<SVDNetwork<uint32, complexf64> *>(net_ptr);
 
         destroy_svd_network<uint32, complexf64>(net);
-    }
-
-    void get_diagonal_elements_svd_network_c64(
-        void *__restrict__ basis_ptr,
-        void *__restrict__ net_ptr,
-        complexf64 *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-        const SVDNetwork<uint32, complexf64> *net = static_cast<const SVDNetwork<uint32, complexf64> *>(net_ptr);
-
-        get_diagonal_elements_svd_network<uint32, complexf64>(basis, net, diags);
     }
 
     void hvec_svd_network_c64(

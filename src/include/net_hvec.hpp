@@ -578,12 +578,6 @@ void hvec_svd_network(
     const Tv *__restrict__ src,
     Tv *__restrict__ dst)
 {
-    const Ti *azs = net->azs;
-    const Ti *bzs = net->bzs;
-    const Tv *cs = net->cs;
-    const uint64 *gs = net->gs;
-    const uint8 *types = net->excit_types;
-
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
@@ -592,14 +586,8 @@ void hvec_svd_network(
 
     for (uint64 g = 0; g < net->ngs; ++g)
     {
-        const uint8 type = types[g];
-        const uint64 lb = gs[g];
-        const uint64 rb = gs[g + 1];
-        const uint64 n_terms = rb - lb;
-
-        if (type != 0 && n_terms == 0)
-            continue;
-
+        const uint8 type = net->excit_types[g];
+        
         switch (type)
         {
         case 0:

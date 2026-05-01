@@ -373,7 +373,7 @@ void build_flat_pure_b(
 template <typename Ti,
           typename Tv>
 void build_flat_mixed(
-    int64 g, int64 rank, int64 axsym, int64 bxsym,
+    int64 g, int64 rank, int type, int64 axsym, int64 bxsym,
     const BasisManager<Ti> *basis,
     const TempArena<Ti, Tv> &temp,
     const GroupArena<Ti, Tv> &arena,
@@ -398,7 +398,10 @@ void build_flat_mixed(
         {
             const TransR1<Ti, Tv> *a_jumps = arena.r1_jumps + route.a_jump_offset;
             const TransR1<Ti, Tv> *b_fwd = arena.r1_jumps + route.b_jump_offset;
-            const TransR1<Ti, Tv> *b_rev = emit_rev_b<Ti, Tv>(g, b_fwd, route.nb, agg, rev_r1_idx);
+            // 【核心修改】：type == 0 时不需要反向边，直接赋 nullptr
+            const TransR1<Ti, Tv> *b_rev = (type != 0) ? emit_rev_b<Ti, Tv>(
+                                                             g, b_fwd, route.nb, agg, rev_r1_idx)
+                                                       : nullptr;
 
             for (uint32 k = 0; k < route.na; ++k)
             {
@@ -406,16 +409,33 @@ void build_flat_mixed(
                 uint64 dst_row = block_dst.offset + a_jumps[k].dst_idx * block_dst.num_b;
 
                 temp_blocks[block_dst_idx].mx_r1.push_back(
-                    {a_jumps[k].dst_idx, g_id, static_cast<int64>(src_row), a_jumps[k].w0, b_fwd, route.nb});
-                temp_blocks[route.block_src_idx].mx_r1.push_back(
-                    {a_jumps[k].src_idx, g_id, static_cast<int64>(dst_row), math_conj(a_jumps[k].w0), b_rev, route.nb});
+                    {a_jumps[k].dst_idx,
+                     g_id,
+                     static_cast<int64>(src_row),
+                     a_jumps[k].w0,
+                     b_fwd,
+                     route.nb});
+
+                // 【核心修改】：如果不是对角项，才添加反向跳跃边
+                if (type != 0)
+                {
+                    temp_blocks[route.block_src_idx].mx_r1.push_back(
+                        {a_jumps[k].src_idx,
+                         g_id,
+                         static_cast<int64>(dst_row),
+                         math_conj(a_jumps[k].w0),
+                         b_rev,
+                         route.nb});
+                }
             }
         }
         else if (rank == 2)
         {
             const TransR2<Ti, Tv> *a_jumps = arena.r2_jumps + route.a_jump_offset;
             const TransR2<Ti, Tv> *b_fwd = arena.r2_jumps + route.b_jump_offset;
-            const TransR2<Ti, Tv> *b_rev = emit_rev_b<Ti, Tv>(g, b_fwd, route.nb, agg, rev_r2_idx);
+            const TransR2<Ti, Tv> *b_rev = (type != 0) ? emit_rev_b<Ti, Tv>(
+                                                             g, b_fwd, route.nb, agg, rev_r2_idx)
+                                                       : nullptr;
 
             for (uint32 k = 0; k < route.na; ++k)
             {
@@ -423,16 +443,39 @@ void build_flat_mixed(
                 uint64 dst_row = block_dst.offset + a_jumps[k].dst_idx * block_dst.num_b;
 
                 temp_blocks[block_dst_idx].mx_r2.push_back(
-                    {a_jumps[k].dst_idx, g_id, static_cast<int64>(src_row), a_jumps[k].w0, a_jumps[k].w1, b_fwd, route.nb});
-                temp_blocks[route.block_src_idx].mx_r2.push_back(
-                    {a_jumps[k].src_idx, g_id, static_cast<int64>(dst_row), math_conj(a_jumps[k].w0), math_conj(a_jumps[k].w1), b_rev, route.nb});
+                    {a_jumps[k].dst_idx,
+                     g_id,
+                     static_cast<int64>(src_row),
+                     a_jumps[k].w0,
+                     a_jumps[k].w1,
+                     b_fwd,
+                     route.nb});
+
+                if (type != 0)
+                {
+                    temp_blocks[route.block_src_idx].mx_r2.push_back(
+                        {a_jumps[k].src_idx,
+                         g_id,
+                         static_cast<int64>(dst_row),
+                         math_conj(a_jumps[k].w0),
+                         math_conj(a_jumps[k].w1),
+                         b_rev,
+                         route.nb});
+                }
             }
         }
         else
         {
             const TransRN<Ti> *a_jumps = arena.rn_jumps + route.a_jump_offset;
             const TransRN<Ti> *b_fwd = arena.rn_jumps + route.b_jump_offset;
-            const TransRN<Ti> *b_rev = emit_rev_b<Ti, Tv>(g, b_fwd, route.nb, agg, rev_rn_idx, temp.rn_weights.size());
+            const TransRN<Ti> *b_rev = (type != 0) ? emit_rev_b<Ti, Tv>(
+                                                         g,
+                                                         b_fwd,
+                                                         route.nb,
+                                                         agg,
+                                                         rev_rn_idx,
+                                                         temp.rn_weights.size())
+                                                   : nullptr;
 
             for (uint32 k = 0; k < route.na; ++k)
             {
@@ -443,9 +486,27 @@ void build_flat_mixed(
                 const Tv *pa_w_rev = pa_w + (is_cplx ? temp.rn_weights.size() : 0);
 
                 temp_blocks[block_dst_idx].mx_rn.push_back(
-                    {a_jumps[k].dst_idx, g_id, static_cast<int64>(src_row), pa_w, b_fwd, arena.rn_weights, route.nb, static_cast<uint32>(rank)});
-                temp_blocks[route.block_src_idx].mx_rn.push_back(
-                    {a_jumps[k].src_idx, g_id, static_cast<int64>(dst_row), pa_w_rev, b_rev, arena.rn_weights, route.nb, static_cast<uint32>(rank)});
+                    {a_jumps[k].dst_idx,
+                     g_id,
+                     static_cast<int64>(src_row),
+                     pa_w,
+                     b_fwd,
+                     arena.rn_weights,
+                     route.nb,
+                     static_cast<uint32>(rank)});
+
+                if (type != 0)
+                {
+                    temp_blocks[route.block_src_idx].mx_rn.push_back(
+                        {a_jumps[k].src_idx,
+                         g_id,
+                         static_cast<int64>(dst_row),
+                         pa_w_rev,
+                         b_rev,
+                         arena.rn_weights,
+                         route.nb,
+                         static_cast<uint32>(rank)});
+                }
             }
         }
     }
@@ -684,6 +745,7 @@ void build_all_agg_edges(
                                  flat_azs, flat_bzs, flat_wa, flat_wb,
                                  orbsym, basis, temp);
             break;
+        case 0:
         case 3:
             build_mixed<Ti, Tv>(g, ax, bx, rank, num_as[g], num_bs[g],
                                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
@@ -794,8 +856,9 @@ void build_all_agg_edges(
         case 2:
             build_flat_pure_b<Ti, Tv>(g, rank, bxsym, basis, temp, arena, local_tb);
             break;
+        case 0:
         case 3:
-            build_flat_mixed<Ti, Tv>(g, rank, axsym, bxsym, basis, temp, arena, local_tb, agg);
+            build_flat_mixed<Ti, Tv>(g, rank, type, axsym, bxsym, basis, temp, arena, local_tb, agg);
             break;
         default:
             break;
@@ -881,14 +944,9 @@ template <typename Ti,
           typename Tv>
 void *build_direct_agg_network(
     const BasisManager<Ti> *basis,
-    int64 ncs,
     int64 ngs,
     const Ti *axs,
     const Ti *bxs,
-    const Ti *azs,
-    const Ti *bzs,
-    const Tv *cs,
-    const int64 *gs,
     const int64 *ranks,
     const int64 *num_as,
     const int64 *num_bs,
@@ -900,17 +958,7 @@ void *build_direct_agg_network(
 {
     AggSVDNetwork<Ti, Tv> *agg = new AggSVDNetwork<Ti, Tv>();
 
-    agg->azs = new Ti[ncs]();
-    agg->bzs = new Ti[ncs]();
-    agg->cs = new Tv[ncs]();
-    agg->gs = new uint64[ngs + 1]();
     agg->ngs = ngs;
-
-    std::copy(azs, azs + ncs, agg->azs);
-    std::copy(bzs, bzs + ncs, agg->bzs);
-    std::copy(cs, cs + ncs, agg->cs);
-    std::copy(gs, gs + ngs + 1, agg->gs);
-
     agg->excit_types = new uint8[ngs]();
     agg->arenas = new GroupArena<Ti, Tv>[ngs]();
     agg->mixed_b_rev_r1 = new TransR1<Ti, Tv> *[ngs]();
@@ -1002,10 +1050,6 @@ void destroy_direct_agg_network(AggSVDNetwork<Ti, Tv> *agg)
         delete[] agg->mixed_b_rev_rn;
     }
 
-    delete[] agg->azs;
-    delete[] agg->bzs;
-    delete[] agg->cs;
-    delete[] agg->gs;
     delete[] agg->excit_types;
     delete agg;
 }

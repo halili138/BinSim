@@ -330,36 +330,11 @@ void hvec_direct_agg_network(
     const Tv *__restrict__ src,
     Tv *__restrict__ dst)
 {
-    const Ti *azs = agg->azs;
-    const Ti *bzs = agg->bzs;
-    const Tv *cs = agg->cs;
-    const uint64 *gs = agg->gs;
-    const uint8 *types = agg->excit_types;
-
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
         dst[i] = {};
     }
-
-    for (uint64 g = 0; g < agg->ngs; ++g)
-    {
-        if (types[g] == 0)
-        {
-            const uint64 lb = gs[g];
-            const uint64 rb = gs[g + 1];
-            const uint64 n_terms = rb - lb;
-
-            if (n_terms != 0)
-            {
-                apply_diag_terms<Ti, Tv>(
-                    basis,
-                    azs + lb, bzs + lb, cs + lb, n_terms,
-                    src, dst);
-            }
-        }
-    }
-
     hvec_aggregated_svd<Ti, Tv>(agg, src, dst);
 }
 
@@ -380,36 +355,11 @@ void hvec_direct_agg_network_benchmark(
         }
     }
 
-    const Ti *azs = agg->azs;
-    const Ti *bzs = agg->bzs;
-    const Tv *cs = agg->cs;
-    const uint64 *gs = agg->gs;
-    const uint8 *types = agg->excit_types;
-
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
         dst[i] = Tv(0);
     }
-
-    for (uint64 g = 0; g < agg->ngs; ++g)
-    {
-        if (types[g] == 0)
-        {
-            const uint64 lb = gs[g];
-            const uint64 rb = gs[g + 1];
-            const uint64 n_terms = rb - lb;
-
-            if (n_terms != 0)
-            {
-                apply_diag_terms<Ti, Tv>(
-                    basis,
-                    azs + lb, bzs + lb, cs + lb, n_terms,
-                    src, dst);
-            }
-        }
-    }
-
     hvec_aggregated_svd<Ti, Tv>(agg, src, dst);
 
     if (enable_likwid)

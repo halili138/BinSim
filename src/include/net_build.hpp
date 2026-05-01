@@ -258,14 +258,9 @@ void build_mixed(
 template <typename Ti, typename Tv>
 SVDNetwork<Ti, Tv> *create_svd_network(
     const BasisManager<Ti> *basis,
-    int64 ncs,
     int64 ngs,
     const Ti *axs,
     const Ti *bxs,
-    const Ti *azs,
-    const Ti *bzs,
-    const Tv *cs,
-    const int64 *gs,
     const int64 *ranks,
     const int64 *num_as,
     const int64 *num_bs,
@@ -277,17 +272,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
 {
     SVDNetwork<Ti, Tv> *net = new SVDNetwork<Ti, Tv>();
 
-    net->azs = new Ti[ncs]();
-    net->bzs = new Ti[ncs]();
-    net->cs = new Tv[ncs]();
-    net->gs = new uint64[ngs + 1]();
     net->ngs = ngs;
-
-    std::copy(azs, azs + ncs, net->azs);
-    std::copy(bzs, bzs + ncs, net->bzs);
-    std::copy(cs, cs + ncs, net->cs);
-    std::copy(gs, gs + ngs + 1, net->gs);
-
     net->excit_types = new uint8[ngs]();
     net->group_ranks = new uint16[ngs]();
     net->arenas = new GroupArena<Ti, Tv>[ngs]();
@@ -455,10 +440,6 @@ void destroy_svd_network(SVDNetwork<Ti, Tv> *net)
         delete[] net->arenas;
     }
 
-    delete[] net->azs;
-    delete[] net->bzs;
-    delete[] net->cs;
-    delete[] net->gs;
     delete[] net->excit_types;
     delete[] net->group_ranks;
     delete[] net->pure_a_routes;

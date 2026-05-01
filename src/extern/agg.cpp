@@ -18,14 +18,9 @@ extern "C"
 {
     void *build_direct_agg_network_f64(
         void *basis_ptr,
-        int64 ncs,
         int64 ngs,
         const uint32 *axs,
         const uint32 *bxs,
-        const uint32 *azs,
-        const uint32 *bzs,
-        const double *cs,
-        const int64 *gs,
         const int64 *ranks,
         const int64 *num_as,
         const int64 *num_bs,
@@ -39,8 +34,7 @@ extern "C"
 
         return build_direct_agg_network<uint32, double>(
             basis,
-            ncs, ngs,
-            axs, bxs, azs, bzs, cs, gs,
+            ngs, axs, bxs,
             ranks, num_as, num_bs,
             flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
     }
@@ -53,17 +47,6 @@ extern "C"
         AggSVDNetwork<uint32, double> *agg = static_cast<AggSVDNetwork<uint32, double> *>(agg_ptr);
 
         destroy_direct_agg_network<uint32, double>(agg);
-    }
-
-    void get_diagonal_elements_agg_f64(
-        void *basis_ptr,
-        void *agg_ptr,
-        double *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-        const AggSVDNetwork<uint32, double> *agg = static_cast<const AggSVDNetwork<uint32, double> *>(agg_ptr);
-
-        get_diagonal_elements_agg<uint32, double>(basis, agg, diags);
     }
 
     void hvec_direct_agg_network_f64(
@@ -106,14 +89,9 @@ extern "C"
 {
     void *build_direct_agg_network_c64(
         void *basis_ptr,
-        int64 ncs,
         int64 ngs,
         const uint32 *axs,
         const uint32 *bxs,
-        const uint32 *azs,
-        const uint32 *bzs,
-        const complexf64 *cs,
-        const int64 *gs,
         const int64 *ranks,
         const int64 *num_as,
         const int64 *num_bs,
@@ -127,8 +105,7 @@ extern "C"
 
         return build_direct_agg_network<uint32, complexf64>(
             basis,
-            ncs, ngs,
-            axs, bxs, azs, bzs, cs, gs,
+            ngs, axs, bxs,
             ranks, num_as, num_bs,
             flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
     }
@@ -141,17 +118,6 @@ extern "C"
         AggSVDNetwork<uint32, complexf64> *agg = static_cast<AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
 
         destroy_direct_agg_network<uint32, complexf64>(agg);
-    }
-
-    void get_diagonal_elements_agg_c64(
-        void *basis_ptr,
-        void *agg_ptr,
-        complexf64 *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-        const AggSVDNetwork<uint32, complexf64> *agg = static_cast<const AggSVDNetwork<uint32, complexf64> *>(agg_ptr);
-
-        get_diagonal_elements_agg<uint32, complexf64>(basis, agg, diags);
     }
 
     void hvec_direct_agg_network_c64(

@@ -315,3 +315,65 @@ void set_det_coeff(
 
     *(vec + gid) += coeff;
 }
+
+template <typename Ti, typename Tv>
+void compute_diagonal_elements_raw(
+    const BasisManager<Ti> *__restrict__ basis,
+    const Ti *__restrict__ azs,
+    const Ti *__restrict__ bzs,
+    const Tv *__restrict__ cs,
+    const int64 nterms,
+    Tv *__restrict__ diags)
+{
+    if (nterms == 0)
+        return;
+
+#pragma omp parallel
+    {
+        bool *parity_a = new bool[nterms];
+
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            const BlockDesc<Ti> &block = basis->blocks[i];
+            const int64 num_a = block.num_a;
+            const int64 num_b = block.num_b;
+#pragma omp for schedule(guided) nowait
+            for (int64 a = 0; a < num_a; ++a)
+            {
+                const Ti astr = block.astrs[a];
+                const int64 row_ptr = block.offset + a * num_b;
+
+                for (int64 k = 0; k < nterms; ++k)
+                {
+                    parity_a[k] = std::popcount(azs[k] & astr) & 1;
+                }
+
+                for (int64 b = 0; b < num_b; ++b)
+                {
+                    const Ti bstr = block.bstrs[b];
+
+                    Tv vt = {};
+                    for (int64 k = 0; k < nterms; ++k)
+                    {
+                        const bool parity_b = std::popcount(bzs[k] & bstr) & 1;
+                        const bool parity = parity_a[k] ^ parity_b;
+
+                        if constexpr (std::is_arithmetic_v<Tv>)
+                        {
+                            vt += parity ? -cs[k] : cs[k];
+                        }
+                        else
+                        {
+                            Tv val = parity ? -cs[k] : cs[k];
+                            vt += Tv(val.real(), 0.0);
+                        }
+                    }
+
+                    diags[row_ptr + b] += vt;
+                }
+            }
+        }
+
+        delete[] parity_a;
+    }
+}

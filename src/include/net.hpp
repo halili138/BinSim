@@ -10,19 +10,19 @@
     initializer(omp_priv = std::complex<double>(0.0, 0.0))
 
 template <typename Tv>
-FORCE_INLINE Tv fast_diag_exp(const Tv& vt, double theta)
+FORCE_INLINE Tv fast_diag_exp(const Tv &vt, double theta)
 {
     if constexpr (std::is_arithmetic_v<Tv>)
     {
         // 实数域（分子体系）：对角线严格为 0，exp(0) == 1.0
         // 为了极致性能，编译器遇到 type=double 会直接把整个内层循环优化为 1.0！
-        return static_cast<Tv>(1.0); 
+        return static_cast<Tv>(1.0);
     }
     else
     {
         // 复数域（周期性体系）：对角线必定是纯虚数，直接提取虚部
         double val = vt.imag() * theta;
-        
+
         // 使用实数的 cos 和 sin，彻底避开昂贵的 __cexp 库函数调用
         return Tv(std::cos(val), std::sin(val));
     }
@@ -30,7 +30,7 @@ FORCE_INLINE Tv fast_diag_exp(const Tv& vt, double theta)
 
 // 同样的，给梯度也准备一个极速导数版本
 template <typename Tv>
-FORCE_INLINE Tv fast_diag_grad(const Tv& vt, double theta)
+FORCE_INLINE Tv fast_diag_grad(const Tv &vt, double theta)
 {
     if constexpr (std::is_arithmetic_v<Tv>)
     {
@@ -117,10 +117,6 @@ template <typename Ti,
           typename Tv>
 struct SVDNetwork
 {
-    Ti *azs;
-    Ti *bzs;
-    Tv *cs;
-    uint64 *gs;
     uint64 ngs;
 
     uint8 *excit_types;
@@ -256,103 +252,5 @@ FORCE_INLINE void append_phase_temp(
     else
     {
         push_w_rn<Ti, Tv>(str, len, rank, w, z, temp.rn_phases);
-    }
-}
-
-template <typename Ti, typename Tv>
-void get_diagonal_elements_svd_network(
-    const BasisManager<Ti> *__restrict__ basis,
-    const SVDNetwork<Ti, Tv> *__restrict__ net,
-    Tv *__restrict__ diags)
-{
-    const Ti *azs = net->azs;
-    const Ti *bzs = net->bzs;
-    const Tv *cs = net->cs;
-    const uint64 *gs = net->gs;
-    const uint8 *types = net->excit_types;
-
-    for (uint64 g = 0; g < net->ngs; ++g)
-    {
-        if (types[g] == 0)
-        {
-            const uint64 lb = gs[g];
-            const uint64 rb = gs[g + 1];
-#pragma omp parallel
-            for (int64 i = 0; i < basis->num_blocks; ++i)
-            {
-                const BlockDesc<Ti> &block = basis->blocks[i];
-#pragma omp for schedule(guided)
-                for (int64 a = 0; a < block.num_a; ++a)
-                {
-                    const Ti astr = block.astrs[a];
-                    const int64 row_ptr = block.offset + a * block.num_b;
-                    for (int64 b = 0; b < block.num_b; ++b)
-                    {
-                        const Ti bstr = block.bstrs[b];
-
-                        Tv vt = {};
-                        for (uint64 k = lb; k < rb; ++k)
-                        {
-                            const bool parity = (std::popcount(azs[k] & astr) ^ std::popcount(bzs[k] & bstr)) & 1;
-                            vt += parity ? -cs[k] : cs[k];
-                        }
-
-                        diags[row_ptr + b] += vt;
-                    }
-                }
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void apply_diag_terms(
-    const BasisManager<Ti> *__restrict__ basis,
-    const Ti *__restrict__ azs,
-    const Ti *__restrict__ bzs,
-    const Tv *__restrict__ cs,
-    const uint64 n_terms,
-    const Tv *__restrict__ src,
-    Tv *__restrict__ dst)
-{
-#pragma omp parallel
-    {
-        bool *parity_a = new bool[n_terms];
-
-        for (int64 i = 0; i < basis->num_blocks; ++i)
-        {
-            const BlockDesc<Ti> &block = basis->blocks[i];
-            const int64 num_b = block.num_b;
-#pragma omp for schedule(guided) nowait
-            for (int64 a = 0; a < block.num_a; ++a)
-            {
-                const Ti astr = block.astrs[a];
-                const int64 row_ptr = block.offset + a * num_b;
-
-                for (uint64 k = 0; k < n_terms; ++k)
-                {
-                    parity_a[k] = std::popcount(azs[k] & astr) & 1;
-                }
-
-                for (int64 b = 0; b < num_b; ++b)
-                {
-                    const Ti bstr = block.bstrs[b];
-                    const int64 gid = row_ptr + b;
-
-                    Tv vt = {};
-                    for (uint64 k = 0; k < n_terms; ++k)
-                    {
-                        const bool parity_b = std::popcount(bzs[k] & bstr) & 1;
-                        const bool parity = parity_a[k] ^ parity_b;
-                        vt += parity ? -cs[k] : cs[k];
-                    }
-
-                    dst[gid] += src[gid] * vt;
-                }
-            }
-        }
-
-        delete[] parity_a;
     }
 }

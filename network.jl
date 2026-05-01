@@ -37,10 +37,7 @@ mutable struct BasisManager
     end
 end
 
-function get_hf(
-    basis::BasisManager,
-    nelec::Tuple{Int, Int},
-    orbsym::Vector{Int};
+function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}, orbsym::Vector{Int}; 
     Tv::DataType = Float64,
 )
     hf = zeros(Tv, basis.dim)
@@ -80,6 +77,42 @@ function get_hf(
     end
 
     return hf
+end
+
+function get_diags(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}) where {Ti,Tv,K,V}
+    dim    = basis.dim
+    diags  = zeros(Tv, dim)
+    bounds = get_bounds_1based(ham.axs, ham.bxs)
+    ngs    = length(bounds) - 1
+
+    if ngs > 0
+        lb = bounds[1]
+        rb = bounds[2] - 1
+        nterms = rb - lb + 1
+        if (ham.axs[lb] == 0 && ham.bxs[lb] == 0) && nterms > 0
+            if Tv <: Complex
+                @ccall LIB_BASIS.compute_diagonal_elements_raw_c64(
+                    basis.ptr::Ptr{Cvoid},
+                    ham.azs::Ptr{Ti},
+                    ham.bzs::Ptr{Ti},
+                    ham.cs::Ptr{Tv},
+                    nterms::Int64,
+                    diags::Ptr{Tv},
+                )::Cvoid
+            else
+                @ccall LIB_BASIS.compute_diagonal_elements_raw_f64(
+                    basis.ptr::Ptr{Cvoid},
+                    ham.azs::Ptr{Ti},
+                    ham.bzs::Ptr{Ti},
+                    ham.cs::Ptr{Tv},
+                    nterms::Int64,
+                    diags::Ptr{Tv},
+                )::Cvoid
+            end
+        end
+    end
+
+    return diags
 end
 
 struct SVDGroup{Ti, Tv}
@@ -249,10 +282,8 @@ mutable struct NET
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
-        bounds = get_bounds_0based(A.axs, A.bxs)
         groups = compress_by_svd(A, tol)
         ngs    = length(groups)
-        ncs    = length(A.cs)
         axs    = Vector{Ti}(undef, ngs)
         bxs    = Vector{Ti}(undef, ngs)
         ranks  = Vector{Int64}(undef, ngs)
@@ -283,15 +314,23 @@ mutable struct NET
         
         if Tv <: Complex
             ptr = ccall((:create_svd_network_c64, LIB_NET), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         else
             ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         end
 
@@ -325,15 +364,10 @@ mutable struct NET
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
-        bounds = Int64[]
         groups = compress_by_svd(pool, tol)
         ngs    = length(groups)
-        ncs    = 0
         axs    = Vector{Ti}(undef, ngs)
         bxs    = Vector{Ti}(undef, ngs)
-        azs    = Ti[]
-        bzs    = Ti[]
-        cs     = Tv[]
 
         ranks  = Vector{Int64}(undef, ngs)
         num_as = Vector{Int64}(undef, ngs)
@@ -363,15 +397,23 @@ mutable struct NET
         
         if Tv <: Complex
             ptr = ccall((:create_svd_network_c64, LIB_NET), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, azs, bzs, cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         else
             ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, azs, bzs, cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         end
 
@@ -479,10 +521,8 @@ mutable struct AGG
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
-        bounds = get_bounds_0based(A.axs, A.bxs)
         groups = compress_by_svd(A, tol)
         ngs    = length(groups)
-        ncs    = length(A.cs)
         axs    = Vector{Ti}(undef, ngs)
         bxs    = Vector{Ti}(undef, ngs)
         ranks  = Vector{Int64}(undef, ngs)
@@ -508,15 +548,23 @@ mutable struct AGG
 
         if Tv <: Complex
             ptr = ccall((:build_direct_agg_network_c64, LIB_AGG), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         else
             ptr = ccall((:build_direct_agg_network_f64, LIB_AGG), Ptr{Cvoid}, 
-                (Ptr{Cvoid}, Int64, Int64, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, 
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}),
-                basis.ptr, ncs, ngs, axs, bxs, A.azs, A.bzs, A.cs, bounds, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                ),
+                basis.ptr, 
+                ngs, axs, bxs, 
                 ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
         end
 
@@ -542,27 +590,6 @@ mutable struct AGG
         
         return obj
     end
-end
-
-function get_diags(basis::BasisManager, agg::AGG)
-    dim   = basis.dim
-    diags = zeros(agg.ValueType, dim)
-
-    if agg.ValueType <: Complex
-        @ccall LIB_AGG.get_diagonal_elements_agg_c64(
-            basis.ptr::Ptr{Cvoid},
-            agg.ptr::Ptr{Cvoid},
-            diags::Ptr{ComplexF64},
-        )::Cvoid
-    else
-        @ccall LIB_AGG.get_diagonal_elements_agg_f64(
-            basis.ptr::Ptr{Cvoid},
-            agg.ptr::Ptr{Cvoid},
-            diags::Ptr{Cdouble},
-        )::Cvoid
-    end
-
-    return diags
 end
 
 function hvec_direct_agg!(

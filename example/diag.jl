@@ -11,14 +11,13 @@ if abspath(PROGRAM_FILE) == @__FILE__
     psi_space = basis.dim * 8 / (1 << 30)
     @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
 
-    ham = JW_hamiltonian(mole)
+    ham   = JW_hamiltonian(mole)
+    hf    = get_hf(basis, mole.nelec, mole.orbsym)
+    diags = get_diags(basis, ham)
 
     ret = @timed agg = AGG(basis, ham, mole.orbsym)
     println("Successifully Generate AGG in $(ret.time) seconds")
     print_info(agg)
-
-    hf = get_hf(basis, mole.nelec, mole.orbsym)
-    diags = get_diags(basis, agg)
 
     aop! = (src::Array{Float64,1}, dst::Array{Float64,1}) -> begin
         cpu_start = CPUtime_us()

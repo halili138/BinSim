@@ -142,10 +142,6 @@ template <typename Ti,
           typename Tv>
 struct AggSVDNetwork
 {
-    Ti *azs;
-    Ti *bzs;
-    Tv *cs;
-    uint64 *gs;
     uint64 ngs;
     uint8 *excit_types;
 
@@ -158,51 +154,3 @@ struct AggSVDNetwork
     TransR2<Ti, Tv> **mixed_b_rev_r2;
     TransRN<Ti> **mixed_b_rev_rn;
 };
-
-template <typename Ti,
-          typename Tv>
-void get_diagonal_elements_agg(
-    const BasisManager<Ti> *basis,
-    const AggSVDNetwork<Ti, Tv> *agg,
-    Tv *__restrict__ diags)
-{
-    const Ti *azs = agg->azs;
-    const Ti *bzs = agg->bzs;
-    const Tv *cs = agg->cs;
-    const uint64 *gs = agg->gs;
-    const uint8 *types = agg->excit_types;
-
-    for (uint64 g = 0; g < agg->ngs; ++g)
-    {
-        if (types[g] == 0)
-        {
-            const int64 lb = gs[g];
-            const int64 rb = gs[g + 1];
-#pragma omp parallel
-            for (int64 i = 0; i < basis->num_blocks; ++i)
-            {
-                const BlockDesc<Ti> &block = basis->blocks[i];
-#pragma omp for schedule(guided)
-                for (int64 a = 0; a < block.num_a; ++a)
-                {
-                    const Ti astr = block.astrs[a];
-                    const int64 row_ptr = block.offset + a * block.num_b;
-                    for (int64 b = 0; b < block.num_b; ++b)
-                    {
-                        const Ti bstr = block.bstrs[b];
-
-                        Tv vt = {};
-                        for (int64 k = lb; k < rb; ++k)
-                        {
-                            const bool parity = (std::popcount(azs[k] & astr) ^ std::popcount(bzs[k] & bstr)) & 1;
-
-                            vt += parity ? -cs[k] : cs[k];
-                        }
-
-                        diags[row_ptr + b] += vt;
-                    }
-                }
-            }
-        }
-    }
-}
