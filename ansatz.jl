@@ -207,14 +207,15 @@ function unique_operator_pool(pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}) where {T
     sizehint!(index_map, len)
     unique_indices = Array{Int,1}(undef, len)
 
+    To = eltype(pool)
+
     count = 0
     for (i, op) in enumerate(pool)
-        if (op != zero(op)) && (op != one(op))
-            if !haskey(index_map, op)
-                count += 1
-                index_map[op] = count
-                unique_indices[count] = i
-            end
+        (op == zero(To) || op == one(To)) && continue
+        if !haskey(index_map, op)
+            count += 1
+            index_map[op] = count
+            unique_indices[count] = i
         end
     end
 

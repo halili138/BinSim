@@ -522,29 +522,25 @@ function to_sparse_matrix(
         ax = axs[lb]
         bx = bxs[lb]
         pa = Vector{Int64}(undef, rb-lb+1)
-
-        
         for src_astr in astrs
             _src_astr = unzip_even_bit(src_astr)
             _dst_astr = unzip_even_bit(src_astr ⊻ ax)
             for (ia, ka) in enumerate(lb:rb)
-                pa[ia] = 1 - 2 * (count_ones(azs[ka] & src_astr) & 1)
+                pa[ia] = phase(azs[ka] & src_astr)
             end
             for src_bstr in bstrs
                 _src_bstr = unzip_odd_bit(src_bstr)
                 _dst_bstr = unzip_odd_bit(src_bstr ⊻ bx)
-
                 val::Tv = 0
                 for (ib, kb) in enumerate(lb:rb)
-                    val += cs[kb] * pa[ib] * (1 - 2 * (count_ones(bzs[kb] & src_bstr) & 1))
+                    val += cs[kb] * pa[ib] * phase(bzs[kb] & src_bstr)
                 end
-
-                (abs(val) <= tol) && continue
-
-                count += 1
-                nzrow[count] = (_dst_astr | _dst_bstr) + 1
-                nzcol[count] = (_src_astr | _src_bstr) + 1
-                nzval[count] = val
+                if abs(val) > tol
+                    count += 1
+                    nzrow[count] = (_dst_astr | _dst_bstr) + 1
+                    nzcol[count] = (_src_astr | _src_bstr) + 1
+                    nzval[count] = val
+                end
             end
         end
     end

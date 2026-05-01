@@ -350,6 +350,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
                 flat_azs, flat_bzs, flat_wa, flat_wb, orbsym,
                 basis, temp);
             break;
+        case 0:
         case 3:
             build_mixed<Ti, Tv>(
                 g, ax, bx, rank,
@@ -413,6 +414,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
             if (net->num_pure_b_routes[g])
                 std::copy(temp.pure_routes.begin(), temp.pure_routes.end(), net->pure_b_routes[g]);
             break;
+        case 0:
         case 3:
             net->num_mixed_routes[g] = temp.mixed_routes.size();
             net->mixed_routes[g] = net->num_mixed_routes[g] ? new MixedRoute[net->num_mixed_routes[g]] : nullptr;

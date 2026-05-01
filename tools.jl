@@ -97,3 +97,7 @@ function get_bounds_1based(axs::Vector{Ti}, bxs::Vector{Ti}) where Ti
 
     return bounds
 end
+
+@inline function phase(x)
+    return 1 - 2 * (count_ones(x) & 1)
+end

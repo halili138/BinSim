@@ -7,7 +7,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     pbc.ratio  = 1.0
     pbc.basis  = "gth-szv"
     pbc.pseudo = "gth-pade"
-    pbc.mesh   = [4,1,1]
+    pbc.mesh   = [3,1,1]
     pbc.scaled_center = [0,0,0]
 
     build(pbc)
@@ -19,9 +19,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
-    ham_sp = to_sparse_matrix(ham, pbc.norb, pbc.nelec)
-    λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
+    @time ham_sp = to_sparse_matrix(ham, pbc.norb, pbc.nelec)
+    @time λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
     println(λ)
+
     # ret = @timed agg = AGG(basis, ham, pbc.orbsym)
     # println("Successifully Generate AGG in $(ret.time) seconds")
     # print_info(agg)
