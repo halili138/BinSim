@@ -179,6 +179,7 @@ function run_vqe(pbc::Pbc; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=V
     orbs = Orbitals(); kernel(pbc, orbs, generalize=true)
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
     println("Operator pool size: $(length(pool))")
+
     ret = @timed pool_net = NET(basis, pool, pbc.orbsym)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
     
@@ -244,15 +245,15 @@ function _adapt_vqe(
     ham_net::AGG,
     pool_net::NET,
     idxs::Vector{Int64},
-    v0::Vector{Float64},
-    lv::Vector{Float64},
-    rv::Vector{Float64},
+    v0::Vector{Tv},
+    lv::Vector{Tv},
+    rv::Vector{Tv},
     e_scale::Float64,
     amplitudes::Vector{Float64}, 
     selec_idxs::Vector{Int64}, 
     adapt_options::ADAPT_OPTIONS,
     vqe_options::VQE_OPTIONS,
-)
+) where Tv
     @assert length(amplitudes) == length(selec_idxs)
     
     if !isempty(amplitudes)
@@ -272,13 +273,13 @@ function _adapt_vqe(
     converged::Bool = false
     @time while !converged
         iter += 1
-
+        
         hvec_direct_agg!(basis, ham_net, lv, rv)
         
         for i in eachindex(idxs)
             zero_grads[i] = real(grad_svd(basis, pool_net, idxs[i], 0.0, lv, rv)) * 2
         end
-
+        
         max_idx = sortperm(abs.(zero_grads), rev=true)[1]
         G       = norm(zero_grads)
         gi_max  = abs(zero_grads[max_idx])
@@ -401,3 +402,53 @@ function run_adapt_vqe(mole::Mole;
     )
 end
 
+
+function run_adapt_vqe(pbc::Pbc; 
+    amplitudes::Vector{Float64}=Float64[], selec_idxs::Vector{Int64}=Int64[],
+    adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(),
+    vqe_options::VQE_OPTIONS=VQE_OPTIONS(ftol=1.0e-10, maxiter=1000, verbose=1),
+)
+    basis = BasisManager(pbc.norb, pbc.nelec, pbc.orbsym)
+    println("Num symmetry allowed elements: $(basis.dim)\n")
+
+    ham = JW_hamiltonian(pbc)
+    ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
+
+    ret = @timed ham_net = AGG(basis, ham, pbc.orbsym)
+    println("Successifully Generate Ham AGG in $(ret.time) seconds")
+    print_info(ham_net)
+
+    orbs = Orbitals(); kernel(pbc, orbs, generalize=true)
+    pool = FEB(orbs, Tv=ComplexF64, complete=true)
+    println("Operator pool size: $(length(pool))")
+
+    ret = @timed pool_net = NET(basis, pool, pbc.orbsym)
+    println("Successifully Generate Pool NET in $(ret.time) seconds")
+
+    v0 = get_hf(basis, pbc.nelec, pbc.orbsym, Tv=ComplexF64)
+    lv = zeros(ComplexF64, basis.dim)
+    rv = zeros(ComplexF64, basis.dim)
+    idxs = [i for i in eachindex(pool)]
+    
+    if !isempty(amplitudes) && !isempty(selec_idxs)
+        @assert length(amplitudes) == length(selec_idxs)
+    else
+        amplitudes = Float64[]
+        selec_idxs = Int64[]
+    end
+
+    _adapt_vqe(
+        basis,
+        ham_net, 
+        pool_net,  
+        idxs, 
+        v0, 
+        lv, 
+        rv, 
+        pbc.e_scale, 
+        amplitudes,
+        selec_idxs,
+        adapt_options,
+        vqe_options,
+    )
+end
