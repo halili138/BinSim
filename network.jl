@@ -631,10 +631,10 @@ end
 function hvec_direct_agg_benchmark!(
     basis::BasisManager, 
     agg::AGG,
-    src::Vector{Float64},
-    dst::Vector{Float64},
+    src::T,
+    dst::T,
     measure::Bool,
-)
+) where {T<:AbstractArray{Float64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_benchmark_f64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
@@ -647,10 +647,10 @@ end
 function hvec_direct_agg_benchmark!(
     basis::BasisManager, 
     agg::AGG,
-    src::Vector{ComplexF64},
-    dst::Vector{ComplexF64},
+    src::T,
+    dst::T,
     measure::Bool,
-)
+) where {T<:AbstractArray{ComplexF64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_benchmark_c64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
