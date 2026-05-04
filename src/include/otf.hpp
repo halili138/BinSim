@@ -18,8 +18,8 @@ struct SVDGroup_OTF
     Tv *wa;
     Tv *wb;
 
-    inline Tv *ptr_wa(int r) { return wa + r * num_za; }
-    inline Tv *ptr_wb(int r) { return wb + r * num_zb; }
+    inline Tv *ptr_wa(int r) const { return wa + r * num_za; }
+    inline Tv *ptr_wb(int r) const { return wb + r * num_zb; }
 };
 
 struct IndexMap
@@ -32,10 +32,13 @@ template <typename Ti,
           typename Tv>
 struct Network_OTF
 {
-    int *excit_types;
     IndexMap map;
     int64 num_groups;
-    SVDGroup_OTF<Ti, Tv> *groups;
+
+    std::vector<SVDGroup_OTF<Ti, Tv>> diag_groups;
+    std::vector<SVDGroup_OTF<Ti, Tv>> pure_a_groups;
+    std::vector<SVDGroup_OTF<Ti, Tv>> pure_b_groups;
+    std::vector<SVDGroup_OTF<Ti, Tv>> mixed_groups;
 };
 
 template <typename Tv>
@@ -66,29 +69,64 @@ struct SharedBatchBuffer
     inline Tv *ptr_phase(int64 batch_idx) { return batch_phase.data() + batch_idx * max_b_count * max_rank; }
 };
 
-template <typename Ti, typename Tv>
-void destroy_network_otf(Network_OTF<Ti, Tv> *net)
+template <typename Ti,
+          typename Tv>
+void destroy_network_otf(void *net_ptr)
 {
-    if (!net)
+    if (!net_ptr)
         return;
 
-    delete[] net->excit_types;
-    delete[] net->map.a_idx_map;
-    delete[] net->map.b_idx_map;
+    Network_OTF<Ti, Tv> *net = static_cast<Network_OTF<Ti, Tv> *>(net_ptr);
 
-    for (int64 g = 0; g < net->num_groups; ++g)
+    auto clear_bucket = [](std::vector<SVDGroup_OTF<Ti, Tv>> &group_vec)
     {
-        delete[] net->groups[g].unique_zas;
-        delete[] net->groups[g].unique_zbs;
-        delete[] net->groups[g].wa;
-        delete[] net->groups[g].wb;
+        for (auto &group : group_vec)
+        {
+            if (group.unique_zas)
+            {
+                delete[] group.unique_zas;
+                group.unique_zas = nullptr;
+            }
+            if (group.unique_zbs)
+            {
+                delete[] group.unique_zbs;
+                group.unique_zbs = nullptr;
+            }
+            if (group.wa)
+            {
+                delete[] group.wa;
+                group.wa = nullptr;
+            }
+            if (group.wb)
+            {
+                delete[] group.wb;
+                group.wb = nullptr;
+            }
+        }
+        group_vec.clear();
+    };
+
+    clear_bucket(net->diag_groups);
+    clear_bucket(net->pure_a_groups);
+    clear_bucket(net->pure_b_groups);
+    clear_bucket(net->mixed_groups);
+
+    if (net->map.a_idx_map)
+    {
+        delete[] net->map.a_idx_map;
+        net->map.a_idx_map = nullptr;
+    }
+    if (net->map.b_idx_map)
+    {
+        delete[] net->map.b_idx_map;
+        net->map.b_idx_map = nullptr;
     }
 
-    delete[] net->groups;
     delete net;
 }
 
-template <typename Ti, typename Tv>
+template <typename Ti,
+          typename Tv>
 void *build_network_otf(
     const BasisManager<Ti> *basis,
     int64 norb,
@@ -106,8 +144,6 @@ void *build_network_otf(
     Network_OTF<Ti, Tv> *net = new Network_OTF<Ti, Tv>();
     net->num_groups = ngs;
 
-    net->excit_types = new int[ngs];
-
     int32 map_size = 1 << norb;
     int32 *a_map = new int32[map_size];
     int32 *b_map = new int32[map_size];
@@ -117,69 +153,68 @@ void *build_network_otf(
     for (int64 i = 0; i < basis->num_blocks; ++i)
     {
         for (int32 a = 0; a < basis->blocks[i].num_a; ++a)
-        {
             a_map[basis->blocks[i].astrs[a]] = a;
-        }
         for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
-        {
             b_map[basis->blocks[i].bstrs[b]] = b;
-        }
     }
-
     net->map.a_idx_map = a_map;
     net->map.b_idx_map = b_map;
 
-    net->groups = new SVDGroup_OTF<Ti, Tv>[ngs];
     uint64 z_offset_a = 0, z_offset_b = 0;
     uint64 w_offset_a = 0, w_offset_b = 0;
 
     for (int64 g = 0; g < ngs; ++g)
     {
-        Ti ax = axs[g];
-        Ti bx = bxs[g];
+        SVDGroup_OTF<Ti, Tv> group;
+        group.ax = axs[g];
+        group.bx = bxs[g];
+        group.rank = ranks[g];
+        group.num_za = num_zas[g];
+        group.num_zb = num_zbs[g];
 
-        int type = 0;
-        if (ax != 0 && bx == 0)
-            type = 1;
-        else if (ax == 0 && bx != 0)
-            type = 2;
-        else if (ax != 0 && bx != 0)
-            type = 3;
+        group.unique_zas = new Ti[group.num_za];
+        std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + group.num_za, group.unique_zas);
+        z_offset_a += group.num_za;
 
-        net->excit_types[g] = static_cast<uint8>(type);
-        net->groups[g].ax = ax;
-        net->groups[g].bx = bx;
-        net->groups[g].rank = ranks[g];
+        group.unique_zbs = new Ti[group.num_zb];
+        std::copy(flat_zbs + z_offset_b, flat_zbs + z_offset_b + group.num_zb, group.unique_zbs);
+        z_offset_b += group.num_zb;
 
-        uint32 nza = num_zas[g];
-        uint32 nzb = num_zbs[g];
-        net->groups[g].num_za = nza;
-        net->groups[g].num_zb = nzb;
-
-        net->groups[g].unique_zas = new Ti[nza];
-        std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + nza, net->groups[g].unique_zas);
-        z_offset_a += nza;
-
-        net->groups[g].unique_zbs = new Ti[nzb];
-        std::copy(flat_zbs + z_offset_b, flat_zbs + z_offset_b + nzb, net->groups[g].unique_zbs);
-        z_offset_b += nzb;
-
-        uint64 wa_size = nza * ranks[g];
-        net->groups[g].wa = new Tv[wa_size];
-        std::copy(flat_wa + w_offset_a, flat_wa + w_offset_a + wa_size, net->groups[g].wa);
+        uint64 wa_size = group.num_za * group.rank;
+        group.wa = new Tv[wa_size];
+        std::copy(flat_wa + w_offset_a, flat_wa + w_offset_a + wa_size, group.wa);
         w_offset_a += wa_size;
 
-        uint64 wb_size = nzb * ranks[g];
-        net->groups[g].wb = new Tv[wb_size];
-        std::copy(flat_wb + w_offset_b, flat_wb + w_offset_b + wb_size, net->groups[g].wb);
+        uint64 wb_size = group.num_zb * group.rank;
+        group.wb = new Tv[wb_size];
+        std::copy(flat_wb + w_offset_b, flat_wb + w_offset_b + wb_size, group.wb);
         w_offset_b += wb_size;
+
+        if (group.ax == 0 && group.bx == 0)
+            net->diag_groups.push_back(group);
+        else if (group.ax != 0 && group.bx == 0)
+            net->pure_a_groups.push_back(group);
+        else if (group.ax == 0 && group.bx != 0)
+            net->pure_b_groups.push_back(group);
+        else
+            net->mixed_groups.push_back(group);
     }
+
+    auto rank_comparator = [](const SVDGroup_OTF<Ti, Tv> &a, const SVDGroup_OTF<Ti, Tv> &b)
+    {
+        return a.rank < b.rank;
+    };
+
+    std::sort(net->diag_groups.begin(), net->diag_groups.end(), rank_comparator);
+    std::sort(net->pure_a_groups.begin(), net->pure_a_groups.end(), rank_comparator);
+    std::sort(net->pure_b_groups.begin(), net->pure_b_groups.end(), rank_comparator);
+    std::sort(net->mixed_groups.begin(), net->mixed_groups.end(), rank_comparator);
 
     return static_cast<void *>(net);
 }
 
 template <int Rank, typename Ti, typename Tv>
-inline void gather_contract_diag_batched_impl(
+static inline void gather_contract_diag_batched_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> *__restrict__ groups,
@@ -363,7 +398,7 @@ inline void gather_contract_diag_batched_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-inline void gather_contract_pure_a_batched_impl(
+static inline void gather_contract_pure_a_batched_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> *__restrict__ groups,
@@ -571,7 +606,7 @@ inline void gather_contract_pure_a_batched_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-inline void gather_contract_pure_b_batched_impl(
+static inline void gather_contract_pure_b_batched_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> *__restrict__ groups,
@@ -791,7 +826,7 @@ inline void gather_contract_pure_b_batched_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-inline void gather_contract_mixed_batched_impl(
+static inline void gather_contract_mixed_batched_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> *__restrict__ groups,
@@ -1015,4 +1050,115 @@ inline void gather_contract_mixed_batched_impl(
             }
         }
     }
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static inline void dispatch_chunks_by_rank(
+    const BasisManager<Ti> *__restrict__ basis,
+    const IndexMap &map,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+    const Tv *__restrict__ src_vec,
+    Tv *__restrict__ dst_vec)
+{
+    const int64 total_ngs = groups.size();
+    if (total_ngs == 0)
+        return;
+
+    const SVDGroup_OTF<Ti, Tv> *groups_ptr = groups.data();
+
+    int64 start = 0;
+    while (start < total_ngs)
+    {
+        const int current_rank = groups_ptr[start].rank;
+        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
+
+        int64 end = start + 1;
+        while (end < total_ngs)
+        {
+            const int next_rank = groups_ptr[end].rank;
+            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
+            if (next_dispatch_rank != dispatch_rank)
+                break;
+            end++;
+        }
+
+        const int64 chunk_size = end - start;
+        const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
+
+        if constexpr (TypeCode == 0)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_contract_diag_batched_impl<1>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            case 2:
+                gather_contract_diag_batched_impl<2>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            default:
+                gather_contract_diag_batched_impl<0>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 1)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_contract_pure_a_batched_impl<1>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            case 2:
+                gather_contract_pure_a_batched_impl<2>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            default:
+                gather_contract_pure_a_batched_impl<0>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 2)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_contract_pure_b_batched_impl<1>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            case 2:
+                gather_contract_pure_b_batched_impl<2>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            default:
+                gather_contract_pure_b_batched_impl<0>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 3)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_contract_mixed_batched_impl<1>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            case 2:
+                gather_contract_mixed_batched_impl<2>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            default:
+                gather_contract_mixed_batched_impl<0>(basis, map, chunk_ptr, chunk_size, src_vec, dst_vec);
+                break;
+            }
+        }
+        start = end;
+    }
+}
+
+template <typename Ti,
+          typename Tv>
+void contract_network_otf(
+    const BasisManager<Ti> *__restrict__ basis,
+    const Network_OTF<Ti, Tv> *__restrict__ net,
+    const Tv *__restrict__ src_vec,
+    Tv *__restrict__ dst_vec)
+{
+    dispatch_chunks_by_rank<0>(basis, net->map, net->diag_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<1>(basis, net->map, net->pure_a_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<2>(basis, net->map, net->pure_b_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<3>(basis, net->map, net->mixed_groups, src_vec, dst_vec);
 }
