@@ -2,6 +2,8 @@
 #include "common.hpp"
 #include <vector>
 
+inline constexpr int64 BATCH_SIZE = 128;
+
 template <typename Ti,
           typename Tv>
 struct SVDGroup_OTF
@@ -222,7 +224,6 @@ static inline void gather_contract_diag_batched_impl(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    constexpr int64 BATCH_SIZE = 64;
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
 
@@ -406,7 +407,6 @@ static inline void gather_contract_pure_a_batched_impl(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    constexpr int64 BATCH_SIZE = 64;
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
@@ -614,7 +614,6 @@ static inline void gather_contract_pure_b_batched_impl(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    constexpr int64 BATCH_SIZE = 64;
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
@@ -834,7 +833,6 @@ static inline void gather_contract_mixed_batched_impl(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    constexpr int64 BATCH_SIZE = 64;
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
@@ -1157,6 +1155,12 @@ void contract_network_otf(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
+#pragma omp parallel for schedule(static)
+    for (int64 i = 0; i < basis->dim; ++i)
+    {
+        dst[i] = {};
+    }
+
     dispatch_chunks_by_rank<0>(basis, net->map, net->diag_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank<1>(basis, net->map, net->pure_a_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank<2>(basis, net->map, net->pure_b_groups, src_vec, dst_vec);
