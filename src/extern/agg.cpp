@@ -27,8 +27,7 @@ extern "C"
         const uint32 *flat_azs,
         const uint32 *flat_bzs,
         const double *flat_wa,
-        const double *flat_wb,
-        const int64 *orbsym)
+        const double *flat_wb)
     {
         const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
 
@@ -36,7 +35,7 @@ extern "C"
             basis,
             ngs, axs, bxs,
             ranks, num_as, num_bs,
-            flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
+            flat_azs, flat_bzs, flat_wa, flat_wb);
     }
 
     void destroy_direct_agg_network_f64(void *agg_ptr)
@@ -98,8 +97,7 @@ extern "C"
         const uint32 *flat_azs,
         const uint32 *flat_bzs,
         const complexf64 *flat_wa,
-        const complexf64 *flat_wb,
-        const int64 *orbsym)
+        const complexf64 *flat_wb)
     {
         const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
 
@@ -107,7 +105,7 @@ extern "C"
             basis,
             ngs, axs, bxs,
             ranks, num_as, num_bs,
-            flat_azs, flat_bzs, flat_wa, flat_wb, orbsym);
+            flat_azs, flat_bzs, flat_wa, flat_wb);
     }
 
     void destroy_direct_agg_network_c64(void *agg_ptr)

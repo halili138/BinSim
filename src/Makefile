@@ -21,7 +21,7 @@ LIKWID_MACRO := -DLIKWID_PERFMON -I$(LIKWID_BASE)/include
 LIKWID_LIBS  := -L$(LIKWID_BASE)/lib -Wl,-rpath=$(LIKWID_BASE)/lib -llikwid
 
 TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so \
-		   lib/libnet.so lib/libagg.so
+		   lib/libnet.so lib/libagg.so lib/libotf.so 
 
 .PHONY: all clean
 
@@ -47,6 +47,9 @@ lib/libagg.so: extern/agg.cpp | lib
 
 # lib/libagg.so: extern/agg.cpp cpp/agg_build.cpp cpp/agg_hvec.cpp cpp/net_build.cpp cpp/net_hvec.cpp | lib
 # 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(LIKWID_MACRO) -o $@ $^ $(LIKWID_LIBS)
+
+lib/libotf.so: extern/otf.cpp | lib
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $<
 
 clean:
 	rm -rf lib/*.so

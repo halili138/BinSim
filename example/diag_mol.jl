@@ -13,10 +13,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
 
     ham   = JW_hamiltonian(mole)
-    hf    = get_hf(basis, mole.nelec, mole.orbsym)
+    hf    = get_hf(basis, mole.nelec)
     diags = get_diags(basis, ham)
 
-    ret = @timed agg = AGG(basis, ham, mole.orbsym)
+    ret = @timed agg = AGG(basis, ham)
     println("Successifully Generate AGG in $(ret.time) seconds")
     print_info(agg)
 

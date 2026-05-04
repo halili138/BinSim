@@ -18,14 +18,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     ham   = JW_hamiltonian(pbc)
     ham   = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
-    hf    = get_hf(basis, pbc.nelec, pbc.orbsym, Tv=ComplexF64)
+    hf    = get_hf(basis, pbc.nelec, Tv=ComplexF64)
     diags = get_diags(basis, ham)
 
     # @time ham_sp = to_sparse_matrix(ham, pbc.norb, pbc.nelec)
     # @time λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
     # println(λ)
 
-    ret = @timed agg = AGG(basis, ham, pbc.orbsym)
+    ret = @timed agg = AGG(basis, ham)
     println("Successifully Generate AGG in $(ret.time) seconds")
     print_info(agg)
 

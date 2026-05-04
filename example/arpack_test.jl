@@ -21,7 +21,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     ham   = JW_hamiltonian(pbc)
     ham   = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
 
-    ret = @timed agg = AGG(fci_basis, ham, pbc.orbsym)
+    ret = @timed agg = AGG(fci_basis, ham)
     println("Successifully Generate AGG in $(ret.time) seconds")
     print_info(agg)
 

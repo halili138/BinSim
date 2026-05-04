@@ -30,11 +30,10 @@ extern "C"
         const uint32 target_astr,
         const uint32 target_bstr,
         const double coeff,
-        const int64 *__restrict__ orbsym,
         double *vec)
     {
         const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
-        set_det_coeff<uint32, double>(basis, target_astr, target_bstr, coeff, orbsym, vec);
+        set_det_coeff<uint32, double>(basis, target_astr, target_bstr, coeff, vec);
     }
 
     void set_det_coeff_c64(
@@ -42,11 +41,10 @@ extern "C"
         const uint32 target_astr,
         const uint32 target_bstr,
         const complexf64 coeff,
-        const int64 *__restrict__ orbsym,
         complexf64 *vec)
     {
         const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
-        set_det_coeff<uint32, complexf64>(basis, target_astr, target_bstr, coeff, orbsym, vec);
+        set_det_coeff<uint32, complexf64>(basis, target_astr, target_bstr, coeff, vec);
     }
 
     void compute_diagonal_elements_raw_f64(

@@ -37,11 +37,8 @@ mutable struct BasisManager
     end
 end
 
-function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}, orbsym::Vector{Int}; 
-    Tv::DataType = Float64,
-)
+function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}; Tv::DataType = Float64)
     hf = zeros(Tv, basis.dim)
-
     na, nb = nelec
 
     hf_astr = UInt32(0)
@@ -62,7 +59,6 @@ function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}, orbsym::Vector{Int}
             hf_astr::UInt32,
             hf_bstr::UInt32,
             hf_val::Cdouble,
-            orbsym::Ptr{Int64},
             hf::Ptr{ComplexF64},
         )::Cvoid
     else
@@ -71,7 +67,6 @@ function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}, orbsym::Vector{Int}
             hf_astr::UInt32,
             hf_bstr::UInt32,
             hf_val::Cdouble,
-            orbsym::Ptr{Int64},
             hf::Ptr{Cdouble},
         )::Cvoid
     end
@@ -274,11 +269,11 @@ end
 mutable struct NET
     ptr::Ptr{Cvoid}
     dim::Int64
+    ngs::Int64
 
     function NET(
         basis::BasisManager, 
         A::BinaryQubitAABB{Ti,Tv,K,V}, 
-        orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
@@ -317,26 +312,26 @@ mutable struct NET
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         else
             ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         end
 
         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
 
-        obj = new(ptr, basis.dim)
+        obj = new(ptr, basis.dim, ngs)
         
         if Tv <: Complex
             finalizer(obj) do o
@@ -360,7 +355,6 @@ mutable struct NET
     function NET(
         basis::BasisManager, 
         pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, 
-        orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
@@ -400,26 +394,26 @@ mutable struct NET
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         else
             ptr = ccall((:create_svd_network_f64, LIB_NET), Ptr{Cvoid}, 
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         end
 
         ptr == C_NULL && error("Failed to create C++ SVDNetwork.")
 
-        obj = new(ptr, basis.dim)
+        obj = new(ptr, basis.dim, ngs)
         
         if Tv <: Complex
             finalizer(obj) do o
@@ -517,7 +511,6 @@ mutable struct AGG
     function AGG(
         basis::BasisManager, 
         A::BinaryQubitAABB{Ti,Tv,K,V},
-        orbsym::Vector{Int64}, 
         tol::Float64=1e-12,
     ) where {Ti,Tv,K,V}
 
@@ -551,21 +544,21 @@ mutable struct AGG
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         else
             ptr = ccall((:build_direct_agg_network_f64, LIB_AGG), Ptr{Cvoid}, 
                 (
                     Ptr{Cvoid}, 
                     Int64, Ptr{Ti}, Ptr{Ti}, 
-                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv}, Ptr{Int64}
+                    Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Ti}, Ptr{Ti}, Ptr{Tv}, Ptr{Tv},
                 ),
                 basis.ptr, 
                 ngs, axs, bxs, 
-                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb, orbsym)
+                ranks, num_as, num_bs, flat_azs, flat_bzs, flat_wa, flat_wb)
         end
 
         ptr == C_NULL && error("Failed to create C++ AGGNetwork.")

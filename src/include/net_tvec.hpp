@@ -1,156 +1,180 @@
 #pragma once
 #include "net.hpp"
 
-template <typename Ti,
-          typename Tv>
-void tvec_diag_r1(
+template <int Rank, typename Ti, typename Tv>
+static inline void tvec_diag_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
+    const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
     Tv *__restrict__ vec)
 {
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const MixedRoute &R = routes[i];
-        const TransR1<Ti, Tv> *aj = arena.r1_jumps + R.a_jump_offset;
-        const TransR1<Ti, Tv> *bj = arena.r1_jumps + R.b_jump_offset;
         const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+
+        const TransR1<Ti, Tv> *__restrict__ aj1 = nullptr;
+        const TransR1<Ti, Tv> *__restrict__ bj1 = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ aj2 = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ bj2 = nullptr;
+        const TransRN<Ti> *__restrict__ ajn = nullptr;
+        const TransRN<Ti> *__restrict__ bjn = nullptr;
+        const Tv *__restrict__ weights = nullptr;
+
+        if constexpr (Rank == 1)
+        {
+            aj1 = arena.r1_jumps + R.a_jump_offset;
+            bj1 = arena.r1_jumps + R.b_jump_offset;
+        }
+        else if constexpr (Rank == 2)
+        {
+            aj2 = arena.r2_jumps + R.a_jump_offset;
+            bj2 = arena.r2_jumps + R.b_jump_offset;
+        }
+        else
+        {
+            ajn = arena.rn_jumps + R.a_jump_offset;
+            bjn = arena.rn_jumps + R.b_jump_offset;
+            weights = arena.rn_weights;
+        }
 #pragma omp for collapse(2) schedule(static) nowait
         for (uint32 ia = 0; ia < R.na; ++ia)
         {
             for (uint32 ib = 0; ib < R.nb; ++ib)
             {
-                const TransR1<Ti, Tv> &ja = aj[ia];
-                const TransR1<Ti, Tv> &jb = bj[ib];
-                const Tv vt = ja.w0 * jb.w0;
+                Tv vt{};
+                Ti src_a = 0, src_b = 0;
+
+                if constexpr (Rank == 1)
+                {
+                    const auto &ja = aj1[ia];
+                    const auto &jb = bj1[ib];
+                    vt = ja.w0 * jb.w0;
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                }
+                else if constexpr (Rank == 2)
+                {
+                    const auto &ja = aj2[ia];
+                    const auto &jb = bj2[ib];
+                    vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                }
+                else
+                {
+                    const auto &ja = ajn[ia];
+                    const auto &jb = bjn[ib];
+                    const Tv *wa = weights + ja.w_offset;
+                    const Tv *wb = weights + jb.w_offset;
+                    for (uint16 r = 0; r < rank; ++r)
+                    {
+                        vt += wa[r] * wb[r];
+                    }
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                }
+
                 const Tv u = fast_diag_exp<Tv>(vt, theta);
-                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
+                const int64 idx = MIXED_IDX(blk_src, src_a, src_b);
                 vec[idx] *= u;
             }
         }
     }
 }
 
-template <typename Ti,
-          typename Tv>
-void tvec_diag_r2(
+template <int Rank, typename Ti, typename Tv>
+static inline void tvec_pure_a_impl(
     const BasisManager<Ti> *__restrict__ basis,
-    const MixedRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const MixedRoute &R = routes[i];
-        const TransR2<Ti, Tv> *aj = arena.r2_jumps + R.a_jump_offset;
-        const TransR2<Ti, Tv> *bj = arena.r2_jumps + R.b_jump_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.na; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.nb; ++ib)
-            {
-                const TransR2<Ti, Tv> &ja = aj[ia];
-                const TransR2<Ti, Tv> &jb = bj[ib];
-                const Tv vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
-                const Tv u = fast_diag_exp<Tv>(vt, theta);
-                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
-                vec[idx] *= u;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_diag_rn(
-    const BasisManager<Ti> *__restrict__ basis,
-    const MixedRoute *__restrict__ routes,
+    const PureRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
     Tv *__restrict__ vec)
 {
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const Tv *weights = arena.rn_weights;
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const MixedRoute &R = routes[i];
-        const TransRN<Ti> *aj = arena.rn_jumps + R.a_jump_offset;
-        const TransRN<Ti> *bj = arena.rn_jumps + R.b_jump_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.na; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.nb; ++ib)
-            {
-                const TransRN<Ti> &ja = aj[ia];
-                const Tv *wa = weights + ja.w_offset;
-                const TransRN<Ti> &jb = bj[ib];
-                const Tv *wb = weights + jb.w_offset;
-                Tv vt = {};
-                for (uint16 r = 0; r < rank; ++r)
-                {
-                    vt += wa[r] * wb[r];
-                }
-                const Tv u = fast_diag_exp<Tv>(vt, theta);
-                const int64 idx = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
-                vec[idx] *= u;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_pure_a_r1(
-    const BasisManager<Ti> *__restrict__ basis,
-    const PureRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const PureRoute &R = routes[i];
-        const TransR1<Ti, Tv> *jumps = arena.r1_jumps + R.jump_offset;
-        const Tv *phases = arena.r1_phases + R.phase_offset;
         const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
         const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
         const int64 nb = blk_src.num_b;
+
+        const TransR1<Ti, Tv> *__restrict__ r1_jumps = nullptr;
+        const Tv *__restrict__ r1_phases = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ r2_jumps = nullptr;
+        const Tv *__restrict__ r2_phases = nullptr;
+        const TransRN<Ti> *__restrict__ rn_jumps = nullptr;
+        const Tv *__restrict__ rn_weights = nullptr;
+        const Tv *__restrict__ rn_phases = nullptr;
+
+        if constexpr (Rank == 1)
+        {
+            r1_jumps = arena.r1_jumps + R.jump_offset;
+            r1_phases = arena.r1_phases + R.phase_offset;
+        }
+        else if constexpr (Rank == 2)
+        {
+            r2_jumps = arena.r2_jumps + R.jump_offset;
+            r2_phases = arena.r2_phases + R.phase_offset;
+        }
+        else
+        {
+            rn_jumps = arena.rn_jumps + R.jump_offset;
+            rn_weights = arena.rn_weights;
+            rn_phases = arena.rn_phases + R.phase_offset;
+        }
 #pragma omp for collapse(2) schedule(static) nowait
         for (uint32 ia = 0; ia < R.n; ++ia)
         {
             for (int64 ib = 0; ib < nb; ++ib)
             {
-                const TransR1<Ti, Tv> &j = jumps[ia];
-                const Tv vt = j.w0 * phases[ib];
+                Tv vt{};
+                Ti src_idx = 0, dst_idx = 0;
+
+                if constexpr (Rank == 1)
+                {
+                    const auto &j = r1_jumps[ia];
+                    vt = j.w0 * r1_phases[ib];
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
+                }
+                else if constexpr (Rank == 2)
+                {
+                    const auto &j = r2_jumps[ia];
+                    const Tv *pb = r2_phases + ib * 2;
+                    vt = j.w0 * pb[0] + j.w1 * pb[1];
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
+                }
+                else
+                {
+                    const auto &j = rn_jumps[ia];
+                    const Tv *w = rn_weights + j.w_offset;
+                    const Tv *pb = rn_phases + ib * rank;
+                    for (uint16 r = 0; r < rank; ++r)
+                    {
+                        vt += w[r] * pb[r];
+                    }
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
+                }
+
                 const Tv vd = 1.0 + cd * (vt * math_conj(vt));
                 const Tv vo_fwd = co * vt;
                 const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_A_IDX(blk_src, j.src_idx, ib);
-                const int64 di = PURE_A_IDX(blk_dst, j.dst_idx, ib);
+                const int64 si = PURE_A_IDX(blk_src, src_idx, ib);
+                const int64 di = PURE_A_IDX(blk_dst, dst_idx, ib);
+
                 const Tv vi = vec[si];
                 const Tv vj = vec[di];
                 vec[si] = vi * vd - vj * vo_rev;
@@ -160,53 +184,8 @@ void tvec_pure_a_r1(
     }
 }
 
-template <typename Ti,
-          typename Tv>
-void tvec_pure_a_r2(
-    const BasisManager<Ti> *__restrict__ basis,
-    const PureRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const PureRoute &R = routes[i];
-        const TransR2<Ti, Tv> *jumps = arena.r2_jumps + R.jump_offset;
-        const Tv *phases = arena.r2_phases + R.phase_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-        const int64 nb = blk_src.num_b;
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.n; ++ia)
-        {
-            for (int64 ib = 0; ib < nb; ++ib)
-            {
-                const TransR2<Ti, Tv> &j = jumps[ia];
-                const Tv *pb = phases + ib * 2;
-                const Tv vt = j.w0 * pb[0] + j.w1 * pb[1];
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_A_IDX(blk_src, j.src_idx, ib);
-                const int64 di = PURE_A_IDX(blk_dst, j.dst_idx, ib);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_pure_a_rn(
+template <int Rank, typename Ti, typename Tv>
+static inline void tvec_pure_b_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
@@ -215,309 +194,185 @@ void tvec_pure_a_rn(
     const double theta,
     Tv *__restrict__ vec)
 {
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    const Tv *weights = arena.rn_weights;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const PureRoute &R = routes[i];
-        const TransRN<Ti> *jumps = arena.rn_jumps + R.jump_offset;
-        const Tv *phases = arena.rn_phases + R.phase_offset;
         const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
         const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-        const int64 nb = blk_src.num_b;
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.n; ++ia)
-        {
-            for (int64 ib = 0; ib < nb; ++ib)
-            {
-                const TransRN<Ti> &j = jumps[ia];
-                const Tv *w = weights + j.w_offset;
-                const Tv *pb = phases + ib * rank;
-                Tv vt = {};
-                for (uint16 r = 0; r < rank; ++r)
-                {
-                    vt += w[r] * pb[r];
-                }
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_A_IDX(blk_src, j.src_idx, ib);
-                const int64 di = PURE_A_IDX(blk_dst, j.dst_idx, ib);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
 
-template <typename Ti,
-          typename Tv>
-void tvec_pure_b_r1(
-    const BasisManager<Ti> *__restrict__ basis,
-    const PureRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const PureRoute &R = routes[i];
-        const TransR1<Ti, Tv> *jumps = arena.r1_jumps + R.jump_offset;
-        const Tv *phases = arena.r1_phases + R.phase_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
+        const TransR1<Ti, Tv> *__restrict__ r1_jumps = nullptr;
+        const Tv *__restrict__ r1_phases = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ r2_jumps = nullptr;
+        const Tv *__restrict__ r2_phases = nullptr;
+        const TransRN<Ti> *__restrict__ rn_jumps = nullptr;
+        const Tv *__restrict__ rn_weights = nullptr;
+        const Tv *__restrict__ rn_phases = nullptr;
+
+        if constexpr (Rank == 1)
+        {
+            r1_jumps = arena.r1_jumps + R.jump_offset;
+            r1_phases = arena.r1_phases + R.phase_offset;
+        }
+        else if constexpr (Rank == 2)
+        {
+            r2_jumps = arena.r2_jumps + R.jump_offset;
+            r2_phases = arena.r2_phases + R.phase_offset;
+        }
+        else
+        {
+            rn_jumps = arena.rn_jumps + R.jump_offset;
+            rn_weights = arena.rn_weights;
+            rn_phases = arena.rn_phases + R.phase_offset;
+        }
 #pragma omp for collapse(2) schedule(static) nowait
         for (int64 ia = 0; ia < blk_src.num_a; ++ia)
         {
             for (uint32 ib = 0; ib < R.n; ++ib)
             {
-                const TransR1<Ti, Tv> &j = jumps[ib];
-                const Tv vt = phases[ia] * j.w0;
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_B_IDX(blk_src, ia, j.src_idx);
-                const int64 di = PURE_B_IDX(blk_dst, ia, j.dst_idx);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
+                Tv vt{};
+                Ti src_idx = 0, dst_idx = 0;
 
-template <typename Ti,
-          typename Tv>
-void tvec_pure_b_r2(
-    const BasisManager<Ti> *__restrict__ basis,
-    const PureRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const PureRoute &R = routes[i];
-        const TransR2<Ti, Tv> *jumps = arena.r2_jumps + R.jump_offset;
-        const Tv *phases = arena.r2_phases + R.phase_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (int64 ia = 0; ia < blk_src.num_a; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.n; ++ib)
-            {
-                const TransR2<Ti, Tv> &j = jumps[ib];
-                const Tv *pa = phases + ia * 2;
-                const Tv vt = pa[0] * j.w0 + pa[1] * j.w1;
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_B_IDX(blk_src, ia, j.src_idx);
-                const int64 di = PURE_B_IDX(blk_dst, ia, j.dst_idx);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_pure_b_rn(
-    const BasisManager<Ti> *__restrict__ basis,
-    const PureRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const uint16 rank,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    const Tv *weights = arena.rn_weights;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const PureRoute &R = routes[i];
-        const TransRN<Ti> *jumps = arena.rn_jumps + R.jump_offset;
-        const Tv *phases = arena.rn_phases + R.phase_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (int64 ia = 0; ia < blk_src.num_a; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.n; ++ib)
-            {
-                const TransRN<Ti> &j = jumps[ib];
-                const Tv *w = weights + j.w_offset;
-                const Tv *pa = phases + ia * rank;
-                Tv vt = {};
-                for (uint16 r = 0; r < rank; ++r)
+                if constexpr (Rank == 1)
                 {
-                    vt += pa[r] * w[r];
+                    const auto &j = r1_jumps[ib];
+                    vt = r1_phases[ia] * j.w0;
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
                 }
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = PURE_B_IDX(blk_src, ia, j.src_idx);
-                const int64 di = PURE_B_IDX(blk_dst, ia, j.dst_idx);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_mixed_r1(
-    const BasisManager<Ti> *__restrict__ basis,
-    const MixedRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const MixedRoute &R = routes[i];
-        const TransR1<Ti, Tv> *aj = arena.r1_jumps + R.a_jump_offset;
-        const TransR1<Ti, Tv> *bj = arena.r1_jumps + R.b_jump_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.na; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.nb; ++ib)
-            {
-                const TransR1<Ti, Tv> &ja = aj[ia];
-                const TransR1<Ti, Tv> &jb = bj[ib];
-                const Tv vt = ja.w0 * jb.w0;
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
-                const int64 di = MIXED_IDX(blk_dst, ja.dst_idx, jb.dst_idx);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_mixed_r2(
-    const BasisManager<Ti> *__restrict__ basis,
-    const MixedRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const MixedRoute &R = routes[i];
-        const TransR2<Ti, Tv> *aj = arena.r2_jumps + R.a_jump_offset;
-        const TransR2<Ti, Tv> *bj = arena.r2_jumps + R.b_jump_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.na; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.nb; ++ib)
-            {
-                const TransR2<Ti, Tv> &ja = aj[ia];
-                const TransR2<Ti, Tv> &jb = bj[ib];
-                const Tv vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
-                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
-                const int64 di = MIXED_IDX(blk_dst, ja.dst_idx, jb.dst_idx);
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
-            }
-        }
-    }
-}
-
-template <typename Ti,
-          typename Tv>
-void tvec_mixed_rn(
-    const BasisManager<Ti> *__restrict__ basis,
-    const MixedRoute *__restrict__ routes,
-    const uint64 num_routes,
-    const uint16 rank,
-    const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
-{
-    const double cd = cos(theta) - 1.0;
-    const double co = sin(theta);
-    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    const Tv *weights = arena.rn_weights;
-#pragma omp parallel
-    for (uint64 i = 0; i < num_routes; ++i)
-    {
-        const MixedRoute &R = routes[i];
-        const TransRN<Ti> *aj = arena.rn_jumps + R.a_jump_offset;
-        const TransRN<Ti> *bj = arena.rn_jumps + R.b_jump_offset;
-        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
-        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
-#pragma omp for collapse(2) schedule(static) nowait
-        for (uint32 ia = 0; ia < R.na; ++ia)
-        {
-            for (uint32 ib = 0; ib < R.nb; ++ib)
-            {
-                const TransRN<Ti> &ja = aj[ia];
-                const Tv *wa = weights + ja.w_offset;
-                const TransRN<Ti> &jb = bj[ib];
-                const Tv *wb = weights + jb.w_offset;
-                Tv vt = {};
-                for (uint16 r = 0; r < rank; ++r)
+                else if constexpr (Rank == 2)
                 {
-                    vt += wa[r] * wb[r];
+                    const auto &j = r2_jumps[ib];
+                    const Tv *pa = r2_phases + ia * 2;
+                    vt = pa[0] * j.w0 + pa[1] * j.w1;
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
                 }
+                else
+                {
+                    const auto &j = rn_jumps[ib];
+                    const Tv *w = rn_weights + j.w_offset;
+                    const Tv *pa = rn_phases + ia * rank;
+                    for (uint16 r = 0; r < rank; ++r)
+                    {
+                        vt += pa[r] * w[r];
+                    }
+                    src_idx = j.src_idx;
+                    dst_idx = j.dst_idx;
+                }
+
                 const Tv vd = 1.0 + cd * (vt * math_conj(vt));
                 const Tv vo_fwd = co * vt;
                 const Tv vo_rev = co * math_conj(vt);
-                const int64 si = MIXED_IDX(blk_src, ja.src_idx, jb.src_idx);
-                const int64 di = MIXED_IDX(blk_dst, ja.dst_idx, jb.dst_idx);
+                const int64 si = PURE_B_IDX(blk_src, ia, src_idx);
+                const int64 di = PURE_B_IDX(blk_dst, ia, dst_idx);
+
+                const Tv vi = vec[si];
+                const Tv vj = vec[di];
+                vec[si] = vi * vd - vj * vo_rev;
+                vec[di] = vj * vd + vi * vo_fwd;
+            }
+        }
+    }
+}
+
+template <int Rank, typename Ti, typename Tv>
+static inline void tvec_mixed_impl(
+    const BasisManager<Ti> *__restrict__ basis,
+    const MixedRoute *__restrict__ routes,
+    const uint64 num_routes,
+    const uint16 rank,
+    const GroupArena<Ti, Tv> &arena,
+    const double theta,
+    Tv *__restrict__ vec)
+{
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
+    const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
+#pragma omp parallel
+    for (uint64 i = 0; i < num_routes; ++i)
+    {
+        const MixedRoute &R = routes[i];
+        const BlockDesc<Ti> &blk_src = blocks[R.block_src_idx];
+        const BlockDesc<Ti> &blk_dst = blocks[R.block_dst_idx];
+
+        const TransR1<Ti, Tv> *__restrict__ aj1 = nullptr;
+        const TransR1<Ti, Tv> *__restrict__ bj1 = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ aj2 = nullptr;
+        const TransR2<Ti, Tv> *__restrict__ bj2 = nullptr;
+        const TransRN<Ti> *__restrict__ ajn = nullptr;
+        const TransRN<Ti> *__restrict__ bjn = nullptr;
+        const Tv *__restrict__ weights = nullptr;
+
+        if constexpr (Rank == 1)
+        {
+            aj1 = arena.r1_jumps + R.a_jump_offset;
+            bj1 = arena.r1_jumps + R.b_jump_offset;
+        }
+        else if constexpr (Rank == 2)
+        {
+            aj2 = arena.r2_jumps + R.a_jump_offset;
+            bj2 = arena.r2_jumps + R.b_jump_offset;
+        }
+        else
+        {
+            ajn = arena.rn_jumps + R.a_jump_offset;
+            bjn = arena.rn_jumps + R.b_jump_offset;
+            weights = arena.rn_weights;
+        }
+#pragma omp for collapse(2) schedule(static) nowait
+        for (uint32 ia = 0; ia < R.na; ++ia)
+        {
+            for (uint32 ib = 0; ib < R.nb; ++ib)
+            {
+                Tv vt{};
+                Ti src_a = 0, src_b = 0, dst_a = 0, dst_b = 0;
+
+                if constexpr (Rank == 1)
+                {
+                    const auto &ja = aj1[ia];
+                    const auto &jb = bj1[ib];
+                    vt = ja.w0 * jb.w0;
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                    dst_a = ja.dst_idx;
+                    dst_b = jb.dst_idx;
+                }
+                else if constexpr (Rank == 2)
+                {
+                    const auto &ja = aj2[ia];
+                    const auto &jb = bj2[ib];
+                    vt = ja.w0 * jb.w0 + ja.w1 * jb.w1;
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                    dst_a = ja.dst_idx;
+                    dst_b = jb.dst_idx;
+                }
+                else
+                {
+                    const auto &ja = ajn[ia];
+                    const auto &jb = bjn[ib];
+                    const Tv *wa = weights + ja.w_offset;
+                    const Tv *wb = weights + jb.w_offset;
+                    for (uint16 r = 0; r < rank; ++r)
+                    {
+                        vt += wa[r] * wb[r];
+                    }
+                    src_a = ja.src_idx;
+                    src_b = jb.src_idx;
+                    dst_a = ja.dst_idx;
+                    dst_b = jb.dst_idx;
+                }
+
+                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
+                const Tv vo_fwd = co * vt;
+                const Tv vo_rev = co * math_conj(vt);
+                const int64 si = MIXED_IDX(blk_src, src_a, src_b);
+                const int64 di = MIXED_IDX(blk_dst, dst_a, dst_b);
+
                 const Tv vi = vec[si];
                 const Tv vj = vec[di];
                 vec[si] = vi * vd - vj * vo_rev;
@@ -529,7 +384,7 @@ void tvec_mixed_rn(
 
 template <typename Ti,
           typename Tv>
-void tvec_diag(
+static void tvec_diag(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
@@ -544,20 +399,20 @@ void tvec_diag(
     switch (rank)
     {
     case 1:
-        tvec_diag_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_diag_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     case 2:
-        tvec_diag_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_diag_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     default:
-        tvec_diag_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_diag_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-void tvec_pure_a(
+static void tvec_pure_a(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
@@ -572,20 +427,20 @@ void tvec_pure_a(
     switch (rank)
     {
     case 1:
-        tvec_pure_a_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_a_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     case 2:
-        tvec_pure_a_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_a_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     default:
-        tvec_pure_a_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_a_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-void tvec_pure_b(
+static void tvec_pure_b(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
@@ -600,20 +455,20 @@ void tvec_pure_b(
     switch (rank)
     {
     case 1:
-        tvec_pure_b_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_b_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     case 2:
-        tvec_pure_b_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_pure_b_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     default:
-        tvec_pure_b_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_b_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-void tvec_mixed(
+static void tvec_mixed(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
@@ -628,13 +483,13 @@ void tvec_mixed(
     switch (rank)
     {
     case 1:
-        tvec_mixed_r1<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_mixed_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     case 2:
-        tvec_mixed_r2<Ti, Tv>(basis, routes, num_routes, arena, theta, vec);
+        tvec_mixed_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     default:
-        tvec_mixed_rn<Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_mixed_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
         break;
     }
 }
@@ -654,39 +509,23 @@ void tvec_svd_network(
     {
     case 0:
         tvec_diag<Ti, Tv>(
-            basis,
-            net->mixed_routes[idx],
-            net->num_mixed_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, vec);
+            basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 1:
         tvec_pure_a<Ti, Tv>(
-            basis,
-            net->pure_a_routes[idx],
-            net->num_pure_a_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, vec);
+            basis, net->pure_a_routes[idx], net->num_pure_a_routes[idx],
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 2:
         tvec_pure_b<Ti, Tv>(
-            basis,
-            net->pure_b_routes[idx],
-            net->num_pure_b_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, vec);
+            basis, net->pure_b_routes[idx], net->num_pure_b_routes[idx],
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 3:
         tvec_mixed<Ti, Tv>(
-            basis,
-            net->mixed_routes[idx],
-            net->num_mixed_routes[idx],
-            net->group_ranks[idx],
-            net->arenas[idx],
-            theta, vec);
+            basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     default:
         std::cerr << "Error: Unexpected type = " << static_cast<int>(type)

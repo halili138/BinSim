@@ -12,11 +12,10 @@ void build_pure_a(
     const Ti *flat_bzs,
     const Tv *flat_wa,
     const Tv *flat_wb,
-    const int64 *orbsym,
     const BasisManager<Ti> *basis,
     TempArena<Ti, Tv> &temp)
 {
-    int64 axsym = get_string_sym(ax, orbsym);
+    int64 axsym = get_string_sym(ax, basis->orbsym);
     const Tv *wa = flat_wa + offset_wa;
     const Ti *za = flat_azs + offset_az;
     const Tv *wb = flat_wb + offset_wb;
@@ -89,11 +88,10 @@ void build_pure_b(
     const Ti *flat_bzs,
     const Tv *flat_wa,
     const Tv *flat_wb,
-    const int64 *orbsym,
     const BasisManager<Ti> *basis,
     TempArena<Ti, Tv> &temp)
 {
-    int64 bxsym = get_string_sym(bx, orbsym);
+    int64 bxsym = get_string_sym(bx, basis->orbsym);
 
     const Tv *wa = flat_wa + offset_wa;
     const Ti *za = flat_azs + offset_az;
@@ -167,12 +165,11 @@ void build_mixed(
     const Ti *flat_bzs,
     const Tv *flat_wa,
     const Tv *flat_wb,
-    const int64 *orbsym,
     const BasisManager<Ti> *basis,
     TempArena<Ti, Tv> &temp)
 {
-    int64 axsym = get_string_sym(ax, orbsym);
-    int64 bxsym = get_string_sym(bx, orbsym);
+    int64 axsym = get_string_sym(ax, basis->orbsym);
+    int64 bxsym = get_string_sym(bx, basis->orbsym);
 
     const Tv *wa = flat_wa + offset_wa;
     const Ti *za = flat_azs + offset_az;
@@ -267,8 +264,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
     const Ti *flat_azs,
     const Ti *flat_bzs,
     const Tv *flat_wa,
-    const Tv *flat_wb,
-    const int64 *orbsym)
+    const Tv *flat_wb)
 {
     SVDNetwork<Ti, Tv> *net = new SVDNetwork<Ti, Tv>();
 
@@ -324,7 +320,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
                 g, ax, rank,
                 num_as[g], num_bs[g],
                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
-                flat_azs, flat_bzs, flat_wa, flat_wb, orbsym,
+                flat_azs, flat_bzs, flat_wa, flat_wb,
                 basis, temp);
             break;
         case 2:
@@ -332,7 +328,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
                 g, bx, rank,
                 num_as[g], num_bs[g],
                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
-                flat_azs, flat_bzs, flat_wa, flat_wb, orbsym,
+                flat_azs, flat_bzs, flat_wa, flat_wb,
                 basis, temp);
             break;
         case 0:
@@ -341,7 +337,7 @@ SVDNetwork<Ti, Tv> *create_svd_network(
                 g, ax, bx, rank,
                 num_as[g], num_bs[g],
                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
-                flat_azs, flat_bzs, flat_wa, flat_wb, orbsym,
+                flat_azs, flat_bzs, flat_wa, flat_wb,
                 basis, temp);
             break;
         default:

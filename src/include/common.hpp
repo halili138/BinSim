@@ -99,6 +99,7 @@ struct BasisManager
     BlockDesc<T> *blocks;
     int64 num_blocks;
 
+    int64 *orbsym;
     int64 *block_map;
     int64 num_irreps;
 
@@ -121,6 +122,7 @@ void destroy_basis_manager_tmpl(BasisManager<Ti> *basis)
     delete[] basis->num_astrs;
     delete[] basis->num_bstrs;
     delete[] basis->blocks;
+    delete[] basis->orbsym;
     delete[] basis->block_map;
     delete basis;
 }
@@ -143,6 +145,7 @@ void *create_basis_manager_tmpl(
     basis->num_astrs = nullptr;
     basis->num_bstrs = nullptr;
     basis->blocks = nullptr;
+    basis->orbsym = nullptr;
     basis->block_map = nullptr;
 
     try
@@ -202,6 +205,8 @@ void *create_basis_manager_tmpl(
         basis->bstrs_vec = new Ti *[num_irreps];
 
         basis->blocks = new BlockDesc<Ti>[basis->num_blocks];
+        basis->orbsym = new int64[norb];
+        std::copy(orbsym, orbsym + norb, basis->orbsym);
         basis->block_map = new int64[num_irreps * num_irreps];
         std::fill_n(basis->block_map, num_irreps * num_irreps, -1);
 
@@ -288,11 +293,10 @@ void set_det_coeff(
     const Ti target_astr,
     const Ti target_bstr,
     const Tv coeff,
-    const int64 *__restrict__ orbsym,
     Tv *vec)
 {
-    int64 asym = get_string_sym(target_astr, orbsym);
-    int64 bsym = get_string_sym(target_bstr, orbsym);
+    int64 asym = get_string_sym(target_astr, basis->orbsym);
+    int64 bsym = get_string_sym(target_bstr, basis->orbsym);
 
     if (asym >= basis->num_irreps || bsym >= basis->num_irreps)
         return;

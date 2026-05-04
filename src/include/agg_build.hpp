@@ -687,7 +687,6 @@ void build_all_agg_edges(
     const Ti *flat_bzs,
     const Tv *flat_wa,
     const Tv *flat_wb,
-    const int64 *orbsym,
     const BasisManager<Ti> *basis,
     AggSVDNetwork<Ti, Tv> *agg)
 {
@@ -725,8 +724,8 @@ void build_all_agg_edges(
 
         agg->excit_types[g] = type;
 
-        int64 axsym = get_string_sym(ax, orbsym);
-        int64 bxsym = get_string_sym(bx, orbsym);
+        int64 axsym = get_string_sym(ax, basis->orbsym);
+        int64 bxsym = get_string_sym(bx, basis->orbsym);
 
         TempArena<Ti, Tv> temp;
 
@@ -736,21 +735,21 @@ void build_all_agg_edges(
             build_pure_a<Ti, Tv>(
                 g, ax, rank, num_as[g], num_bs[g],
                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
-                flat_azs, flat_bzs, flat_wa, flat_wb,
-                orbsym, basis, temp);
+                flat_azs, flat_bzs, flat_wa, flat_wb, 
+                basis, temp);
             break;
         case 2:
             build_pure_b<Ti, Tv>(g, bx, rank, num_as[g], num_bs[g],
                                  off_az[g], off_bz[g], off_wa[g], off_wb[g],
                                  flat_azs, flat_bzs, flat_wa, flat_wb,
-                                 orbsym, basis, temp);
+                                 basis, temp);
             break;
         case 0:
         case 3:
             build_mixed<Ti, Tv>(g, ax, bx, rank, num_as[g], num_bs[g],
                                 off_az[g], off_bz[g], off_wa[g], off_wb[g],
                                 flat_azs, flat_bzs, flat_wa, flat_wb,
-                                orbsym, basis, temp);
+                                basis, temp);
             break;
         default:
             break;
@@ -953,8 +952,7 @@ void *build_direct_agg_network(
     const Ti *flat_azs,
     const Ti *flat_bzs,
     const Tv *flat_wa,
-    const Tv *flat_wb,
-    const int64 *orbsym)
+    const Tv *flat_wb)
 {
     AggSVDNetwork<Ti, Tv> *agg = new AggSVDNetwork<Ti, Tv>();
 
@@ -977,7 +975,7 @@ void *build_direct_agg_network(
 
     build_all_agg_edges<Ti, Tv>(ngs, axs, bxs, ranks, num_as, num_bs,
                                 flat_azs, flat_bzs, flat_wa, flat_wb,
-                                orbsym, basis, agg);
+                                basis, agg);
 
     return static_cast<void *>(agg);
 }

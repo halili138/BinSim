@@ -123,17 +123,17 @@ function run_vqe(mole::Mole; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     ham = JW_hamiltonian(mole)
-    ret = @timed ham_net = AGG(basis, ham, mole.orbsym)
+    ret = @timed ham_net = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
     print_info(ham_net)
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
     println("Operator pool size: $(length(pool))")
-    ret = @timed pool_net = NET(basis, pool, mole.orbsym)
+    ret = @timed pool_net = NET(basis, pool)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
     
-    v0 = get_hf(basis, mole.nelec, mole.orbsym)
+    v0 = get_hf(basis, mole.nelec)
     lv = zeros(Float64, basis.dim)
     rv = zeros(Float64, basis.dim)
     idxs = [i for i in eachindex(pool)]
@@ -172,7 +172,7 @@ function run_vqe(pbc::Pbc; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=V
 
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
-    ret = @timed ham_net = AGG(basis, ham, pbc.orbsym)
+    ret = @timed ham_net = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
     print_info(ham_net)
 
@@ -180,10 +180,10 @@ function run_vqe(pbc::Pbc; x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=V
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
     println("Operator pool size: $(length(pool))")
 
-    ret = @timed pool_net = NET(basis, pool, pbc.orbsym)
+    ret = @timed pool_net = NET(basis, pool)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
     
-    v0 = get_hf(basis, pbc.nelec, pbc.orbsym, Tv=ComplexF64)
+    v0 = get_hf(basis, pbc.nelec, Tv=ComplexF64)
     lv = zeros(ComplexF64, basis.dim)
     rv = zeros(ComplexF64, basis.dim)
     idxs = [i for i in eachindex(pool)]
@@ -364,17 +364,17 @@ function run_adapt_vqe(mole::Mole;
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     ham = JW_hamiltonian(mole)
-    ret = @timed ham_net = AGG(basis, ham, mole.orbsym)
+    ret = @timed ham_net = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
     print_info(ham_net)
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
     println("Operator pool size: $(length(pool))")
-    ret = @timed pool_net = NET(basis, pool, mole.orbsym)
+    ret = @timed pool_net = NET(basis, pool)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
 
-    v0 = get_hf(basis, mole.nelec, mole.orbsym)
+    v0 = get_hf(basis, mole.nelec)
     lv = zeros(Float64, basis.dim)
     rv = zeros(Float64, basis.dim)
     idxs = [i for i in eachindex(pool)]
@@ -414,7 +414,7 @@ function run_adapt_vqe(pbc::Pbc;
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
 
-    ret = @timed ham_net = AGG(basis, ham, pbc.orbsym)
+    ret = @timed ham_net = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
     print_info(ham_net)
 
@@ -422,10 +422,10 @@ function run_adapt_vqe(pbc::Pbc;
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
     println("Operator pool size: $(length(pool))")
 
-    ret = @timed pool_net = NET(basis, pool, pbc.orbsym)
+    ret = @timed pool_net = NET(basis, pool)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
 
-    v0 = get_hf(basis, pbc.nelec, pbc.orbsym, Tv=ComplexF64)
+    v0 = get_hf(basis, pbc.nelec, Tv=ComplexF64)
     lv = zeros(ComplexF64, basis.dim)
     rv = zeros(ComplexF64, basis.dim)
     idxs = [i for i in eachindex(pool)]
