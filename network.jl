@@ -790,8 +790,105 @@ mutable struct OTF
         
         return obj
     end
-end
 
+    function OTF(
+        basis::BasisManager, 
+        pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, 
+        tol::Float64=1e-12,
+    ) where {Ti,Tv,K,V}
+
+        groups = compress_by_svd(pool, tol)
+        ngs    = length(groups)
+        axs    = Vector{Ti}(undef, ngs)
+        bxs    = Vector{Ti}(undef, ngs)
+
+        ranks  = Vector{Int64}(undef, ngs)
+        num_as = Vector{Int64}(undef, ngs)
+        num_bs = Vector{Int64}(undef, ngs)
+        
+        flat_azs = Ti[]
+        flat_bzs = Ti[]
+        flat_wa  = Tv[]
+        flat_wb  = Tv[]
+        
+        for (g, group) in enumerate(groups)
+            axs[g]    = group.ax
+            bxs[g]    = group.bx
+            ranks[g]  = group.rank
+            
+            na = length(group.azs)
+            nb = length(group.bzs)
+            num_as[g] = na
+            num_bs[g] = nb
+            
+            append!(flat_azs, group.azs)
+            append!(flat_bzs, group.bzs)
+            
+            append!(flat_wa, vec(group.wa))
+            append!(flat_wb, vec(group.wb))
+        end
+        
+        if Tv <: Complex
+            ptr = ccall((:build_pool_network_otf_c64, LIB_OTF), Ptr{Cvoid}, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Int64,
+                    Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, 
+                    Ptr{Int64}, Ptr{Int64}, 
+                    Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Tv}, Ptr{Tv},
+                ),
+                basis.ptr, 
+                basis.norb, ngs, 
+                axs, bxs, 
+                ranks, 
+                num_as, num_bs, 
+                flat_azs, flat_bzs, 
+                flat_wa, flat_wb)
+        else
+            ptr = ccall((:build_pool_network_otf_f64, LIB_OTF), Ptr{Cvoid}, 
+                (
+                    Ptr{Cvoid}, 
+                    Int64, Int64,
+                    Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Int64}, 
+                    Ptr{Int64}, Ptr{Int64}, 
+                    Ptr{Ti}, Ptr{Ti}, 
+                    Ptr{Tv}, Ptr{Tv},
+                ),
+                basis.ptr, 
+                basis.norb, ngs, 
+                axs, bxs, 
+                ranks, 
+                num_as, num_bs, 
+                flat_azs, flat_bzs, 
+                flat_wa, flat_wb)
+        end
+
+        ptr == C_NULL && error("Failed to create C++ OTFNET.")
+
+        obj = new(ptr, basis.dim, ngs)
+        
+        if Tv <: Complex
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_network_otf_c64, LIB_OTF), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        else
+            finalizer(obj) do o
+                if o.ptr != C_NULL
+                    ccall((:destroy_network_otf_f64, LIB_OTF), Cvoid, (Ptr{Cvoid},), o.ptr)
+                    o.ptr = C_NULL
+                end
+            end
+        end
+
+        return obj
+    end
+end
 
 function hvec_otf!(basis::BasisManager, otf::OTF, src::T, dst::T) where {T<:AbstractArray{Float64,1}}
     @ccall LIB_OTF.hvec_gather_contract_otf_f64(
@@ -809,4 +906,71 @@ function hvec_otf!(basis::BasisManager, otf::OTF, src::T, dst::T) where {T<:Abst
         src::Ptr{ComplexF64},
         dst::Ptr{ComplexF64},
     )::Cvoid
+end
+
+function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{Float64,1}}
+    @ccall LIB_OTF.expm_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        vec::Ptr{Cdouble},
+    )::Cvoid
+end
+
+function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{ComplexF64,1}}
+    @ccall LIB_OTF.expm_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        vec::Ptr{ComplexF64},
+    )::Cvoid
+end
+
+function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T, rv::T) where {T<:AbstractArray{Float64,1}}
+    return @ccall LIB_OTF.grad_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        lv::Ptr{Cdouble}, 
+        rv::Ptr{Cdouble}, 
+    )::Cdouble
+end
+
+function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T, rv::T) where {T<:AbstractArray{ComplexF64,1}}
+    return @ccall LIB_OTF.grad_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64,
+        θ::Cdouble,
+        lv::Ptr{ComplexF64}, 
+        rv::Ptr{ComplexF64}, 
+    )::ComplexF64
+end
+
+function energy_objective(basis::BasisManager, ham::OTF, pool::OTF, idxs::Vector{Int64}, x::Vector{Float64}, lv::T, rv::T) where {Tv, T<:AbstractArray{Tv,1}}
+    nparas = length(x)
+
+    for i in 1:nparas
+        # println("1")
+        tvec_svd!(basis, pool, idxs[i], x[i], lv)
+    end
+
+    hvec_otf!(basis, ham, lv, rv)
+
+    lnorm  = norm(lv) ^ 2
+    rnorm  = norm(rv) ^ 2
+    energy = real(dot(lv, rv)) / lnorm
+    δ²H    = max(0.0, rnorm / lnorm - energy ^ 2)
+    grad   = Vector{Float64}(undef, nparas)
+
+    for i in nparas:-1:1
+        tvec_svd!(basis, pool, idxs[i], -x[i], lv)
+        grad[i] = real(grad_svd(basis, pool, idxs[i], x[i], lv, rv)) * 2 / lnorm
+        tvec_svd!(basis, pool, idxs[i], -x[i], rv)
+    end
+
+    return energy, grad, δ²H
 end

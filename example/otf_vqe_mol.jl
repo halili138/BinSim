@@ -5,17 +5,18 @@ function run_vqe(mole::Mole;
     x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS()
 )
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
-    println("Num symmetry allowed elements: $(basis.dim)\n")
+    psi_space = basis.dim * 8 / (1 << 30)
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
 
     ham = JW_hamiltonian(mole)
-    ret = @timed ham_net = AGG(basis, ham)
-    println("Successifully Generate Ham AGG in $(ret.time) seconds")
-    print_info(ham_net)
+
+    ret = @timed ham_otf = OTF(basis, ham)
+    println("Successifully Generate OTF in $(ret.time) seconds\n")
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
     println("Operator pool size: $(length(pool))")
-    ret = @timed pool_net = NET(basis, pool)
+    ret = @timed pool_otf = OTF(basis, pool)
     println("Successifully Generate Pool NET in $(ret.time) seconds")
     
     v0 = get_hf(basis, mole.nelec)
@@ -37,7 +38,7 @@ function run_vqe(mole::Mole;
         end
 
         lv .= v0
-        result = @timed energy_objective(basis, ham_net, pool_net, idxs, x, lv, rv)
+        result = @timed energy_objective(basis, ham_otf, pool_otf, idxs, x, lv, rv)
         energy, grad, δ²H = result.value
         norm_g  = norm(grad)
         error   = energy - mole.e_scale

@@ -17,7 +17,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     diags = get_diags(basis, ham)
 
     ret = @timed otf = OTF(basis, ham)
-    println("Successifully Generate OTF in $(ret.time) seconds")
+    println("Successifully Generate OTF in $(ret.time) seconds\n")
 
     aop! = (src, dst) -> begin
         cpu_start = CPUtime_us()

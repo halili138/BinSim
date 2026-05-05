@@ -1,4 +1,5 @@
 #include "otf.hpp"
+#include "otf_evol.hpp"
 
 extern "C"
 {
@@ -25,6 +26,29 @@ extern "C"
             flat_zas, flat_zbs, flat_wa, flat_wb);
     }
 
+    void *build_pool_network_otf_f64(
+        void *__restrict__ basis_ptr,
+        int64 norb,
+        int64 ngs,
+        const uint32 *axs,
+        const uint32 *bxs,
+        const int64 *ranks,
+        const int64 *num_zas,
+        const int64 *num_zbs,
+        const uint32 *flat_zas,
+        const uint32 *flat_zbs,
+        const double *flat_wa,
+        const double *flat_wb)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+
+        return build_pool_network_otf<uint32, double>(
+            basis,
+            norb, ngs, axs, bxs,
+            ranks, num_zas, num_zbs,
+            flat_zas, flat_zbs, flat_wa, flat_wb);
+    }
+
     void destroy_network_otf_f64(void *net_ptr)
     {
         Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
@@ -40,6 +64,33 @@ extern "C"
         const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
         const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
         contract_network_otf<uint32, double>(basis, net, src, dst);
+    }
+
+    void expm_contract_otf_f64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        double *__restrict__ vec)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        expm_svd_network_otf<uint32, double>(basis, net, idx, theta, vec);
+    }
+
+    double grad_contract_otf_f64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        const double *__restrict__ lp,
+        const double *__restrict__ rp)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        return grad_svd_network_otf<uint32, double>(basis, net, idx, theta, lp, rp);
     }
 }
 
@@ -68,6 +119,29 @@ extern "C"
             flat_zas, flat_zbs, flat_wa, flat_wb);
     }
 
+    void *build_pool_network_otf_c64(
+        void *__restrict__ basis_ptr,
+        int64 norb,
+        int64 ngs,
+        const uint32 *axs,
+        const uint32 *bxs,
+        const int64 *ranks,
+        const int64 *num_zas,
+        const int64 *num_zbs,
+        const uint32 *flat_zas,
+        const uint32 *flat_zbs,
+        const complexf64 *flat_wa,
+        const complexf64 *flat_wb)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+
+        return build_pool_network_otf<uint32, complexf64>(
+            basis,
+            norb, ngs, axs, bxs,
+            ranks, num_zas, num_zbs,
+            flat_zas, flat_zbs, flat_wa, flat_wb);
+    }
+
     void destroy_network_otf_c64(void *net_ptr)
     {
         Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
@@ -83,5 +157,32 @@ extern "C"
         const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
         const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
         contract_network_otf<uint32, complexf64>(basis, net, src, dst);
+    }
+
+    void expm_contract_otf_c64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        complexf64 *__restrict__ vec)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        expm_svd_network_otf<uint32, complexf64>(basis, net, idx, theta, vec);
+    }
+
+    complexf64 grad_contract_otf_c64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        const complexf64 *__restrict__ lp,
+        const complexf64 *__restrict__ rp)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        return grad_svd_network_otf<uint32, complexf64>(basis, net, idx, theta, lp, rp);
     }
 }

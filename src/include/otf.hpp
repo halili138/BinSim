@@ -1,8 +1,7 @@
 #pragma once
 #include "common.hpp"
-#include <vector>
 
-inline constexpr int64 BATCH_SIZE = 128;
+inline constexpr int64 BATCH_SIZE = 256;
 
 template <typename Ti,
           typename Tv>
@@ -30,8 +29,7 @@ struct IndexMap
     const int *b_idx_map;
 };
 
-template <typename Ti,
-          typename Tv>
+template <typename Ti, typename Tv>
 struct Network_OTF
 {
     IndexMap map;
@@ -41,6 +39,9 @@ struct Network_OTF
     std::vector<SVDGroup_OTF<Ti, Tv>> pure_a_groups;
     std::vector<SVDGroup_OTF<Ti, Tv>> pure_b_groups;
     std::vector<SVDGroup_OTF<Ti, Tv>> mixed_groups;
+
+    uint8 *excit_types = nullptr;
+    SVDGroup_OTF<Ti, Tv> *flat_groups = nullptr;
 };
 
 template <typename Tv>
@@ -71,8 +72,7 @@ struct SharedBatchBuffer
     inline Tv *ptr_phase(int64 batch_idx) { return batch_phase.data() + batch_idx * max_b_count * max_rank; }
 };
 
-template <typename Ti,
-          typename Tv>
+template <typename Ti, typename Tv>
 void destroy_network_otf(void *net_ptr)
 {
     if (!net_ptr)
@@ -80,30 +80,35 @@ void destroy_network_otf(void *net_ptr)
 
     Network_OTF<Ti, Tv> *net = static_cast<Network_OTF<Ti, Tv> *>(net_ptr);
 
-    auto clear_bucket = [](std::vector<SVDGroup_OTF<Ti, Tv>> &group_vec)
+    auto free_group_inner = [](SVDGroup_OTF<Ti, Tv> &group)
+    {
+        if (group.unique_zas)
+        {
+            delete[] group.unique_zas;
+            group.unique_zas = nullptr;
+        }
+        if (group.unique_zbs)
+        {
+            delete[] group.unique_zbs;
+            group.unique_zbs = nullptr;
+        }
+        if (group.wa)
+        {
+            delete[] group.wa;
+            group.wa = nullptr;
+        }
+        if (group.wb)
+        {
+            delete[] group.wb;
+            group.wb = nullptr;
+        }
+    };
+
+    auto clear_bucket = [&](std::vector<SVDGroup_OTF<Ti, Tv>> &group_vec)
     {
         for (auto &group : group_vec)
         {
-            if (group.unique_zas)
-            {
-                delete[] group.unique_zas;
-                group.unique_zas = nullptr;
-            }
-            if (group.unique_zbs)
-            {
-                delete[] group.unique_zbs;
-                group.unique_zbs = nullptr;
-            }
-            if (group.wa)
-            {
-                delete[] group.wa;
-                group.wa = nullptr;
-            }
-            if (group.wb)
-            {
-                delete[] group.wb;
-                group.wb = nullptr;
-            }
+            free_group_inner(group);
         }
         group_vec.clear();
     };
@@ -112,6 +117,22 @@ void destroy_network_otf(void *net_ptr)
     clear_bucket(net->pure_a_groups);
     clear_bucket(net->pure_b_groups);
     clear_bucket(net->mixed_groups);
+
+    if (net->flat_groups)
+    {
+        for (int64 i = 0; i < net->num_groups; ++i)
+        {
+            free_group_inner(net->flat_groups[i]);
+        }
+        delete[] net->flat_groups;
+        net->flat_groups = nullptr;
+    }
+
+    if (net->excit_types)
+    {
+        delete[] net->excit_types;
+        net->excit_types = nullptr;
+    }
 
     if (net->map.a_idx_map)
     {
@@ -228,7 +249,7 @@ static inline void gather_contract_diag_batched_impl(
     const int64 num_blocks = basis->num_blocks;
 
     int max_b_count = 0;
-    for (int64 i = 0; i < basis->num_blocks; ++i)
+    for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
@@ -314,6 +335,17 @@ static inline void gather_contract_diag_batched_impl(
                                 }
                                 pbn[r] = ptn;
                             }
+                            // for (uint16 r = 0; r < rank; ++r)
+                            // {
+                            //     Tv ptn = {};
+                            //     const Tv *wr = group.ptr_wb(r);
+                            //     for (int k = 0; k < group.num_zb; ++k)
+                            //     {
+                            //         const bool parity = std::popcount(str_b & zbs[k]) & 1;
+                            //         ptn += parity ? -wr[k] : wr[k];
+                            //     }
+                            //     pb0[r * max_b_count + b] = ptn;
+                            // }
                         }
                     }
                 }
@@ -390,6 +422,16 @@ static inline void gather_contract_diag_batched_impl(
                                 }
                                 dst[b] += src[b] * vt;
                             }
+                            // #pragma omp simd
+                            //                             for (int b = 0; b < b_count; ++b)
+                            //                             {
+                            //                                 Tv vt = {};
+                            //                                 for (uint16 r = 0; r < rank; ++r)
+                            //                                 {
+                            //                                     vt += pan[r] * pb0[r * max_b_count + b];
+                            //                                 }
+                            //                                 dst[b] += src[b] * vt;
+                            //                             }
                         }
                     }
                 }
@@ -414,7 +456,7 @@ static inline void gather_contract_pure_a_batched_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int max_b_count = 0;
-    for (int64 i = 0; i < basis->num_blocks; ++i)
+    for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
@@ -621,7 +663,7 @@ static inline void gather_contract_pure_b_batched_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int max_b_count = 0;
-    for (int64 i = 0; i < basis->num_blocks; ++i)
+    for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
@@ -840,7 +882,7 @@ static inline void gather_contract_mixed_batched_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int max_b_count = 0;
-    for (int64 i = 0; i < basis->num_blocks; ++i)
+    for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
@@ -1158,7 +1200,7 @@ void contract_network_otf(
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
-        dst[i] = {};
+        dst_vec[i] = {};
     }
 
     dispatch_chunks_by_rank<0>(basis, net->map, net->diag_groups, src_vec, dst_vec);
