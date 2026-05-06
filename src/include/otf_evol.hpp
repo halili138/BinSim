@@ -65,6 +65,33 @@ static FORCE_INLINE void compute_phases_direct(
     }
 }
 
+template <int Rank, typename Tv>
+static FORCE_INLINE Tv compute_coeff(
+    int a, int b,
+    const Tv *__restrict__ pa,
+    const Tv *__restrict__ pb,
+    int max_a_count, int max_b_count, uint16 rank)
+{
+    Tv vt = {};
+    if constexpr (Rank == 1)
+    {
+        vt = pa[a] * pb[b];
+    }
+    else if constexpr (Rank == 2)
+    {
+        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
+    }
+    else
+    {
+        for (uint16 r = 0; r < rank; ++r)
+        {
+            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
+        }
+    }
+
+    return vt;
+}
+
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE int compute_phases_indirect(
     Ti x,
@@ -162,15 +189,11 @@ static FORCE_INLINE void expm_contract_diag_otf_impl(
     const int64 num_blocks = basis->num_blocks;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -202,23 +225,7 @@ static FORCE_INLINE void expm_contract_diag_otf_impl(
             {
                 for (int b = 0; b < b_count; ++b)
                 {
-                    Tv vt = {};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv u = fast_diag_exp<Tv>(vt, theta);
                     const int64 i = block.offset + (int64)a * b_count + b;
                     vec[i] *= u;
@@ -250,15 +257,11 @@ static FORCE_INLINE Tv grad_contract_diag_otf_impl(
     const int64 num_blocks = basis->num_blocks;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -292,23 +295,7 @@ static FORCE_INLINE Tv grad_contract_diag_otf_impl(
             {
                 for (int b = 0; b < b_count; ++b)
                 {
-                    Tv vt = {};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv du = fast_diag_grad<Tv>(vt, theta);
                     const int64 i = block.offset + (int64)a * b_count + b;
                     const Tv lv = lp[i];
@@ -348,15 +335,11 @@ static FORCE_INLINE void expm_contract_pure_a_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -406,23 +389,7 @@ static FORCE_INLINE void expm_contract_pure_a_otf_impl(
             {
                 for (int b = 0; b < dst_block.num_b; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = 1.0 + cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);
@@ -468,15 +435,11 @@ static FORCE_INLINE Tv grad_contract_pure_a_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -528,23 +491,7 @@ static FORCE_INLINE Tv grad_contract_pure_a_otf_impl(
             {
                 for (int b = 0; b < dst_block.num_b; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);
@@ -591,15 +538,11 @@ static FORCE_INLINE void expm_contract_pure_b_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -649,23 +592,7 @@ static FORCE_INLINE void expm_contract_pure_b_otf_impl(
             {
                 for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = 1.0 + cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);
@@ -711,15 +638,11 @@ static FORCE_INLINE Tv grad_contract_pure_b_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -771,23 +694,7 @@ static FORCE_INLINE Tv grad_contract_pure_b_otf_impl(
             {
                 for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);
@@ -834,15 +741,11 @@ static FORCE_INLINE void expm_contract_mixed_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -899,23 +802,7 @@ static FORCE_INLINE void expm_contract_mixed_otf_impl(
             {
                 for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = 1.0 + cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);
@@ -961,15 +848,11 @@ static FORCE_INLINE Tv grad_contract_mixed_otf_impl(
     const int64 num_irreps = basis->num_irreps;
 
     int64 max_a_count = 0;
+    int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
         if (blocks[i].num_a > max_a_count)
             max_a_count = blocks[i].num_a;
-    }
-
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
         if (blocks[i].num_b > max_b_count)
             max_b_count = blocks[i].num_b;
     }
@@ -1028,23 +911,7 @@ static FORCE_INLINE Tv grad_contract_mixed_otf_impl(
             {
                 for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv vt{};
-                    if constexpr (Rank == 1)
-                    {
-                        vt = pa[a] * pb[b];
-                    }
-                    else if constexpr (Rank == 2)
-                    {
-                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-                    }
-                    else
-                    {
-                        for (uint16 r = 0; r < rank; ++r)
-                        {
-                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-                        }
-                    }
-
+                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const Tv vd = cd * (vt * math_conj(vt));
                     const Tv vo_fwd = co * vt;
                     const Tv vo_rev = co * math_conj(vt);

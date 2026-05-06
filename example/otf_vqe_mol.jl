@@ -17,7 +17,7 @@ function run_vqe(mole::Mole;
     pool = FEB(orbs)
     println("Operator pool size: $(length(pool))")
     ret = @timed pool_otf = OTF(basis, pool)
-    println("Successifully Generate Pool NET in $(ret.time) seconds")
+    println("Successifully Generate Pool OTF in $(ret.time) seconds\n")
     
     v0 = get_hf(basis, mole.nelec)
     lv = zeros(Float64, basis.dim)
