@@ -65,33 +65,6 @@ static FORCE_INLINE void compute_phases_direct(
     }
 }
 
-template <int Rank, typename Tv>
-static FORCE_INLINE Tv compute_coeff(
-    int a, int b,
-    const Tv *__restrict__ pa,
-    const Tv *__restrict__ pb,
-    int max_a_count, int max_b_count, uint16 rank)
-{
-    Tv vt = {};
-    if constexpr (Rank == 1)
-    {
-        vt = pa[a] * pb[b];
-    }
-    else if constexpr (Rank == 2)
-    {
-        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
-    }
-    else
-    {
-        for (uint16 r = 0; r < rank; ++r)
-        {
-            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
-        }
-    }
-
-    return vt;
-}
-
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE int compute_phases_indirect(
     Ti x,
@@ -166,6 +139,33 @@ static FORCE_INLINE int compute_phases_indirect(
     }
 
     return count;
+}
+
+template <int Rank, typename Tv>
+static FORCE_INLINE Tv compute_coeff(
+    int a, int b,
+    const Tv *__restrict__ pa,
+    const Tv *__restrict__ pb,
+    int max_a_count, int max_b_count, uint16 rank)
+{
+    Tv vt = {};
+    if constexpr (Rank == 1)
+    {
+        vt = pa[a] * pb[b];
+    }
+    else if constexpr (Rank == 2)
+    {
+        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
+    }
+    else
+    {
+        for (uint16 r = 0; r < rank; ++r)
+        {
+            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
+        }
+    }
+
+    return vt;
 }
 
 template <int Rank, typename Ti, typename Tv>
