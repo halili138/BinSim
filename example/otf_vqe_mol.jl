@@ -24,6 +24,10 @@ function run_vqe(mole::Mole;
     rv = zeros(Float64, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
+    f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
+    f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
+    f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
+
     if !isempty(x0)
         @assert length(x0) == length(idxs)
     else
@@ -38,7 +42,7 @@ function run_vqe(mole::Mole;
         end
 
         lv .= v0
-        result = @timed energy_objective(basis, ham_otf, pool_otf, idxs, x, lv, rv)
+        result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
         energy, grad, δ²H = result.value
         norm_g  = norm(grad)
         error   = energy - mole.e_scale

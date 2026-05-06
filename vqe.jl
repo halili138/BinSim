@@ -143,9 +143,9 @@ end
 
 
 function _adapt_vqe(
-    basis::BasisManager,
-    ham_net::AGG,
-    pool_net::NET,
+    f_hvec::Function,
+    f_tvec::Function,
+    f_grad::Function,
     idxs::Vector{Int64},
     v0::Vector{Tv},
     lv::Vector{Tv},
@@ -161,7 +161,7 @@ function _adapt_vqe(
     if !isempty(amplitudes)
         lv .= v0
         for i in eachindex(amplitudes)
-            tvec_svd!(basis, pool_net, selec_idxs[i], amplitudes[i], lv)
+            f_tvec(selec_idxs[i], amplitudes[i], lv)
         end
     end
 
@@ -176,10 +176,10 @@ function _adapt_vqe(
     @time while !converged
         iter += 1
         
-        hvec_direct_agg!(basis, ham_net, lv, rv)
+        f_hvec(lv, rv)
         
         for i in eachindex(idxs)
-            zero_grads[i] = real(grad_svd(basis, pool_net, idxs[i], 0.0, lv, rv)) * 2
+            zero_grads[i] = real(f_grad(idxs[i], 0.0, lv, rv)) * 2
         end
         
         max_idx = sortperm(abs.(zero_grads), rev=true)[1]
@@ -196,7 +196,7 @@ function _adapt_vqe(
 
         obj_func = x -> begin
             lv .= v0
-            result = @timed energy_objective(basis, ham_net, pool_net, selec_idxs, x, lv, rv)
+            result = @timed energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)
             energy, gradient, δ²H = result.value
             vqe_options.verbose > 1 && show_optimze(energy, norm(gradient), δ²H, energy-e_scale)
             vqe_options.verbose > 2 && show_time(result)
@@ -218,7 +218,7 @@ function _adapt_vqe(
 
         lv .= v0
         for i in eachindex(amplitudes)
-            tvec_svd!(basis, pool_net, selec_idxs[i], amplitudes[i], lv)
+            f_tvec(selec_idxs[i], amplitudes[i], lv)
         end
 
         cond1::Bool = iter > maxiter
@@ -244,7 +244,6 @@ function _adapt_vqe(
         end
     end
 end
-
 
 function load_idxs(read_path::String)
     @assert isfile(read_path)

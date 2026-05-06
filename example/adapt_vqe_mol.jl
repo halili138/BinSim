@@ -10,9 +10,9 @@ function run_adapt_vqe(mole::Mole;
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     ham = JW_hamiltonian(mole)
-    ret = @timed ham_net = AGG(basis, ham)
+    ret = @timed ham_agg = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
-    print_info(ham_net)
+    print_info(ham_agg)
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
@@ -25,6 +25,10 @@ function run_adapt_vqe(mole::Mole;
     rv = zeros(Float64, basis.dim)
     idxs = [i for i in eachindex(pool)]
     
+    f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
+    f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
+    f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
+
     if !isempty(amplitudes) && !isempty(selec_idxs)
         @assert length(amplitudes) == length(selec_idxs)
     else
@@ -33,9 +37,9 @@ function run_adapt_vqe(mole::Mole;
     end
 
     _adapt_vqe(
-        basis,
-        ham_net, 
-        pool_net,  
+        f_hvec,
+        f_tvec, 
+        f_grad,  
         idxs, 
         v0, 
         lv, 

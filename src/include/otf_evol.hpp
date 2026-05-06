@@ -2,7 +2,147 @@
 #include "otf.hpp"
 
 template <int Rank, typename Ti, typename Tv>
-static inline void expm_contract_diag_otf_impl(
+static FORCE_INLINE void compute_phases_direct(
+    const Ti *__restrict__ strs, int num_strs,
+    const Tv *__restrict__ w0,
+    const Ti *__restrict__ zs, int num_zs,
+    Tv *__restrict__ p0, int max_count,
+    uint16 rank)
+{
+    if constexpr (Rank == 1)
+    {
+        for (int i = 0; i < num_strs; ++i)
+        {
+            const Ti str = strs[i];
+            Tv pt0 = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                const bool parity = std::popcount(str & zs[k]) & 1;
+                pt0 += parity ? -w0[k] : w0[k];
+            }
+            p0[i] = pt0;
+        }
+    }
+    else if constexpr (Rank == 2)
+    {
+        const Tv *w1 = w0 + num_zs;
+        Tv *p1 = p0 + max_count;
+
+        for (int i = 0; i < num_strs; ++i)
+        {
+            const Ti str = strs[i];
+            Tv pt0 = {};
+            Tv pt1 = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                const bool parity = std::popcount(str & zs[k]) & 1;
+                pt0 += parity ? -w0[k] : w0[k];
+                pt1 += parity ? -w1[k] : w1[k];
+            }
+            p0[i] = pt0;
+            p1[i] = pt1;
+        }
+    }
+    else
+    {
+        for (uint16 r = 0; r < rank; ++r)
+        {
+            const Tv *wr = w0 + r * num_zs;
+            Tv *pr = p0 + r * max_count;
+
+            for (int i = 0; i < num_strs; ++i)
+            {
+                const Ti str = strs[i];
+                Tv ptn = {};
+                for (int k = 0; k < num_zs; ++k)
+                {
+                    const bool parity = std::popcount(str & zs[k]) & 1;
+                    ptn += parity ? -wr[k] : wr[k];
+                }
+                pr[i] = ptn;
+            }
+        }
+    }
+}
+
+template <int Rank, typename Ti, typename Tv>
+static FORCE_INLINE int compute_phases_indirect(
+    Ti x,
+    const int *idx_map,
+    const Ti *__restrict__ strs, int num_strs,
+    const Tv *__restrict__ w0,
+    const Ti *__restrict__ zs, int num_zs,
+    int *__restrict__ src_idxs,
+    int *__restrict__ dst_idxs,
+    Tv *__restrict__ p0, int max_count,
+    uint16 rank,
+    bool is_same_block, bool enforce_upper_triangle)
+{
+    int count = 0;
+    for (int i = 0; i < num_strs; ++i)
+    {
+        Ti dst_str = strs[i];
+        Ti src_str = dst_str ^ x;
+        int src_idx = idx_map[src_str];
+
+        if (src_idx == -1)
+            continue;
+
+        if (is_same_block && enforce_upper_triangle && src_idx < i)
+            continue;
+
+        src_idxs[count] = src_idx;
+        dst_idxs[count] = i;
+
+        if constexpr (Rank == 1)
+        {
+            Tv pt0 = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                const bool parity = std::popcount(src_str & zs[k]) & 1;
+                pt0 += parity ? -w0[k] : w0[k];
+            }
+            p0[count] = pt0;
+        }
+        else if constexpr (Rank == 2)
+        {
+            const Tv *w1 = w0 + num_zs;
+
+            Tv pt0 = {}, pt1 = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                const bool parity = std::popcount(src_str & zs[k]) & 1;
+                pt0 += parity ? -w0[k] : w0[k];
+                pt1 += parity ? -w1[k] : w1[k];
+            }
+
+            p0[count] = pt0;
+            p0[count + max_count] = pt1;
+        }
+        else
+        {
+            for (int r = 0; r < rank; ++r)
+            {
+                const Tv *wr = w0 + r * num_zs;
+
+                Tv ptr = {};
+                for (int k = 0; k < num_zs; ++k)
+                {
+                    const bool parity = std::popcount(src_str & zs[k]) & 1;
+                    ptr += parity ? -wr[k] : wr[k];
+                }
+
+                p0[count + r * max_count] = ptr;
+            }
+        }
+        count++;
+    }
+
+    return count;
+}
+
+template <int Rank, typename Ti, typename Tv>
+static FORCE_INLINE void expm_contract_diag_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -21,6 +161,13 @@ static inline void expm_contract_diag_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -28,136 +175,53 @@ static inline void expm_contract_diag_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
-
 #pragma omp parallel
     {
+        std::vector<Tv> local_a_phase(max_b_count * rank);
+        std::vector<Tv> local_b_phase(max_b_count * rank);
+
         for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
         {
             const BlockDesc<Ti> &block = blocks[block_idx];
             const int a_count = block.num_a;
             const int b_count = block.num_b;
-#pragma omp single
-            {
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Ti str_b = block.bstrs[b];
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[b] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Ti str_b = block.bstrs[b];
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[b] = pt0;
-                        pb1[b] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int b = 0; b < b_count; ++b)
-                        {
-                            Ti str_b = block.bstrs[b];
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[b] = ptn;
-                        }
-                    }
-                }
-            }
+            Tv *__restrict__ pa0 = local_a_phase.data();
+            Tv *__restrict__ pb0 = local_b_phase.data();
 
-#pragma omp for schedule(dynamic)
+            compute_phases_direct<Rank, Ti, Tv>(
+                block.astrs, a_count, wa0, zas, num_za, pa0, max_a_count, rank);
+
+            compute_phases_direct<Rank, Ti, Tv>(
+                block.bstrs, b_count, wb0, zbs, num_zb, pb0, max_b_count, rank);
+
+            const Tv *__restrict__ pa = local_a_phase.data();
+            const Tv *__restrict__ pb = local_b_phase.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
             for (int a = 0; a < a_count; ++a)
             {
-                const Ti str_a = block.astrs[a];
-                Tv *vp = vec + block.offset + (int64)a * b_count;
-                const Tv *pb0 = shared_b_phase.data();
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < b_count; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt = {};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd
-                    for (int b = 0; b < b_count; ++b)
+                    else if constexpr (Rank == 2)
                     {
-                        const Tv vt = pa0 * pb0[b];
-                        const Tv u = fast_diag_exp<Tv>(vt, theta);
-                        *(vp + b) *= u;
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        const Tv vt = pa0 * pb0[b] + pa1 * pb1[b];
-                        const Tv u = fast_diag_exp<Tv>(vt, theta);
-                        *(vp + b) *= u;
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + b];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-                        const Tv u = fast_diag_exp<Tv>(vt, theta);
-                        *(vp + b) *= u;
                     }
+
+                    const Tv u = fast_diag_exp<Tv>(vt, theta);
+                    const int64 i = block.offset + (int64)a * b_count + b;
+                    vec[i] *= u;
                 }
             }
         }
@@ -165,7 +229,7 @@ static inline void expm_contract_diag_otf_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_contract_diag_otf_impl(
+static FORCE_INLINE Tv grad_contract_diag_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -185,6 +249,13 @@ static inline Tv grad_contract_diag_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -192,153 +263,67 @@ static inline Tv grad_contract_diag_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
+    Tv res = {};
 
-    Tv global_res = {};
-
-#pragma omp parallel reduction(+ : global_res)
+#pragma omp parallel reduction(+ : res)
     {
+        std::vector<Tv> local_a_phase(max_b_count * rank);
+        std::vector<Tv> local_b_phase(max_b_count * rank);
+
         for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
         {
             const BlockDesc<Ti> &block = blocks[block_idx];
             const int a_count = block.num_a;
             const int b_count = block.num_b;
-#pragma omp single
-            {
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Ti str_b = block.bstrs[b];
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[b] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Ti str_b = block.bstrs[b];
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[b] = pt0;
-                        pb1[b] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int b = 0; b < b_count; ++b)
-                        {
-                            Ti str_b = block.bstrs[b];
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[b] = ptn;
-                        }
-                    }
-                }
-            }
+            Tv *__restrict__ pa0 = local_a_phase.data();
+            Tv *__restrict__ pb0 = local_b_phase.data();
 
-#pragma omp for schedule(dynamic)
+            compute_phases_direct<Rank, Ti, Tv>(
+                block.astrs, a_count, wa0, zas, num_za, pa0, max_a_count, rank);
+
+            compute_phases_direct<Rank, Ti, Tv>(
+                block.bstrs, b_count, wb0, zbs, num_zb, pb0, max_b_count, rank);
+
+            const Tv *__restrict__ pa = local_a_phase.data();
+            const Tv *__restrict__ pb = local_b_phase.data();
+
+#pragma omp for schedule(dynamic) nowait
             for (int a = 0; a < a_count; ++a)
             {
-                const Ti str_a = block.astrs[a];
-                const int64 cur_idx = block.offset + (int64)a * b_count;
-                const Tv *l = lp + cur_idx;
-                const Tv *r = rp + cur_idx;
-                const Tv *pb0 = shared_b_phase.data();
-
-                Tv local_res = {};
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < b_count; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt = {};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < b_count; ++b)
+                    else if constexpr (Rank == 2)
                     {
-                        const Tv vt = pa0 * pb0[b];
-                        const Tv du = fast_diag_grad<Tv>(vt, theta);
-                        local_res += math_conj(l[b] * du) * r[b];
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        const Tv vt = pa0 * pb0[b] + pa1 * pb1[b];
-                        const Tv du = fast_diag_grad<Tv>(vt, theta);
-                        local_res += math_conj(l[b] * du) * r[b];
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < b_count; ++b)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + b];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-
-                        const Tv du = fast_diag_grad<Tv>(vt, theta);
-                        local_res += math_conj(l[b] * du) * r[b];
                     }
+
+                    const Tv du = fast_diag_grad<Tv>(vt, theta);
+                    const int64 i = block.offset + (int64)a * b_count + b;
+                    const Tv lv = lp[i];
+                    const Tv rv = rp[i];
+                    res += math_conj(lv * du) * rv;
                 }
-                global_res += local_res;
             }
         }
     }
-    return global_res;
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline void expm_contract_pure_a_otf_impl(
+static FORCE_INLINE void expm_contract_pure_a_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -362,6 +347,13 @@ static inline void expm_contract_pure_a_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -369,15 +361,16 @@ static inline void expm_contract_pure_a_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
-
 #pragma omp parallel
     {
+        std::vector<int> src_a(max_a_count);
+        std::vector<int> dst_a(max_a_count);
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 axsym = get_string_sym(group.ax, orbsym);
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + dst_block.bsym;
             const int64 src_block_idx = block_map[bid];
@@ -391,158 +384,57 @@ static inline void expm_contract_pure_a_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
+            int valid_na = compute_phases_indirect<Rank, Ti, Tv>(
+                group.ax, idx_map.a_idx_map,
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                src_a.data(), dst_a.data(), phase_a.data(),
+                max_a_count, rank, is_same_block, true);
+
+            if (valid_na == 0)
+                continue;
+
+            compute_phases_direct<Rank, Ti, Tv>(
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                phase_b.data(),
+                max_b_count, rank);
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < valid_na; ++a)
             {
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
+                for (int b = 0; b < dst_block.num_b; ++b)
                 {
-                    for (int b = 0; b < dst_b_count; ++b)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        Ti str_b = dst_block.bstrs[b];
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[b] = pt0;
+                        vt = pa[a] * pb[b];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int b = 0; b < dst_b_count; ++b)
+                    else if constexpr (Rank == 2)
                     {
-                        Ti str_b = dst_block.bstrs[b];
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[b] = pt0;
-                        pb1[b] = pt1;
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
+                    else
                     {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int b = 0; b < dst_b_count; ++b)
-                        {
-                            Ti str_b = dst_block.bstrs[b];
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[b] = ptn;
-                        }
-                    }
-                }
-            }
-
-#pragma omp for schedule(dynamic)
-            for (int dst_a_idx = 0; dst_a_idx < dst_a_count; ++dst_a_idx)
-            {
-                const Ti dst_str_a = dst_block.astrs[dst_a_idx];
-                const Ti src_str_a = dst_str_a ^ group.ax;
-                const int src_a_idx = idx_map.a_idx_map[src_str_a];
-
-                if (src_a_idx == -1)
-                    continue;
-
-                if (is_same_block && src_a_idx < dst_a_idx)
-                    continue;
-
-                Tv *src = vec + src_block.offset + (int64)src_a_idx * src_block.num_b;
-                Tv *dst = vec + dst_block.offset + (int64)dst_a_idx * dst_block.num_b;
-                const Tv *pb0 = shared_b_phase.data();
-
-                if constexpr (Rank == 1)
-                {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
-                    {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                    }
-#pragma omp simd
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        Tv *sp = src + b;
-                        Tv *dp = dst + b;
-                        const Tv vt = pa0 * pb0[b];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
-                    {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        Tv *sp = src + b;
-                        Tv *dp = dst + b;
-                        const Tv vt = pa0 * pb0[b] + pa1 * pb1[b];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + b];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-                        Tv *sp = src + b;
-                        Tv *dp = dst + b;
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
                     }
+
+                    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + src_a[a] * src_block.num_b + b;
+                    const int64 di = dst_block.offset + dst_a[a] * dst_block.num_b + b;
+
+                    const Tv vi = vec[si];
+                    const Tv vj = vec[di];
+
+                    vec[si] = vi * vd - vj * vo_rev;
+                    vec[di] = vj * vd + vi * vo_fwd;
                 }
             }
         }
@@ -550,7 +442,7 @@ static inline void expm_contract_pure_a_otf_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_contract_pure_a_otf_impl(
+static FORCE_INLINE Tv grad_contract_pure_a_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -575,6 +467,13 @@ static inline Tv grad_contract_pure_a_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -582,17 +481,18 @@ static inline Tv grad_contract_pure_a_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
+    Tv res = {};
 
-    Tv global_res = {};
-
-#pragma omp parallel reduction(+ : global_res)
+#pragma omp parallel reduction(+ : res)
     {
+        std::vector<int> src_a(max_a_count);
+        std::vector<int> dst_a(max_a_count);
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 axsym = get_string_sym(group.ax, orbsym);
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + dst_block.bsym;
             const int64 src_block_idx = block_map[bid];
@@ -606,177 +506,67 @@ static inline Tv grad_contract_pure_a_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
+            int valid_na = compute_phases_indirect<Rank, Ti, Tv>(
+                group.ax, idx_map.a_idx_map,
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                src_a.data(), dst_a.data(), phase_a.data(),
+                max_a_count, rank, is_same_block, true);
+
+            if (valid_na == 0)
+                continue;
+
+            compute_phases_direct<Rank, Ti, Tv>(
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                phase_b.data(),
+                max_b_count, rank);
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < valid_na; ++a)
             {
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
+                for (int b = 0; b < dst_block.num_b; ++b)
                 {
-                    for (int b = 0; b < dst_b_count; ++b)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        Ti str_b = dst_block.bstrs[b];
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[b] = pt0;
+                        vt = pa[a] * pb[b];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int b = 0; b < dst_b_count; ++b)
+                    else if constexpr (Rank == 2)
                     {
-                        Ti str_b = dst_block.bstrs[b];
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[b] = pt0;
-                        pb1[b] = pt1;
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
+                    else
                     {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int b = 0; b < dst_b_count; ++b)
-                        {
-                            Ti str_b = dst_block.bstrs[b];
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[b] = ptn;
-                        }
-                    }
-                }
-            }
-
-#pragma omp for schedule(dynamic)
-            for (int dst_a_idx = 0; dst_a_idx < dst_a_count; ++dst_a_idx)
-            {
-                const Ti dst_str_a = dst_block.astrs[dst_a_idx];
-                const Ti src_str_a = dst_str_a ^ group.ax;
-                const int src_a_idx = idx_map.a_idx_map[src_str_a];
-
-                if (src_a_idx == -1)
-                    continue;
-
-                if (is_same_block && src_a_idx < dst_a_idx)
-                    continue;
-
-                const int64 src_row = src_block.offset + (int64)src_a_idx * src_block.num_b;
-                const int64 dst_row = dst_block.offset + (int64)dst_a_idx * dst_block.num_b;
-
-                const Tv *pb0 = shared_b_phase.data();
-                Tv local_res = {};
-
-                if constexpr (Rank == 1)
-                {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
-                    {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                    }
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        const int64 si = src_row + b;
-                        const int64 di = dst_row + b;
-                        const Tv vt = pa0 * pb0[b];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
-                    {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        const int64 si = src_row + b;
-                        const int64 di = dst_row + b;
-                        const Tv vt = pa0 * pb0[b] + pa1 * pb1[b];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd reduction(+ : local_res)
-                    for (int b = 0; b < dst_b_count; ++b)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + b];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-
-                        const int64 si = src_row + b;
-                        const int64 di = dst_row + b;
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                     }
+
+                    const Tv vd = cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + src_a[a] * src_block.num_b + b;
+                    const int64 di = dst_block.offset + dst_a[a] * dst_block.num_b + b;
+
+                    const Tv r0 = rp[si];
+                    const Tv r1 = rp[di];
+
+                    res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
+                           math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                 }
-                global_res += local_res;
             }
         }
     }
-    return global_res;
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline void expm_contract_pure_b_otf_impl(
+static FORCE_INLINE void expm_contract_pure_b_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -800,6 +590,13 @@ static inline void expm_contract_pure_b_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -807,19 +604,16 @@ static inline void expm_contract_pure_b_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<int> shared_src_b(max_b_count);
-    std::vector<int> shared_dst_b(max_b_count);
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
-
-    int valid_b_count = 0;
-
 #pragma omp parallel
     {
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<int> src_b(max_b_count);
+        std::vector<int> dst_b(max_b_count);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 bxsym = get_string_sym(group.bx, orbsym);
             const int64 bid = dst_block.asym * num_irreps + (dst_block.bsym ^ bxsym);
             const int64 src_block_idx = block_map[bid];
@@ -833,175 +627,57 @@ static inline void expm_contract_pure_b_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
-            {
-                int count = 0;
-                for (int dst_b_idx = 0; dst_b_idx < dst_b_count; ++dst_b_idx)
-                {
-                    const Ti dst_str_b = dst_block.bstrs[dst_b_idx];
-                    const Ti src_str_b = dst_str_b ^ group.bx;
-                    const int src_b_idx = idx_map.b_idx_map[src_str_b];
+            int valid_nb = compute_phases_indirect<Rank, Ti, Tv>(
+                group.bx, idx_map.b_idx_map,
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                src_b.data(), dst_b.data(), phase_b.data(),
+                max_b_count, rank, is_same_block, true);
 
-                    if (src_b_idx == -1)
-                        continue;
-
-                    if (is_same_block && src_b_idx < dst_b_idx)
-                        continue;
-
-                    shared_dst_b[count] = dst_b_idx;
-                    shared_src_b[count] = src_b_idx;
-                    count++;
-                }
-
-                valid_b_count = count;
-
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[vb] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[vb] = pt0;
-                        pb1[vb] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int vb = 0; vb < valid_b_count; ++vb)
-                        {
-                            Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[vb] = ptn;
-                        }
-                    }
-                }
-            }
-
-            if (valid_b_count == 0)
-            {
-#pragma omp barrier
+            if (valid_nb == 0)
                 continue;
-            }
 
-#pragma omp for schedule(dynamic)
-            for (int a = 0; a < dst_a_count; ++a)
+            compute_phases_direct<Rank, Ti, Tv>(
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                phase_a.data(),
+                max_a_count, rank);
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < dst_block.num_a; ++a)
             {
-                const Ti str_a = dst_block.astrs[a];
-                Tv *src = vec + src_block.offset + (int64)a * src_block.num_b;
-                Tv *dst = vec + dst_block.offset + (int64)a * dst_block.num_b;
-                const Tv *pb0 = shared_b_phase.data();
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
+                    else if constexpr (Rank == 2)
                     {
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb] + pa1 * pb1[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + vb];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
                     }
+
+                    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + a * src_block.num_b + src_b[b];
+                    const int64 di = dst_block.offset + a * dst_block.num_b + dst_b[b];
+
+                    const Tv vi = vec[si];
+                    const Tv vj = vec[di];
+
+                    vec[si] = vi * vd - vj * vo_rev;
+                    vec[di] = vj * vd + vi * vo_fwd;
                 }
             }
         }
@@ -1009,7 +685,7 @@ static inline void expm_contract_pure_b_otf_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_contract_pure_b_otf_impl(
+static FORCE_INLINE Tv grad_contract_pure_b_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -1034,6 +710,13 @@ static inline Tv grad_contract_pure_b_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -1041,20 +724,18 @@ static inline Tv grad_contract_pure_b_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<int> shared_src_b(max_b_count);
-    std::vector<int> shared_dst_b(max_b_count);
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
+    Tv res = {};
 
-    int valid_b_count = 0;
-    Tv global_res = {};
-
-#pragma omp parallel reduction(+ : global_res)
+#pragma omp parallel reduction(+ : res)
     {
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<int> src_b(max_b_count);
+        std::vector<int> dst_b(max_b_count);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 bxsym = get_string_sym(group.bx, orbsym);
             const int64 bid = dst_block.asym * num_irreps + (dst_block.bsym ^ bxsym);
             const int64 src_block_idx = block_map[bid];
@@ -1068,194 +749,67 @@ static inline Tv grad_contract_pure_b_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
-            {
-                int count = 0;
-                for (int dst_b_idx = 0; dst_b_idx < dst_b_count; ++dst_b_idx)
-                {
-                    const Ti dst_str_b = dst_block.bstrs[dst_b_idx];
-                    const Ti src_str_b = dst_str_b ^ group.bx;
-                    const int src_b_idx = idx_map.b_idx_map[src_str_b];
+            int valid_nb = compute_phases_indirect<Rank, Ti, Tv>(
+                group.bx, idx_map.b_idx_map,
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                src_b.data(), dst_b.data(), phase_b.data(),
+                max_b_count, rank, is_same_block, true);
 
-                    if (src_b_idx == -1)
-                        continue;
-
-                    if (is_same_block && src_b_idx < dst_b_idx)
-                        continue;
-
-                    shared_dst_b[count] = dst_b_idx;
-                    shared_src_b[count] = src_b_idx;
-                    count++;
-                }
-
-                valid_b_count = count;
-
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[vb] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[vb] = pt0;
-                        pb1[vb] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int vb = 0; vb < valid_b_count; ++vb)
-                        {
-                            Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[vb] = ptn;
-                        }
-                    }
-                }
-            }
-
-            if (valid_b_count == 0)
-            {
-#pragma omp barrier
+            if (valid_nb == 0)
                 continue;
-            }
 
-#pragma omp for schedule(dynamic)
-            for (int a = 0; a < dst_a_count; ++a)
+            compute_phases_direct<Rank, Ti, Tv>(
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                phase_a.data(),
+                max_a_count, rank);
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < dst_block.num_a; ++a)
             {
-                const Ti str_a = dst_block.astrs[a];
-                const int64 src_row = src_block.offset + (int64)a * src_block.num_b;
-                const int64 dst_row = dst_block.offset + (int64)a * dst_block.num_b;
-
-                const Tv *pb0 = shared_b_phase.data();
-                Tv local_res = {};
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
+                    else if constexpr (Rank == 2)
                     {
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb] + pa1 * pb1[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + vb];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                     }
+
+                    const Tv vd = cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + a * src_block.num_b + src_b[b];
+                    const int64 di = dst_block.offset + a * dst_block.num_b + dst_b[b];
+
+                    const Tv r0 = rp[si];
+                    const Tv r1 = rp[di];
+
+                    res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
+                           math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                 }
-                global_res += local_res;
             }
         }
     }
-    return global_res;
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline void expm_contract_mixed_otf_impl(
+static FORCE_INLINE void expm_contract_mixed_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -1279,6 +833,13 @@ static inline void expm_contract_mixed_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -1286,19 +847,18 @@ static inline void expm_contract_mixed_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<int> shared_src_b(max_b_count);
-    std::vector<int> shared_dst_b(max_b_count);
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
-
-    int valid_b_count = 0;
-
 #pragma omp parallel
     {
+        std::vector<int> src_a(max_a_count);
+        std::vector<int> dst_a(max_a_count);
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<int> src_b(max_b_count);
+        std::vector<int> dst_b(max_b_count);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 axsym = get_string_sym(group.ax, orbsym);
             const int64 bxsym = get_string_sym(group.bx, orbsym);
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + (dst_block.bsym ^ bxsym);
@@ -1313,181 +873,61 @@ static inline void expm_contract_mixed_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
-            {
-                int count = 0;
-                for (int dst_b_idx = 0; dst_b_idx < dst_b_count; ++dst_b_idx)
-                {
-                    const Ti dst_str_b = dst_block.bstrs[dst_b_idx];
-                    const Ti src_str_b = dst_str_b ^ group.bx;
-                    const int src_b_idx = idx_map.b_idx_map[src_str_b];
+            const int valid_na = compute_phases_indirect<Rank, Ti, Tv>(
+                group.ax, idx_map.a_idx_map,
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                src_a.data(), dst_a.data(), phase_a.data(),
+                max_a_count, rank, is_same_block, true);
 
-                    if (src_b_idx == -1)
-                        continue;
-
-                    shared_dst_b[count] = dst_b_idx;
-                    shared_src_b[count] = src_b_idx;
-                    count++;
-                }
-
-                valid_b_count = count;
-
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[vb] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[vb] = pt0;
-                        pb1[vb] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int vb = 0; vb < valid_b_count; ++vb)
-                        {
-                            Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[vb] = ptn;
-                        }
-                    }
-                }
-            }
-
-            if (valid_b_count == 0)
-            {
-#pragma omp barrier
+            if (valid_na == 0)
                 continue;
-            }
 
-#pragma omp for schedule(dynamic)
-            for (int dst_a_idx = 0; dst_a_idx < dst_a_count; ++dst_a_idx)
+            const int valid_nb = compute_phases_indirect<Rank, Ti, Tv>(
+                group.bx, idx_map.b_idx_map,
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                src_b.data(), dst_b.data(), phase_b.data(),
+                max_b_count, rank, is_same_block, false);
+
+            if (valid_nb == 0)
+                continue;
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < valid_na; ++a)
             {
-                const Ti dst_str_a = dst_block.astrs[dst_a_idx];
-                const Ti src_str_a = dst_str_a ^ group.ax;
-                const int src_a_idx = idx_map.a_idx_map[src_str_a];
-
-                if (src_a_idx == -1)
-                    continue;
-
-                if (is_same_block && src_a_idx < dst_a_idx)
-                    continue;
-
-                Tv *src = vec + src_block.offset + (int64)src_a_idx * src_block.num_b;
-                Tv *dst = vec + dst_block.offset + (int64)dst_a_idx * dst_block.num_b;
-                const Tv *pb0 = shared_b_phase.data();
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
+                    else if constexpr (Rank == 2)
                     {
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb] + pa1 * pb1[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + vb];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-                        Tv *sp = src + shared_src_b[vb];
-                        Tv *dp = dst + shared_dst_b[vb];
-                        const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-                        const Tv vi = *(sp);
-                        const Tv vj = *(dp);
-                        *(sp) = vi * vd - vj * vo_rev;
-                        *(dp) = vj * vd + vi * vo_fwd;
                     }
+
+                    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + src_a[a] * src_block.num_b + src_b[b];
+                    const int64 di = dst_block.offset + dst_a[a] * dst_block.num_b + dst_b[b];
+
+                    const Tv vi = vec[si];
+                    const Tv vj = vec[di];
+
+                    vec[si] = vi * vd - vj * vo_rev;
+                    vec[di] = vj * vd + vi * vo_fwd;
                 }
             }
         }
@@ -1495,7 +935,7 @@ static inline void expm_contract_mixed_otf_impl(
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_contract_mixed_otf_impl(
+static FORCE_INLINE Tv grad_contract_mixed_otf_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -1520,6 +960,13 @@ static inline Tv grad_contract_mixed_otf_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 max_a_count = 0;
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+    }
+
     int64 max_b_count = 0;
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -1527,20 +974,20 @@ static inline Tv grad_contract_mixed_otf_impl(
             max_b_count = blocks[i].num_b;
     }
 
-    std::vector<int> shared_src_b(max_b_count);
-    std::vector<int> shared_dst_b(max_b_count);
-    std::vector<Tv> shared_b_phase(max_b_count * rank);
+    Tv res = {};
 
-    int valid_b_count = 0;
-    Tv global_res = {};
-
-#pragma omp parallel reduction(+ : global_res)
+#pragma omp parallel reduction(+ : res)
     {
+        std::vector<int> src_a(max_a_count);
+        std::vector<int> dst_a(max_a_count);
+        std::vector<Tv> phase_a(max_a_count * rank);
+        std::vector<int> src_b(max_b_count);
+        std::vector<int> dst_b(max_b_count);
+        std::vector<Tv> phase_b(max_b_count * rank);
+
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int dst_a_count = dst_block.num_a;
-            const int dst_b_count = dst_block.num_b;
             const int64 axsym = get_string_sym(group.ax, orbsym);
             const int64 bxsym = get_string_sym(group.bx, orbsym);
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + (dst_block.bsym ^ bxsym);
@@ -1555,196 +1002,67 @@ static inline Tv grad_contract_mixed_otf_impl(
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
-#pragma omp single
-            {
-                int count = 0;
-                for (int dst_b_idx = 0; dst_b_idx < dst_b_count; ++dst_b_idx)
-                {
-                    const Ti dst_str_b = dst_block.bstrs[dst_b_idx];
-                    const Ti src_str_b = dst_str_b ^ group.bx;
-                    const int src_b_idx = idx_map.b_idx_map[src_str_b];
+            const int valid_na = compute_phases_indirect<Rank, Ti, Tv>(
+                group.ax, idx_map.a_idx_map,
+                dst_block.astrs, dst_block.num_a, wa0, zas, num_za,
+                src_a.data(), dst_a.data(), phase_a.data(),
+                max_a_count, rank, is_same_block, true);
 
-                    if (src_b_idx == -1)
-                        continue;
-
-                    shared_dst_b[count] = dst_b_idx;
-                    shared_src_b[count] = src_b_idx;
-                    count++;
-                }
-
-                valid_b_count = count;
-
-                Tv *pb0 = shared_b_phase.data();
-                if constexpr (Rank == 1)
-                {
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                        }
-                        pb0[vb] = pt0;
-                    }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv *pb1 = pb0 + max_b_count;
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                        Tv pt0 = {}, pt1 = {};
-                        for (int k = 0; k < num_zb; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                            pt0 += parity ? -wb0[k] : wb0[k];
-                            pt1 += parity ? -wb1[k] : wb1[k];
-                        }
-                        pb0[vb] = pt0;
-                        pb1[vb] = pt1;
-                    }
-                }
-                else
-                {
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv *pbr = pb0 + r * max_b_count;
-                        const Tv *wr = wb0 + r * num_zb;
-                        for (int vb = 0; vb < valid_b_count; ++vb)
-                        {
-                            Ti src_str_b = dst_block.bstrs[shared_dst_b[vb]] ^ group.bx;
-                            Tv ptn = {};
-                            for (int k = 0; k < num_zb; ++k)
-                            {
-                                const bool parity = std::popcount(src_str_b & zbs[k]) & 1;
-                                ptn += parity ? -wr[k] : wr[k];
-                            }
-                            pbr[vb] = ptn;
-                        }
-                    }
-                }
-            }
-
-            if (valid_b_count == 0)
-            {
-#pragma omp barrier
+            if (valid_na == 0)
                 continue;
-            }
 
-#pragma omp for schedule(dynamic)
-            for (int dst_a_idx = 0; dst_a_idx < dst_a_count; ++dst_a_idx)
+            const int valid_nb = compute_phases_indirect<Rank, Ti, Tv>(
+                group.bx, idx_map.b_idx_map,
+                dst_block.bstrs, dst_block.num_b, wb0, zbs, num_zb,
+                src_b.data(), dst_b.data(), phase_b.data(),
+                max_b_count, rank, is_same_block, false);
+
+            if (valid_nb == 0)
+                continue;
+
+            const Tv *__restrict__ pa = phase_a.data();
+            const Tv *__restrict__ pb = phase_b.data();
+
+#pragma omp for collapse(2) schedule(static) nowait
+            for (int a = 0; a < valid_na; ++a)
             {
-                const Ti dst_str_a = dst_block.astrs[dst_a_idx];
-                const Ti src_str_a = dst_str_a ^ group.ax;
-                const int src_a_idx = idx_map.a_idx_map[src_str_a];
-
-                if (src_a_idx == -1)
-                    continue;
-
-                if (is_same_block && src_a_idx < dst_a_idx)
-                    continue;
-
-                const int64 src_row = src_block.offset + (int64)src_a_idx * src_block.num_b;
-                const int64 dst_row = dst_block.offset + (int64)dst_a_idx * dst_block.num_b;
-
-                const Tv *pb0 = shared_b_phase.data();
-                Tv local_res = {};
-
-                if constexpr (Rank == 1)
+                for (int b = 0; b < valid_nb; ++b)
                 {
-                    Tv pa0 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    Tv vt{};
+                    if constexpr (Rank == 1)
                     {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
+                        vt = pa[a] * pb[b];
                     }
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
+                    else if constexpr (Rank == 2)
                     {
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
+                        vt = pa[a] * pb[b] + pa[a + max_a_count] * pb[b + max_b_count];
                     }
-                }
-                else if constexpr (Rank == 2)
-                {
-                    Tv pa0 = {}, pa1 = {};
-                    for (int k = 0; k < num_za; ++k)
+                    else
                     {
-                        const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                        pa0 += parity ? -wa0[k] : wa0[k];
-                        pa1 += parity ? -wa1[k] : wa1[k];
-                    }
-                    const Tv *pb1 = pb0 + max_b_count;
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vt = pa0 * pb0[vb] + pa1 * pb1[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
-                    }
-                }
-                else
-                {
-                    Tv pan[64] = {};
-                    for (uint16 r = 0; r < rank; ++r)
-                    {
-                        Tv ptn = {};
-                        const Tv *wr = wa0 + r * num_za;
-                        for (int k = 0; k < num_za; ++k)
-                        {
-                            const bool parity = std::popcount(src_str_a & zas[k]) & 1;
-                            ptn += parity ? -wr[k] : wr[k];
-                        }
-                        pan[r] = ptn;
-                    }
-#pragma omp simd reduction(+ : local_res)
-                    for (int vb = 0; vb < valid_b_count; ++vb)
-                    {
-                        Tv vt = {};
                         for (uint16 r = 0; r < rank; ++r)
                         {
-                            vt += pan[r] * pb0[r * max_b_count + vb];
+                            vt += pa[a + r * max_a_count] * pb[b + r * max_b_count];
                         }
-
-                        const int64 si = src_row + shared_src_b[vb];
-                        const int64 di = dst_row + shared_dst_b[vb];
-                        const Tv vd = cd * (vt * math_conj(vt));
-                        const Tv vo_fwd = co * vt;
-                        const Tv vo_rev = co * math_conj(vt);
-
-                        const Tv r0 = rp[si];
-                        const Tv r1 = rp[di];
-
-                        local_res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
-                                     math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                     }
+
+                    const Tv vd = cd * (vt * math_conj(vt));
+                    const Tv vo_fwd = co * vt;
+                    const Tv vo_rev = co * math_conj(vt);
+
+                    const int64 si = src_block.offset + src_a[a] * src_block.num_b + src_b[b];
+                    const int64 di = dst_block.offset + dst_a[a] * dst_block.num_b + dst_b[b];
+
+                    const Tv r0 = rp[si];
+                    const Tv r1 = rp[di];
+
+                    res += math_conj(lp[si]) * (r0 * vd + r1 * vo_rev) +
+                           math_conj(lp[di]) * (r1 * vd - r0 * vo_fwd);
                 }
-                global_res += local_res;
             }
         }
     }
-    return global_res;
+
+    return res;
 }
 
 template <typename Ti, typename Tv>

@@ -657,38 +657,6 @@ function hvec_direct_agg_benchmark!(
     )::Cvoid
 end
 
-function energy_objective(
-    basis::BasisManager,
-    ham_net::AGG,
-    pool_net::NET, 
-    idxs::Vector{Int64},
-    x::Vector{Float64},          
-    lv::Vector{Tv},
-    rv::Vector{Tv},
-) where Tv
-    nparas = length(x)
-
-    for i in 1:nparas
-        tvec_svd!(basis, pool_net, idxs[i], x[i], lv)
-    end
-
-    hvec_direct_agg!(basis, ham_net, lv, rv)
-
-    lnorm  = norm(lv) ^ 2
-    rnorm  = norm(rv) ^ 2
-    energy = real(dot(lv, rv)) / lnorm
-    δ²H    = max(0.0, rnorm / lnorm - energy ^ 2)
-    grad   = Vector{Float64}(undef, nparas)
-
-    for i in nparas:-1:1
-        tvec_svd!(basis, pool_net, idxs[i], -x[i], lv)
-        grad[i] = real(grad_svd(basis, pool_net, idxs[i], x[i], lv, rv)) * 2 / lnorm
-        tvec_svd!(basis, pool_net, idxs[i], -x[i], rv)
-    end
-
-    return energy, grad, δ²H
-end
-
 mutable struct OTF
     ptr::Ptr{Cvoid}
     dim::Int64
@@ -950,15 +918,22 @@ function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T,
     )::ComplexF64
 end
 
-function energy_objective(basis::BasisManager, ham::OTF, pool::OTF, idxs::Vector{Int64}, x::Vector{Float64}, lv::T, rv::T) where {Tv, T<:AbstractArray{Tv,1}}
+function energy_objective(
+    f_hvec::Function,
+    f_tvec::Function,
+    f_grad::Function,
+    idxs::Vector{Int64},
+    x::Vector{Float64},          
+    lv::Vector{Tv},
+    rv::Vector{Tv},
+) where Tv
     nparas = length(x)
 
     for i in 1:nparas
-        # println("1")
-        tvec_svd!(basis, pool, idxs[i], x[i], lv)
+        f_tvec(idxs[i], x[i], lv)
     end
 
-    hvec_otf!(basis, ham, lv, rv)
+    f_hvec(lv, rv)
 
     lnorm  = norm(lv) ^ 2
     rnorm  = norm(rv) ^ 2
@@ -967,10 +942,11 @@ function energy_objective(basis::BasisManager, ham::OTF, pool::OTF, idxs::Vector
     grad   = Vector{Float64}(undef, nparas)
 
     for i in nparas:-1:1
-        tvec_svd!(basis, pool, idxs[i], -x[i], lv)
-        grad[i] = real(grad_svd(basis, pool, idxs[i], x[i], lv, rv)) * 2 / lnorm
-        tvec_svd!(basis, pool, idxs[i], -x[i], rv)
+        f_tvec(idxs[i], -x[i], lv)
+        grad[i] = real(f_grad(idxs[i], x[i], lv, rv)) * 2 / lnorm
+        f_tvec(idxs[i], -x[i], rv)
     end
 
     return energy, grad, δ²H
 end
+

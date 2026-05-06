@@ -12,9 +12,9 @@ function run_adapt_vqe(pbc::Pbc;
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
 
-    ret = @timed ham_net = AGG(basis, ham)
+    ret = @timed ham_agg = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
-    print_info(ham_net)
+    print_info(ham_agg)
 
     orbs = Orbitals(); kernel(pbc, orbs, generalize=true)
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
@@ -28,6 +28,10 @@ function run_adapt_vqe(pbc::Pbc;
     rv = zeros(ComplexF64, basis.dim)
     idxs = [i for i in eachindex(pool)]
     
+    f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
+    f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
+    f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
+
     if !isempty(amplitudes) && !isempty(selec_idxs)
         @assert length(amplitudes) == length(selec_idxs)
     else
@@ -36,9 +40,9 @@ function run_adapt_vqe(pbc::Pbc;
     end
 
     _adapt_vqe(
-        basis,
-        ham_net, 
-        pool_net,  
+        f_hvec,
+        f_tvec, 
+        f_grad,  
         idxs, 
         v0, 
         lv, 

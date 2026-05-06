@@ -8,9 +8,9 @@ function run_vqe(mole::Mole;
     println("Num symmetry allowed elements: $(basis.dim)\n")
 
     ham = JW_hamiltonian(mole)
-    ret = @timed ham_net = AGG(basis, ham)
+    ret = @timed ham_agg = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
-    print_info(ham_net)
+    print_info(ham_agg)
 
     orbs = Orbitals(); kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
@@ -22,6 +22,10 @@ function run_vqe(mole::Mole;
     lv = zeros(Float64, basis.dim)
     rv = zeros(Float64, basis.dim)
     idxs = [i for i in eachindex(pool)]
+
+    f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
+    f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
+    f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
 
     if !isempty(x0)
         @assert length(x0) == length(idxs)
@@ -37,7 +41,7 @@ function run_vqe(mole::Mole;
         end
 
         lv .= v0
-        result = @timed energy_objective(basis, ham_net, pool_net, idxs, x, lv, rv)
+        result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
         energy, grad, δ²H = result.value
         norm_g  = norm(grad)
         error   = energy - mole.e_scale

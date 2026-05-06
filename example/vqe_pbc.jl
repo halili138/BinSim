@@ -9,9 +9,9 @@ function run_vqe(pbc::Pbc;
 
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
-    ret = @timed ham_net = AGG(basis, ham)
+    ret = @timed ham_agg = AGG(basis, ham)
     println("Successifully Generate Ham AGG in $(ret.time) seconds")
-    print_info(ham_net)
+    print_info(ham_agg)
 
     orbs = Orbitals(); kernel(pbc, orbs, generalize=true)
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
@@ -24,6 +24,10 @@ function run_vqe(pbc::Pbc;
     lv = zeros(ComplexF64, basis.dim)
     rv = zeros(ComplexF64, basis.dim)
     idxs = [i for i in eachindex(pool)]
+
+    f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
+    f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
+    f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
 
     if !isempty(x0)
         @assert length(x0) == length(idxs)
@@ -39,7 +43,7 @@ function run_vqe(pbc::Pbc;
         end
 
         lv .= v0
-        result = @timed energy_objective(basis, ham_net, pool_net, idxs, x, lv, rv)
+        result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
         energy, grad, δ²H = result.value
         norm_g  = norm(grad)
         error   = energy - pbc.e_scale
