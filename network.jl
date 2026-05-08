@@ -68,7 +68,6 @@ mutable struct BasisManager
 
         return obj
     end
-
 end
 
 function get_hf(basis::BasisManager, nelec::Tuple{Int,Int}; Tv::DataType=Float64)
