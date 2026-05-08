@@ -74,4 +74,17 @@ extern "C"
         compute_diagonal_elements_raw<uint32, complexf64>(
             basis, azs, bzs, cs, nterms, diags);
     }
+
+    void *create_custom_basis_manager(
+        int64 norb,
+        const uint32 *input_astrs, int64 num_astrs,
+        const uint32 *input_bstrs, int64 num_bstrs,
+        const int64 *orbsym, int64 total_sym, int64 num_irreps)
+    {
+        return create_custom_basis_manager_tmpl<uint32>(
+            norb,
+            input_astrs, num_astrs,
+            input_bstrs, num_bstrs,
+            orbsym, total_sym, num_irreps);
+    }
 }

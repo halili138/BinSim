@@ -35,7 +35,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             Δtol=1e-8,
         ),
         vqe_options=VQE_OPTIONS(
-            ftol=1e-8,
+            ftol=1e-10,
             gtol=1e-6,
             maxiter=1000,
             verbose=1,

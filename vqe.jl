@@ -284,7 +284,7 @@ function run_fci(
     # @time λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
     # println(λ)
     
-    return @time davidson(aop!, v0, diags)
+    return @time davidson(aop!, v0, diags, tol=1e-5)
 end
 
 

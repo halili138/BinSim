@@ -424,3 +424,151 @@ void compute_diagonal_elements_raw(
         delete[] parity_a;
     }
 }
+
+template <typename Ti>
+void *create_custom_basis_manager_tmpl(
+    int64 norb,
+    const Ti *input_astrs, int64 num_astrs_total,
+    const Ti *input_bstrs, int64 num_bstrs_total,
+    const int64 *orbsym, int64 total_sym, int64 num_irreps)
+{
+    BasisManager<Ti> *basis = new BasisManager<Ti>();
+
+    basis->all_astrs = nullptr;
+    basis->all_bstrs = nullptr;
+    basis->astrs_vec = nullptr;
+    basis->bstrs_vec = nullptr;
+    basis->num_astrs = nullptr;
+    basis->num_bstrs = nullptr;
+    basis->blocks = nullptr;
+    basis->orbsym = nullptr;
+    basis->block_map = nullptr;
+
+    try
+    {
+        basis->num_irreps = num_irreps;
+        basis->dim = 0;
+        basis->num_blocks = 0;
+
+        basis->num_astrs = new int64[num_irreps]();
+        basis->num_bstrs = new int64[num_irreps]();
+
+        // 1. 统计每个对称性块下的组态数量
+        for (int64 i = 0; i < num_astrs_total; ++i)
+        {
+            int64 sym = get_string_sym(input_astrs[i], orbsym);
+            if (sym < num_irreps)
+                basis->num_astrs[sym]++;
+        }
+
+        for (int64 i = 0; i < num_bstrs_total; ++i)
+        {
+            int64 sym = get_string_sym(input_bstrs[i], orbsym);
+            if (sym < num_irreps)
+                basis->num_bstrs[sym]++;
+        }
+
+        // 2. 统计有效的对称性块 (Block) 数量
+        for (int64 asym = 0; asym < num_irreps; ++asym)
+        {
+            int64 bsym = total_sym ^ asym;
+            if (bsym < num_irreps && basis->num_astrs[asym] > 0 && basis->num_bstrs[bsym] > 0)
+            {
+                basis->num_blocks++;
+            }
+        }
+
+        // 3. 分配内存空间
+        // 直接按传入的总长度分配底层一维数组，即使某些非法对称性的弦被丢弃，稍微多分配一点也是安全的
+        basis->all_astrs = new Ti[num_astrs_total];
+        basis->all_bstrs = new Ti[num_bstrs_total];
+
+        basis->astrs_vec = new Ti *[num_irreps];
+        basis->bstrs_vec = new Ti *[num_irreps];
+
+        basis->blocks = new BlockDesc<Ti>[basis->num_blocks];
+        basis->orbsym = new int64[norb];
+        std::copy(orbsym, orbsym + norb, basis->orbsym);
+        basis->block_map = new int64[num_irreps * num_irreps];
+        std::fill_n(basis->block_map, num_irreps * num_irreps, -1);
+
+        // 4. 设定各不可约表示 (irrep) 的二级指针偏移量
+        int64 a_offset = 0;
+        int64 b_offset = 0;
+        for (int64 i = 0; i < num_irreps; ++i)
+        {
+            basis->astrs_vec[i] = basis->all_astrs + a_offset;
+            a_offset += basis->num_astrs[i];
+
+            basis->bstrs_vec[i] = basis->all_bstrs + b_offset;
+            b_offset += basis->num_bstrs[i];
+        }
+
+        // 5. 将用户输入的弦按对称性分发到对应的桶 (bucket) 中
+        int64 *a_idx = new int64[num_irreps]();
+        for (int64 i = 0; i < num_astrs_total; ++i)
+        {
+            int64 sym = get_string_sym(input_astrs[i], orbsym);
+            if (sym < num_irreps)
+            {
+                basis->astrs_vec[sym][a_idx[sym]++] = input_astrs[i];
+            }
+        }
+        delete[] a_idx;
+
+        int64 *b_idx = new int64[num_irreps]();
+        for (int64 i = 0; i < num_bstrs_total; ++i)
+        {
+            int64 sym = get_string_sym(input_bstrs[i], orbsym);
+            if (sym < num_irreps)
+            {
+                basis->bstrs_vec[sym][b_idx[sym]++] = input_bstrs[i];
+            }
+        }
+        delete[] b_idx;
+
+        // 6. 对每个桶内的弦进行升序排序 (对齐二分查找的需求)
+        for (int64 i = 0; i < num_irreps; ++i)
+        {
+            if (basis->num_astrs[i] > 0)
+                std::sort(basis->astrs_vec[i], basis->astrs_vec[i] + basis->num_astrs[i]);
+
+            if (basis->num_bstrs[i] > 0)
+                std::sort(basis->bstrs_vec[i], basis->bstrs_vec[i] + basis->num_bstrs[i]);
+        }
+
+        // 7. 组装 Blocks 并计算哈密顿量维度 (dim)
+        int64 block_counter = 0;
+        basis->dim = 0;
+        for (int64 asym = 0; asym < num_irreps; ++asym)
+        {
+            int64 bsym = total_sym ^ asym;
+            if (bsym >= num_irreps)
+                continue;
+
+            if (basis->num_astrs[asym] > 0 && basis->num_bstrs[bsym] > 0)
+            {
+                BlockDesc<Ti> &block = basis->blocks[block_counter];
+                block.asym = asym;
+                block.bsym = bsym;
+                block.num_a = basis->num_astrs[asym];
+                block.num_b = basis->num_bstrs[bsym];
+                block.astrs = basis->astrs_vec[asym];
+                block.bstrs = basis->bstrs_vec[bsym];
+                block.offset = basis->dim;
+
+                basis->block_map[asym * num_irreps + bsym] = block_counter;
+
+                block_counter++;
+                basis->dim += block.num_a * block.num_b;
+            }
+        }
+    }
+    catch (...)
+    {
+        destroy_basis_manager_tmpl<Ti>(basis);
+        throw;
+    }
+
+    return static_cast<void *>(basis);
+}
