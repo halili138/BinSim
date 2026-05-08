@@ -102,8 +102,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     v0 = get_v0_supf(basis, r0_pool)
 
-    run_fci(basis, ham, v0, net="otf")
-    
+    # run_fci(basis, ham, v0, net="otf")
+
     # run_vqe(basis, ham, pool, v0, 0.0, net="agg",
     #     options=VQE_OPTIONS(
     #         ftol=1e-10,
@@ -112,19 +112,24 @@ if abspath(PROGRAM_FILE) == @__FILE__
     #         verbose=1),
     # )
 
-    # run_adapt_vqe(basis, ham, pool, v0, 0.0, net="agg",
-    #     adapt_options=ADAPT_OPTIONS(
-    #         Gtol=1e-3,
-    #         gtol=1e-4,
-    #         htol=1e-3,
-    #         Δtol=1e-18,
-    #     ),
-    #     vqe_options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-6,
-    #         maxiter=1000,
-    #         verbose=1,
-    #     ),
-    # )
+    # x0, idxs0 = load_idxs("1.jld2")
+
+    run_adapt_vqe(basis, ham, pool, v0, 0.0, net="agg",
+        # amplitudes = x0,
+        # selec_idxs = idxs0,
+        adapt_options=ADAPT_OPTIONS(
+            Gtol=1e-3,
+            gtol=1e-4,
+            htol=1e-3,
+            Δtol=1e-18,
+            save_path="1.jld2"
+        ),
+        vqe_options=VQE_OPTIONS(
+            ftol=1e-14,
+            gtol=1e-10,
+            maxiter=1000,
+            verbose=1,
+        ),
+    )
 end
 
