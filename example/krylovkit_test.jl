@@ -2,12 +2,14 @@ include("../binsim.jl")
 using KrylovKit
 
 if abspath(PROGRAM_FILE) == @__FILE__
+    nkx = parse(Int, ARGS[1])
+    
     pbc = Pbc()
     pbc.name   = "1d-h"
     pbc.ratio  = 1.0
     pbc.basis  = "gth-szv"
     pbc.pseudo = "gth-pade"
-    pbc.mesh   = [parse(Int, ARGS[1]),1,1]
+    pbc.mesh   = [nkx,1,1]
     pbc.scaled_center = [0,0,0]
 
     build(pbc)

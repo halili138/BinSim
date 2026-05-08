@@ -41,7 +41,7 @@ mutable struct BasisManager
     end
 end
 
-function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}; Tv::DataType = Float64)
+function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}; Tv::DataType=Float64)
     hf = zeros(Tv, basis.dim)
     na, nb = nelec
 
@@ -76,6 +76,35 @@ function get_hf(basis::BasisManager, nelec::Tuple{Int, Int}; Tv::DataType = Floa
     end
 
     return hf
+end
+
+function get_reference_state(basis::BasisManager, astrs::Vector{UInt32}, bstrs::Vector{UInt32}, vals::Vector{Tv}) where Tv
+    @assert length(astrs) == length(bstrs) == length(vals)
+    v0 = zeros(Tv, basis.dim)
+    
+    if Tv <: Complex
+        for (astr::UInt32, bstr::UInt32, val::Tv) in zip(astrs, bstrs, vals)
+            @ccall LIB_BASIS.set_det_coeff_c64(
+                basis.ptr::Ptr{Cvoid},
+                astr::UInt32,
+                bstr::UInt32,
+                val::Cdouble,
+                hf::Ptr{ComplexF64},
+            )::Cvoid
+        end
+    else
+        for (astr::UInt32, bstr::UInt32, val::Tv) in zip(astrs, bstrs, vals)
+            @ccall LIB_BASIS.set_det_coeff_f64(
+                basis.ptr::Ptr{Cvoid},
+                astr::UInt32,
+                bstr::UInt32,
+                val::Cdouble,
+                hf::Ptr{Cdouble},
+            )::Cvoid
+        end
+    end
+
+    return v0
 end
 
 function get_diags(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}) where {Ti,Tv,K,V}
