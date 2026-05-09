@@ -45,5 +45,5 @@ include("network.jl")
 include("davidson.jl")
 include("ansatz.jl")
 include("vqe.jl")
-
+include("method.jl")
 

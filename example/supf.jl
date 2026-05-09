@@ -93,8 +93,8 @@ function get_v0_supf(basis::BasisManager, r0_pool::Vector{<:BinaryQubitAABB})
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    NS = 2
-    NL = 2
+    NS = 3
+    NL = 3
     nq = NS + 2 * NL
     ham, pool, r0_pool = supf_ham_and_pool(NS, NL, 10, 10, 1, 5, 10)
     ham = ham' * ham
@@ -104,32 +104,32 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     # run_fci(basis, ham, v0, net="otf")
 
-    # run_vqe(basis, ham, pool, v0, 0.0, net="agg",
-    #     options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-6,
-    #         maxiter=100000,
-    #         verbose=1),
-    # )
+    run_vqe(basis, ham, pool, v0, 0.0, net="agg",
+        options=VQE_OPTIONS(
+            ftol=1e-10,
+            gtol=1e-6,
+            maxiter=100000,
+            verbose=1),
+    )
 
     # x0, idxs0 = load_idxs("1.jld2")
 
-    run_adapt_vqe(basis, ham, pool, v0, 0.0, net="agg",
-        # amplitudes = x0,
-        # selec_idxs = idxs0,
-        adapt_options=ADAPT_OPTIONS(
-            Gtol=1e-3,
-            gtol=1e-4,
-            htol=1e-3,
-            Δtol=1e-18,
-            save_path="1.jld2"
-        ),
-        vqe_options=VQE_OPTIONS(
-            ftol=1e-14,
-            gtol=1e-10,
-            maxiter=1000,
-            verbose=1,
-        ),
-    )
+    # run_adapt_vqe(basis, ham, pool, v0, 0.0, net="agg",
+    #     # amplitudes = x0,
+    #     # selec_idxs = idxs0,
+    #     adapt_options=ADAPT_OPTIONS(
+    #         Gtol=1e-3,
+    #         gtol=1e-4,
+    #         htol=1e-3,
+    #         Δtol=1e-18,
+    #         save_path="1.jld2"
+    #     ),
+    #     vqe_options=VQE_OPTIONS(
+    #         ftol=1e-14,
+    #         gtol=1e-10,
+    #         maxiter=1000,
+    #         verbose=1,
+    #     ),
+    # )
 end
 
