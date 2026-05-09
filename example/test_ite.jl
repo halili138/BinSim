@@ -14,6 +14,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     mole.e_scale, _ = run_fci(basis, ham, v0, net="otf")
 
-    @time run_rk4(basis, ham, v0, mole.e_scale, 
-    dτ=0.5, max_step=10000, tol=1e-10, net="agg")
+    @time run_euler(basis, ham, v0, mole.e_scale,
+        max_step=10000, tol=1e-10, net="otf")
+
+    # @time run_rk4(basis, ham, v0, mole.e_scale,
+    #     dτ=0.5, max_step=10000, tol=1e-10, net="agg")
+
+    # @time run_krylov(basis, ham, v0, mole.e_scale, net="otf")
 end
+
