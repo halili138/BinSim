@@ -1,3 +1,56 @@
+function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, net::String)
+    if net == "agg"
+        print("Pre-compiling Ham AGG ... ")
+        time_ops = @elapsed agg = AGG(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+        print_info(agg)
+        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
+        return hvec!
+    elseif net == "otf"
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed otf = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+        hvec! = (src, dst) ->hvec_otf!(basis, otf, src, dst)
+        return hvec!
+    else
+        error("Undefined NET name $(net)")
+    end
+end
+
+
+function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB}, net::String)
+    if net == "agg"
+        print("Pre-compiling Ham AGG ... ")
+        time_ops = @elapsed ham_agg = AGG(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        print("Pre-compiling Pool NET ... ")
+        time_ops = @elapsed pool_net = NET(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
+        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
+        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
+        return f_hvec, f_tvec, f_grad
+    elseif net == "otf"
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed ham_otf  = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        print("Pre-compiling Pool OTF ... ")
+        time_ops = @elapsed pool_otf = OTF(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
+        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
+        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
+        return f_hvec, f_tvec, f_grad
+    else
+        error("Undefined NET name $(net)")
+    end
+end
+
+
 function run_fci(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,K,V},
@@ -9,14 +62,16 @@ function run_fci(
     diags = get_diags(basis, ham)
 
     if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successifully Generate Ham AGG in $(ret.time) seconds\n")
+        print("Pre-compiling Ham AGG ... ")
+        time_ops = @elapsed agg = AGG(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
         print_info(agg)
-        aop! = (src, dst) -> @time hvec_direct_agg!(basis, agg, src, dst)
+        hvec! = (src, dst) -> @printf("hvec time %.6f seconds", @elapsed hvec_direct_agg!(basis, agg, src, dst))
     elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successifully Generate Ham OTF in $(ret.time) seconds\n")
-        aop! = (src, dst) -> @time hvec_otf!(basis, otf, src, dst)
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed otf = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+        hvec! = (src, dst) -> @printf("hvec time %.6f seconds", @elapsed hvec_otf!(basis, otf, src, dst))
     else
         error("Undefined NET name $(net)")
     end
@@ -25,7 +80,7 @@ function run_fci(
     # @time λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
     # println(λ)
     
-    return @time davidson(aop!, v0, diags, tol=1e-5)
+    return @time davidson(hvec!, v0, diags, tol=1e-5)
 end
 
 
@@ -78,33 +133,7 @@ function run_vqe(
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    if net == "agg"
-        print("Pre-compiling Ham AGG ... ")
-        time_ops = @elapsed ham_agg = AGG(basis, ham)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        print("Pre-compiling Pool NET ... ")
-        time_ops = @elapsed pool_net = NET(basis, pool)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
-    elseif net == "otf"
-        print("Pre-compiling Ham OTF ... ")
-        time_ops = @elapsed ham_otf  = OTF(basis, ham)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        print("Pre-compiling Pool OTF ... ")
-        time_ops = @elapsed pool_otf = OTF(basis, pool)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
-    else
-        error("Undefined NET name $(net)")
-    end
+    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
 
     if !isempty(x0)
         @assert length(x0) == length(idxs)
@@ -124,8 +153,8 @@ function run_vqe(
         energy, grad, δ²H = result.value
         norm_g = norm(grad)
         error = energy - e_scale
-        options.verbose > 0 && show_optimze(energy, norm_g, δ²H, error)
-        options.verbose > 1 && show_time(result)
+        options.verbose > 1 && show_optimze(energy, norm_g, δ²H, error)
+        options.verbose > 2 && show_time(result)
 
         return energy, grad
     end
@@ -162,33 +191,7 @@ function run_adapt_vqe(
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    if net == "agg"
-        print("Pre-compiling Ham AGG ... ")
-        time_ops = @elapsed ham_agg = AGG(basis, ham)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        print("Pre-compiling Pool NET ... ")
-        time_ops = @elapsed pool_net = NET(basis, pool)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
-    elseif net == "otf"
-        print("Pre-compiling Ham OTF ... ")
-        time_ops = @elapsed ham_otf  = OTF(basis, ham)
-        @printf("Done in %.4f seconds\n", time_ops)
-
-        print("Pre-compiling Pool OTF ... ")
-        time_ops = @elapsed pool_otf = OTF(basis, pool)
-        @printf("Done in %.4f seconds\n", time_ops)
-        
-        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
-    else
-        error("Undefined NET name $(net)")
-    end
+    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
 
     if !isempty(amplitudes) && !isempty(selec_idxs)
         @assert length(amplitudes) == length(selec_idxs)
@@ -234,18 +237,7 @@ function run_rk4(
     psi_new = psi + dtau/6 * (k1 + 2*k2 + 2*k3 + k4)
     """
 
-    if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successifully Generate Ham AGG in $(ret.time) seconds\n")
-        print_info(agg)
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
-    elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successifully Generate Ham OTF in $(ret.time) seconds\n")
-        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
-    else
-        error("Undefined NET name $(net)")
-    end
+    hvec! = get_multiply_function(basis, ham, net)
 
     v = v0
     ws::Vector{Vector{Tv}} = [zeros(Tv, basis.dim) for _ in 1:5]
@@ -341,7 +333,7 @@ function estimate_max_step(hvec!::Function, dim::Int, E_ground_guess::Float64)
 end
 
 
-function run_euler(
+function run_euler_ite(
     basis::BasisManager, 
     ham::BinaryQubitAABB{Ti,Tv,K,V}, 
     v0::Vector{Tv}, 
@@ -357,18 +349,7 @@ function run_euler(
     psi_new = psi - dtau * H * psi
     """
 
-    if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds\n")
-        print_info(agg)
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
-    elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds\n")
-        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
-    else
-        error("Undefined NET name $(net)")
-    end
+    hvec! = get_multiply_function(basis, ham, net)
 
     if iszero(dτ)
         dτ = estimate_max_step(hvec!, basis.dim, e_scale)
@@ -418,7 +399,7 @@ function run_euler(
 end
 
 
-function run_krylov(
+function run_krylov_ite(
     basis::BasisManager, 
     ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     v0::Vector{Tv}, 
@@ -435,18 +416,7 @@ function run_krylov(
     psi(τ + dτ) ≈ V * exp(-dτ * Tm) * e1
     """
 
-    if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds\n")
-        print_info(agg)
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
-    elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds\n")
-        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
-    else
-        error("Undefined NET name $(net)")
-    end
+    hvec! = get_multiply_function(basis, ham, net)
 
     v = v0
     normalize!(v)
@@ -557,17 +527,7 @@ function run_enpt2(
     # 获取哈密顿量对角元作为零阶哈密顿量 H0
     diags = get_diags(basis, ham)
 
-    if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds")
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
-    elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds")
-        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
-    else
-        error("Undefined NET name $(net)")
-    end
+    hvec! = get_multiply_function(basis, ham, net)
 
     # 确保参考态已经归一化
     v = copy(v0)
@@ -639,15 +599,11 @@ function run_qse(
     N_sub  = N_pool + 1
     println("Operator pool size: $(N_pool)")
 
-    print("Pre-compiling Ham OTF ... ")
-    time_ops = @elapsed ham_otf = OTF(basis, ham)
-    @printf("Done in %.4f seconds\n", time_ops)
+    hvec! = get_multiply_function(basis, ham, "otf")
     
     print("Pre-compiling operator OTFs ... ")
     time_ops = @elapsed pool_otfs = [OTF(basis, op) for op in pool]
     @printf("Done in %.4f seconds\n", time_ops)
-
-    hvec!  = (src, dst) -> hvec_otf!(basis, ham_otf, src, dst)
     get_V! = (k, dst) -> begin
         if k == 1
             copyto!(dst, v0)
@@ -755,31 +711,11 @@ function run_ssvqe(
     println("Operator pool size: $(length(pool))\n")
     println("SSVQE Target States: $(K_states)\n")
 
-    # 复用内存缓存
     lv = zeros(Tv, basis.dim)
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    if net == "agg"
-        ret = @timed ham_agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds")
-        print_info(ham_agg)
-        ret = @timed pool_net = NET(basis, pool)
-        println("Successfully Generate Pool AGG in $(ret.time) seconds\n")
-        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
-    elseif net == "otf"
-        ret = @timed ham_otf  = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds\n")
-        ret = @timed pool_otf = OTF(basis, pool)
-        println("Successfully Generate Pool OTF in $(ret.time) seconds\n")
-        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
-    else
-        error("Undefined NET name $(net)")
-    end
+    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
 
     if !isempty(x0)
         @assert length(x0) == length(idxs)
@@ -844,26 +780,7 @@ function run_adapt_ssvqe(
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    if net == "agg"
-        ret = @timed ham_agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds")
-        print_info(ham_agg)
-        ret = @timed pool_net = NET(basis, pool)
-        println("Successfully Generate Pool AGG in $(ret.time) seconds\n")
-        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
-    elseif net == "otf"
-        ret = @timed ham_otf  = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds\n")
-        ret = @timed pool_otf = OTF(basis, pool)
-        println("Successfully Generate Pool OTF in $(ret.time) seconds\n")
-        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
-    else
-        error("Undefined NET name $(net)")
-    end
+    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
 
     if !isempty(amplitudes) && !isempty(selec_idxs)
         @assert length(amplitudes) == length(selec_idxs)
@@ -943,15 +860,11 @@ function run_qeom(
     N_pool = length(pool)
     println("Operator pool size: $(N_pool)")
 
-    print("Pre-compiling Ham OTF ... ")
-    time_ops = @elapsed ham_otf = OTF(basis, ham)
-    @printf("Done in %.4f seconds\n", time_ops)
+    hvec! = get_multiply_function(basis, ham, "otf")
 
     print("Pre-compiling operator OTFs ... ")
     time_ops = @elapsed pool_otfs = [OTF(basis, op) for op in pool]
     @printf("Done in %.4f seconds\n", time_ops)
-
-    hvec! = (src, dst) -> hvec_otf!(basis, ham_otf, src, dst)
     pool_hvec! = (k, src, dst) -> hvec_otf!(basis, pool_otfs[k], src, dst)
 
     # 2. 准备 qEOM 核心的辅助态
@@ -1033,7 +946,7 @@ function run_qeom(
         if i == 0
             N >= 1 ? @sprintf("%.3e", abs(E_ref - e_scales[1])) : "-"
         else
-            i <= N ? @sprintf("%.3e", abs((E_ref + ΔE_qeom[i]) - e_scales[i])) : "-"
+            (i + 1) <= N ? @sprintf("%.3e", abs((E_ref + ΔE_qeom[i]) - e_scales[i+1])) : "-"
         end
         for i in 0:n_exc
     ]
@@ -1050,114 +963,159 @@ function run_qeom(
 end
 
 
-function run_qpe(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,ComplexF64,K,V},
+function run_krylov_rte(
+    hvec!::Function, 
     v0::Vector{ComplexF64};
-    net::String="agg",
-    dτ::Float64=0.05, 
-    max_step::Int=2000, 
-    window::Bool=true
-) where {Ti,K,V}
-    """
-    量子相位估值 (QPE) 原生复数版
-    通过实时间演化 |ψ(t)> = exp(-iHt)|ψ(0)> 收集自相关函数，并进行 FFT 提取能谱。
-    充分利用底层 hvec! 的复数支持，实现最高效的 RK4 积分。
-    """
-    println("============================================================================")
-    println("--- Starting Quantum Phase Estimation (QPE) ---")
-    @printf("Time step (dτ) : %.4f\n", dτ)
-    @printf("Total steps    : %d\n", max_step)
-    @printf("Energy Resol.  : %.4f\n\n", 2 * π / (max_step * dτ))
+    dt::Float64=0.05, 
+    krylov_dim::Int=20, 
+    max_step::Int64=2000, 
+    E_ref::Float64=0.0,
+)
+    v = copy(v0)
+    normalize!(v)
 
-    if net == "agg"
-        ret = @timed agg = AGG(basis, ham)
-        println("Successfully Generate Ham AGG in $(ret.time) seconds\n")
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
-    elseif net == "otf"
-        ret = @timed otf = OTF(basis, ham)
-        println("Successfully Generate Ham OTF in $(ret.time) seconds\n")
-        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
-    else
-        error("Undefined NET name $(net)")
-    end
+    V = [zeros(ComplexF64, basis.dim) for _ in 1:krylov_dim]
+    w = zeros(ComplexF64, basis.dim) 
+    α = zeros(Float64, krylov_dim)
+    β = zeros(Float64, krylov_dim)
 
-    v   = copy(v0) 
-    hv  = zeros(ComplexF64, basis.dim)
-    tmp = zeros(ComplexF64, basis.dim)
-    ks  = [zeros(ComplexF64, basis.dim) for _ in 1:4]
+    # 记录自相关函数 C(t) = <psi(0)|psi(t)>
+    C_t = zeros(ComplexF64, max_step)
 
-    # 闭包：应用算符 d|ψ>/dt = -i H |ψ> 
-    # 因为底层支持复数，直接乘 -im 即可
-    apply_m_iH! = (src, dst) -> begin
-        hvec!(src, hv)
-        @. dst = -im * hv
-    end
+    print("Running Krylov Real-Time Evolution ")
+    
+    time_ops = @elapsed for step in 1:max_step
+        C_t[step] = dot(v0, v)
+        
+        copyto!(V[1], v)
+        m_actual = krylov_dim
 
-    C_t = Vector{ComplexF64}(undef, max_step)
+        for j in 1:krylov_dim
+            v_j = V[j]
+            hvec!(v_j, w)
 
-    print("Running Real-Time Evolution ... ")
-    time_evo = @elapsed begin
-        for step in 1:max_step
-            # 记录自相关函数 C(t) = <v0 | v(t)>
-            C_t[step] = dot(v0, v)
+            α[j] = real(dot(v_j, w))
 
-            # RK4 演化 (数学形式极其干净)
-            apply_m_iH!(v, ks[1])
+            @. w = w - α[j] * v_j
+            if j > 1
+                @. w = w - β[j-1] * V[j-1]
+            end
 
-            @. tmp = v + 0.5 * dτ * ks[1]
-            apply_m_iH!(tmp, ks[2])
+            # 完全正交化
+            for i in 1:j
+                c = dot(V[i], w)
+                @. w = w - c * V[i]
+            end
 
-            @. tmp = v + 0.5 * dτ * ks[2]
-            apply_m_iH!(tmp, ks[3])
-
-            @. tmp = v + dτ * ks[3]
-            apply_m_iH!(tmp, ks[4])
-
-            @. v += (dτ / 6.0) * (ks[1] + 2*ks[2] + 2*ks[3] + ks[4])
+            norm_w = norm(w)
             
-            # 维持数值稳定性，归一化
-            normalize!(v)
+            if j < krylov_dim
+                if norm_w < 1e-12
+                    m_actual = j
+                    break
+                end
+                β[j] = norm_w
+                @. V[j+1] = w / norm_w
+            end
         end
-    end
-    @printf("Done in %.4f seconds\n\n", time_evo)
 
-    # 2. 信号处理：应用汉宁窗
-    if window
-        for i in 1:max_step
-            C_t[i] *= 0.5 * (1 - cos(2 * π * (i - 1) / (max_step - 1)))
+        Tm = SymTridiagonal(α[1:m_actual], β[1:m_actual-1])
+        
+        # 【核心修改点】：在计算矩阵指数前，减去参考能量！
+        # 这意味着我们在演化 H' = H - E_ref*I，相位就不再发生混叠。
+        Tm_shifted = Matrix(Tm) - E_ref * I
+        U = exp(-im * dt * Tm_shifted) 
+        
+        c = U[:, 1]
+
+        fill!(v, 0.0)
+        for j in 1:m_actual
+            @. v += c[j] * V[j] 
         end
-    end
-
-    # 3. 执行 FFT 提取相位/能谱
-    spectrum = fft(C_t)
-    power    = abs2.(spectrum)
+        
+        if step % 500 == 0
+            print(".") # 简单的进度指示
+        end
+    end 
     
-    freqs    = fftfreq(max_step, 1.0 / dτ)
-    energies = 2 .* π .* freqs
+    @printf(" Done in %.4f seconds\n", time_ops)
 
-    # 4. 寻峰算法
+    return C_t
+end
+
+
+function run_qpe(
+    basis::BasisManager, 
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
+    v0::Vector{Tv};
+    dt::Float64=0.05, 
+    max_step::Int64=4000,  # 推荐增加步长以提高分辨率
+    krylov_dim::Int=20,
+    net::String="agg"
+) where {Ti,Tv,TK,TV}
+
+    println("\n--- Starting Quantum Phase Estimation (QPE) ---")
+    
+    # 【新增 0】：计算输入态的期望能量作为参考零点
+    hvec! = get_multiply_function(basis, ham, net)
+    w_temp = zeros(Tv, basis.dim)
+    hvec!(v0, w_temp)
+    E_ref = real(dot(v0, w_temp)) / norm(v0)^2
+    
+    @printf("Reference Energy: %.6f Hartree\n", E_ref)
+    @printf("Time step (dt)  : %.4f\n", dt)
+    @printf("Total steps     : %d\n", max_step)
+    resolution = 2 * pi / (max_step * dt)
+    @printf("Energy Resol.   : %.4f Hartree\n", resolution)
+
+    t0 = time()
+    
+    # 【修改 1】：把 E_ref 传进去
+    C_t = run_krylov_rte(hvec!, v0, dt=dt, krylov_dim=krylov_dim, max_step=max_step, E_ref=E_ref)
+
+    # 信号处理与 FFT 保持不变
+    window = [0.5 * (1 - cos(2 * pi * i / (max_step - 1))) for i in 0:(max_step-1)]
+    C_t_windowed = C_t .* window
+    S = fft(C_t_windowed)
+    freqs = fftfreq(max_step, 2 * pi / dt) 
+    
+    # 【修改 2】：提取出来的能量必须把 E_ref 加回来！
+    energies = -freqs .+ E_ref 
+    powers = abs.(S)
+
+    # 4. 寻峰算法 (找出局部最大值)
     peaks = []
+    # 过滤掉强度太低的背景噪声峰 (阈值设为最大峰值的 1%)
+    threshold = 0.01 * maximum(powers) 
+    
     for i in 2:(max_step-1)
-        if power[i] > power[i-1] && power[i] > power[i+1]
-            push!(peaks, (energies[i], power[i]))
+        if powers[i] > powers[i-1] && powers[i] > powers[i+1] && powers[i] > threshold
+            push!(peaks, (energies[i], powers[i]))
         end
     end
-    
+
+    # 按照峰值强度(Power)降序排列
     sort!(peaks, by=x->x[2], rev=true)
 
-    println("--- QPE Extracted Energy Spectrum (Top Peaks) ---")
-    @printf("  %-5s %-18s %-15s\n", "Peak", "Energy", "Relative Power")
+    t1 = time()
+    @printf("QPE Analysis   ... Done in %.4f seconds\n", t1 - t0)
+
+    # 5. 打印结果
+    println("\n--- QPE Extracted Energy Spectrum (Top Peaks) ---")
+    @printf("  %-6s %-18s %-18s\n", "Peak", "Energy", "Relative Power")
     
-    max_power = isempty(peaks) ? 1.0 : peaks[1][2]
-    for (i, peak) in enumerate(peaks[1:min(5, length(peaks))])
-        rel_power = peak[2] / max_power
-        if rel_power > 1e-4 
-            @printf("  %03d   % 15.10f    % 10.4f\n", i, peak[1], rel_power)
+    if isempty(peaks)
+        println("  No significant peaks found.")
+    else
+        max_power = peaks[1][2]
+        # 最多打印前 10 个最强的峰
+        for (i, (E, P)) in enumerate(peaks[1:min(10, length(peaks))])
+            @printf("  %03d    % 15.10f      % 10.4f\n", i, E, P / max_power)
         end
     end
-    println("============================================================================\n")
-
-    return energies, power, peaks
+    println("=================================================================\n")
+    
+    return peaks
 end
+
 

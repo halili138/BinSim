@@ -26,7 +26,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             verbose=1),
     )
 
-    # run_enpt2(basis, ham, v_opt, mole.e_scale, net="otf")
+    run_enpt2(basis, ham, v_opt, e_scales[1], net="otf")
 
     kernel(mole, orbs, excited_order=3)
     pool = FEB(orbs)

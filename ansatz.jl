@@ -181,6 +181,8 @@ function kernel(
     info::SysInfo, orbitals::Orbitals; 
     excited_order::Int=2, symm_reduce::Bool=true, generalize::Bool=false,
 )
+    println("Generate orbitals with generalize = $(generalize) and excitation order = $(excited_order)")
+
     if symm_reduce
         spin_orbitals = generate_ci_spin_orbitals(
             info.norb, info.nelec, info.orbsym,
@@ -277,7 +279,7 @@ end
 function FEB(orbitals::Orbitals; 
     Ti::DataType=UInt32, Tv::DataType=Float64, complete::Bool=false,
 )
-    println("Generate Fermion Based Excitation Operator Pool")
+    println("Generate Fermion Based Excitation Operator Pool with complete = $(complete)")
     return ucc_like(orbitals, FermionOperatorAABB, complete, Ti, Tv)
 end
 
@@ -285,7 +287,7 @@ end
 function QEB(orbitals::Orbitals;
     Ti::DataType=UInt32, Tv::DataType=Float64, complete::Bool=false,
 )
-    println("Generate Qubit Based Excitation Operator Pool")
+    println("Generate Qubit Based Excitation Operator Pool with complete = $(complete)")
     return ucc_like(orbitals, QebOperatorAABB, complete, Ti, Tv)
 end
 
