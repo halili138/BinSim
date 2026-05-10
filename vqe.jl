@@ -256,3 +256,140 @@ function load_idxs(read_path::String)
     end
 end  
 
+
+function _adapt_ssvqe(
+    f_hvec::Function, 
+    f_tvec::Function, 
+    f_grad::Function, 
+    idxs::Vector{Int64},
+    v0s::Vector{Vector{Tv}}, 
+    weights::Vector{Float64}, 
+    lv::Vector{Tv}, 
+    rv::Vector{Tv},
+    e_scales::Vector{Float64}, 
+    amplitudes::Vector{Float64}, 
+    selec_idxs::Vector{Int64}, 
+    adapt_options::ADAPT_OPTIONS, 
+    vqe_options::VQE_OPTIONS,
+) where Tv
+
+    K_states = length(v0s)
+    @assert length(amplitudes) == length(selec_idxs)
+    
+    iter::Int = length(amplitudes)
+    maxiter::Int = adapt_options.maxiter 
+    Gtol::Float64 = adapt_options.Gtol
+    gtol::Float64 = adapt_options.gtol
+    htol::Float64 = adapt_options.htol
+    Δtol::Float64 = adapt_options.Δtol
+
+    G, gi_max, δ²H_max = 999.0, 999.0, 999.0
+    L_hist::Array{Float64,1} = []
+    
+    zero_grads = Vector{Float64}(undef, length(idxs))
+    converged::Bool = false
+    target_L = sum(weights .* e_scales)
+
+    @time while !converged
+        iter += 1
+        fill!(zero_grads, 0.0)
+        δ²H_max = 0.0
+
+        # =======================================================
+        # 1. 计算算符池的加权零参数梯度
+        # =======================================================
+        for k in 1:K_states
+            lv .= v0s[k]
+            
+            # 演化当前波函数
+            for i in eachindex(amplitudes)
+                f_tvec(selec_idxs[i], amplitudes[i], lv)
+            end
+            
+            # 计算 H|ψ_k>
+            f_hvec(lv, rv)
+            
+            # 评估收敛情况的方差 (当前态)
+            E_k = real(dot(lv, rv))
+            δ²H_k = max(0.0, norm(rv)^2 - E_k^2)
+            δ²H_max = max(δ²H_max, δ²H_k)
+
+            # 累加池算符梯度
+            for i in eachindex(idxs)
+                g_k = real(f_grad(idxs[i], 0.0, lv, rv)) * 2
+                zero_grads[i] += weights[k] * g_k
+            end
+        end
+        
+        max_idx = sortperm(abs.(zero_grads), rev=true)[1]
+        G       = norm(zero_grads)
+        gi_max  = abs(zero_grads[max_idx])
+
+        if length(selec_idxs) > 0 && max_idx == selec_idxs[end]
+            println("Have selected same operator, ADAPT loop finished!")
+            break
+        end
+
+        push!(amplitudes, 0.0)
+        push!(selec_idxs, idxs[max_idx])
+
+        # =======================================================
+        # 2. VQE 优化步骤 (加权代价函数)
+        # =======================================================
+        obj_func = x -> begin
+            total_L = 0.0
+            total_grad = zeros(Float64, length(x))
+            
+            for k in 1:K_states
+                lv .= v0s[k]
+                result = @timed energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)
+                e_k, g_k, _ = result.value
+                
+                total_L += weights[k] * e_k
+                total_grad .+= weights[k] .* g_k
+            end
+
+            if vqe_options.verbose > 1
+                show_optimze(total_L, norm(total_grad), δ²H_max, total_L - target_L)
+            end
+
+            return total_L, total_grad
+        end
+
+        L_opt, amplitudes = optimze_fg!(
+            amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
+
+        if !isempty(adapt_options.save_path)
+            jldopen(adapt_options.save_path, "w") do file
+                file["amplitudes"] = amplitudes
+                file["selec_idxs"] = selec_idxs
+            end
+        end
+
+        push!(L_hist, L_opt)
+
+        # 检查收敛条件
+        cond1::Bool = iter > maxiter
+        cond2::Bool = (G < Gtol && gi_max < gtol && δ²H_max < htol)
+        cond3::Bool = false
+
+        if length(L_hist) > 5
+            ΔL_max = maximum(abs.(diff(L_hist[end-4:end])))
+            if ΔL_max < Δtol
+                @printf("  ΔL: %9.3e < %.1e, ADAPT loop finished!\n", ΔL_max, Δtol)
+                cond3 = true
+            end
+        end
+
+        converged = cond1 || cond2 || cond3
+
+        if adapt_options.verbose > 0
+            @printf("\nIteration: %d\n",                            iter)
+            @printf("   Weighted L: %.14f\n",                       L_opt)
+            @printf("  err (Loss): %9.3e\n",                        L_opt - target_L)
+            @printf("  |G|: %9.3e    gmax: %9.3e     max_δ²H: %9.3e\n", G, gi_max, δ²H_max)
+            println("============================================================================")
+        end
+    end
+end
+

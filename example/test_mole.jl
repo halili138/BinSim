@@ -27,8 +27,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
             verbose=1),
     )
 
+    kernel(mole, orbs, excited_order=4)
+    pool = FEB(orbs)
+
     # run_enpt2(basis, ham, v_opt, mole.e_scale, net="otf")
-    run_qse(basis, ham, pool, v_opt, mole.e_scale)
+    # run_qse(basis, ham, pool, v_opt, mole.e_scale)
+
     # run_adapt_vqe(basis, ham, pool, v0, mole.e_scale, net="agg",
     #     adapt_options=ADAPT_OPTIONS(
     #         Gtol=1e-3,

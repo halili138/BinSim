@@ -268,7 +268,7 @@ function ucc_like(
 
     pool = unique_operator_pool(pool)
 
-    println("Size of operator pool: $(length(pool))\n")
+    # println("Size of operator pool: $(length(pool))\n")
 
     return pool
 end

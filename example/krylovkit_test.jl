@@ -60,33 +60,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     build(mole)
 
-    
-
     fci_basis  = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
-    ret = @timed net = OTF(fci_basis, ham)
 
-    aop = (src::Vector{Float64}) -> begin
-        dst = similar(src) 
-        hvec_otf!(fci_basis, net, src, dst) 
-        return dst 
-    end
-
-    v0   = randn(Float64, fci_basis.dim)
-    v0 ./= norm(v0)
-
-    println("Running KrylovKit Arnoldi Solver...")
-
-    @time vals, vecs, info = eigsolve(
-        aop,                # 传入修改后的单参数函数
-        v0,                 # 纯随机正态分布初始向量
-        1,                  # 找 k 个特征值
-        :SR,                # 找实部最小的 (Smallest Real)
-        tol = 1e-5,         # 容差
-        krylovdim = 20,     # Krylov 子空间最大维度 
-        verbosity = 3       # 打印详细迭代日志
-    )
-
-    println("Energys: ", real.(vals))
-    println("Convergence info: ", info)
+    run_krylovkit_diag(fci_basis, ham, k=5)
 end
+
+
+
