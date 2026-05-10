@@ -141,6 +141,11 @@ function run_vqe(
         x0 = zeros(Float64, length(pool))
     end
 
+    energy = Ref(0.0)
+    norm_g = Ref(0.0)
+    δ²H    = Ref(0.0)
+    error  = Ref(0.0)
+
     obj_func = x -> begin
         if !isempty(options.save_path)
             jldopen(options.save_path, "w") do file
@@ -150,16 +155,20 @@ function run_vqe(
 
         lv .= v0
         result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
-        energy, grad, δ²H = result.value
-        norm_g = norm(grad)
-        error = energy - e_scale
-        options.verbose > 1 && show_optimze(energy, norm_g, δ²H, error)
+        energy[], grad, δ²H[] = result.value
+
+        norm_g[] = norm(grad)
+        error[]  = abs(energy[] - e_scale)
+        options.verbose > 1 && show_optimze(energy[], norm_g[], δ²H[], error[])
         options.verbose > 2 && show_time(result)
 
-        return energy, grad
+        return energy[], grad
     end
 
     e_opt, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+
+    println("VQE optimizing finished:")
+    show_optimze(energy[], norm_g[], δ²H[], error[])
 
     lv .= v0
     
@@ -167,7 +176,7 @@ function run_vqe(
         f_tvec(idxs[i], x_opt[i], lv)
     end
 
-    return e_opt, x_opt, lv
+    return e_opt, lv, x_opt
 end
 
 
@@ -723,6 +732,8 @@ function run_ssvqe(
         x0 = zeros(Float64, length(pool))
     end
 
+    step_counter = Ref(0)
+
     obj_func = x -> begin
         if !isempty(options.save_path)
             jldopen(options.save_path, "w") do file
@@ -733,28 +744,54 @@ function run_ssvqe(
         total_L = 0.0
         total_grad = zeros(Float64, length(x))
         max_δ²H = 0.0
-        
-        # 将各态的代价和梯度按权重累加
-        for k in 1:K_states
+        state_metrics = []
+
+        time_ops = @elapsed for k in 1:K_states
             lv .= v0s[k]
-            result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
-            e_k, g_k, δ²H_k = result.value
+            e_k, g_k, δ²H_k = energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
             
             total_L += weights[k] * e_k
             total_grad .+= weights[k] .* g_k
             max_δ²H = max(max_δ²H, δ²H_k)
+
+            # 计算并记录当前态的指标
+            norm_gk = norm(g_k)
+            err_k = abs(e_k - e_scales[k])
+            push!(state_metrics, (k, e_k, norm_gk, δ²H_k, err_k))
         end
 
-        norm_g = norm(total_grad)
-        target_L = sum(weights .* e_scales)
-        error = total_L - target_L
+        if options.verbose > 1
+            step_counter[] += 1
+            norm_g = norm(total_grad)
+            target_L = sum(weights .* e_scales)
+            error = total_L - target_L
 
-        options.verbose > 0 && show_optimze(total_L, norm_g, max_δ²H, error)
-        
+            @printf(" SSVQE Eval %04d\n", step_counter[])
+            @printf(" f: %.14f   |g|: %.3e   err: %.3e   time: %.3fs\n", 
+                      total_L, norm_g, error, time_ops)
+            show_ssvqe_optimze(state_metrics)
+        end
+
         return total_L, total_grad
     end
 
-    return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    _, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+
+    e_opts = zeros(Float64, K_states)
+    v_opts = [zeros(Tv, basis.dim) for _ in 1:K_states]
+
+    for k in 1:K_states
+        v_opts[k] .= v0s[k]
+        
+        for i in eachindex(idxs)
+            f_tvec(idxs[i], x_opt[i], v_opts[k])
+        end
+        
+        f_hvec(v_opts[k], rv)
+        e_opts[k] = real(dot(v_opts[k], rv))
+    end
+
+    return e_opts, v_opts, x_opt
 end
 
 
@@ -798,8 +835,8 @@ end
 
 function generate_ssvqe_inputs(
     basis::BasisManager, 
-    ham::BinaryQubitAABB{Ti,Tv,K,V}, 
-    K_states::Int; 
+    ham::BinaryQubitAABB{Ti,Tv,K,V}; 
+    k_states::Int=2, 
     weight_decay::Float64 = 0.5
 ) where {Ti,Tv,K,V}
     """
@@ -808,7 +845,7 @@ function generate_ssvqe_inputs(
     """
 
     println("--- Generating SSVQE Initial States ---")
-    @assert K_states > 0 && K_states <= basis.dim "K_states must be within basis dimension"
+    @assert k_states > 0 && k_states <= basis.dim "k_states must be within basis dimension"
 
     # 1. 获取对角元 (零阶能量)
     diags = get_diags(basis, ham)
@@ -816,11 +853,11 @@ function generate_ssvqe_inputs(
     # 2. 找到对角元能量最低的 K 个构型的索引
     # sortperm 会返回从小到大排序的索引集
     sorted_idxs = sortperm(diags)
-    selected_idxs = sorted_idxs[1:K_states]
+    selected_idxs = sorted_idxs[1:k_states]
 
     # 3. 构造正交初始态 (v0s)
-    v0s = Vector{Vector{Tv}}(undef, K_states)
-    for k in 1:K_states
+    v0s = Vector{Vector{Tv}}(undef, k_states)
+    for k in 1:k_states
         v = zeros(Tv, basis.dim)
         idx = selected_idxs[k]
         v[idx] = 1.0  # 设置为计算基矢 (One-hot 向量)，天然相互正交
@@ -832,7 +869,7 @@ function generate_ssvqe_inputs(
 
     # 4. 构造递减权重 (weights)
     # 使用指数衰减策略: 1.0, 0.5, 0.25... (归一化以防止梯度爆炸)
-    raw_weights = [weight_decay^(k-1) for k in 1:K_states]
+    raw_weights = [weight_decay^(k-1) for k in 1:k_states]
     weights = raw_weights ./ sum(raw_weights)
 
     # 5. 生成对应的 e_scales (用于打印误差参考，如果没有 FCI 参考可以设为零阶能量)

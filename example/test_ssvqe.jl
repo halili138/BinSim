@@ -10,24 +10,26 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
-    v0  = get_hf(basis, mole.nelec)
-    mole.e_scale, _ = run_fci(basis, ham, v0, net="otf")
-    
+
+    k = 5
+    e_scales, _ = run_krylovkit_diag(basis, ham; k=k)
+    e_scales = length(e_scales) > k ? e_scales[1:k] : e_scales
+
     orbs = Orbitals()
-    kernel(mole, orbs, generalize=false)
+    kernel(mole, orbs, generalize=true)
     pool = FEB(orbs)
 
-    v0  = get_hf(basis, mole.nelec)
+    v0s, weights, _ = generate_ssvqe_inputs(basis, ham, k_states=k)
 
-    # e_opt, v_opt, x_opt = run_vqe(basis, ham, pool, v0, mole.e_scale, net="otf",
+    # run_ssvqe(basis, ham, pool, v0s, weights, e_scales,
     #     options=VQE_OPTIONS(
     #         ftol=1e-8,
     #         gtol=1e-6,
     #         maxiter=100000,
-    #         verbose=1),
+    #         verbose=2)
     # )
 
-    run_adapt_vqe(basis, ham, pool, v0, mole.e_scale, net="agg",
+    run_adapt_ssvqe(basis, ham, pool, v0s, weights, e_scales,
         adapt_options=ADAPT_OPTIONS(
             Gtol=1e-3,
             gtol=1e-4,

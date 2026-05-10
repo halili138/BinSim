@@ -194,18 +194,31 @@ function _adapt_vqe(
         push!(amplitudes, 0.0)
         push!(selec_idxs, idxs[max_idx])
 
+        e_l   = Ref(0.0)
+        ng_l  = Ref(0.0)
+        δ²H_l = Ref(0.0)
+        err_l = Ref(0.0)
+
         obj_func = x -> begin
             lv .= v0
             result = @timed energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)
-            energy, gradient, δ²H = result.value
-            vqe_options.verbose > 1 && show_optimze(energy, norm(gradient), δ²H, energy-e_scale)
+            e_l[], gradient, δ²H_l[] = result.value
+
+            ng_l[]  = norm(gradient)
+            err_l[] = abs(e_l[] - e_scale)
+            vqe_options.verbose > 1 && show_optimze(e_l[], ng_l[], δ²H_l[], err_l[])
             vqe_options.verbose > 2 && show_time(result)
 
-            return energy, gradient
+            return e_l[], gradient
         end
 
         e_opt, amplitudes = optimze_fg!(
             amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
+
+        if vqe_options.verbose > 0
+            println("VQE optimizing finished:")
+            show_optimze(e_l[], ng_l[], δ²H_l[], err_l[])
+        end
 
         if !isempty(adapt_options.save_path)
             jldopen(adapt_options.save_path, "w") do file
@@ -255,6 +268,28 @@ function load_idxs(read_path::String)
         return amplitudes, selec_idxs
     end
 end  
+
+
+function show_ssvqe_optimze(state_metrics)
+    df_states   = [@sprintf("%d", m[1]) for m in state_metrics]
+    df_energies = [@sprintf("%.14f", m[2]) for m in state_metrics]
+    df_grads    = [@sprintf("%.3e", m[3]) for m in state_metrics]
+    df_vars     = [@sprintf("%.3e", m[4]) for m in state_metrics]
+    df_errs     = [@sprintf("%.3e", m[5]) for m in state_metrics]
+
+    df_step = DataFrame(
+        "State" => df_states,
+        "f (Energy)" => df_energies,
+        "|g|" => df_grads,
+        "δ²H" => df_vars,
+        "err" => df_errs
+    )
+
+    println("-----------------------------------------------------------")
+    show(stdout, df_step, summary=false, eltypes=false, show_row_number=false)
+    
+    println("\n")
+end
 
 
 function _adapt_ssvqe(
@@ -336,21 +371,35 @@ function _adapt_ssvqe(
         # =======================================================
         # 2. VQE 优化步骤 (加权代价函数)
         # =======================================================
+        step_counter = Ref(0)
         obj_func = x -> begin
             total_L = 0.0
             total_grad = zeros(Float64, length(x))
-            
-            for k in 1:K_states
+            max_δ²H = 0.0
+            state_metrics = []
+
+            time_ops = @elapsed for k in 1:K_states
                 lv .= v0s[k]
-                result = @timed energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)
-                e_k, g_k, _ = result.value
-                
+                e_k, g_k, δ²H_k = energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)                
                 total_L += weights[k] * e_k
                 total_grad .+= weights[k] .* g_k
+                max_δ²H = max(max_δ²H, δ²H_k)
+
+                norm_gk = norm(g_k)
+                err_k = abs(e_k - e_scales[k])
+                push!(state_metrics, (k, e_k, norm_gk, δ²H_k, err_k))
             end
 
             if vqe_options.verbose > 1
-                show_optimze(total_L, norm(total_grad), δ²H_max, total_L - target_L)
+                step_counter[] += 1
+                norm_g = norm(total_grad)
+                target_L = sum(weights .* e_scales)
+                error = total_L - target_L
+                
+                @printf(" SSVQE Eval %04d\n", step_counter[])
+                @printf(" f: %.14f   |g|: %.3e   err: %.3e   time: %.3fs\n", 
+                        total_L, norm_g, error, time_ops)
+                show_ssvqe_optimze(state_metrics)
             end
 
             return total_L, total_grad
