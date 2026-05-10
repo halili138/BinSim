@@ -19,26 +19,28 @@ if abspath(PROGRAM_FILE) == @__FILE__
     kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
 
-    # run_vqe(basis, ham, pool, v0, mole.e_scale, net="otf",
-    #     options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-6,
-    #         maxiter=100000,
-    #         verbose=1),
-    # )
-
-    run_adapt_vqe(basis, ham, pool, v0, mole.e_scale, net="agg",
-        adapt_options=ADAPT_OPTIONS(
-            Gtol=1e-3,
-            gtol=1e-4,
-            htol=1e-3,
-            Δtol=1e-8,
-        ),
-        vqe_options=VQE_OPTIONS(
+    e_opt, x_opt, v_opt = run_vqe(basis, ham, pool, v0, mole.e_scale, net="otf",
+        options=VQE_OPTIONS(
             ftol=1e-10,
             gtol=1e-6,
-            maxiter=1000,
-            verbose=1,
-        ),
+            maxiter=100000,
+            verbose=1),
     )
+
+    # run_enpt2(basis, ham, v_opt, mole.e_scale, net="otf")
+    run_qse(basis, ham, pool, v_opt, mole.e_scale)
+    # run_adapt_vqe(basis, ham, pool, v0, mole.e_scale, net="agg",
+    #     adapt_options=ADAPT_OPTIONS(
+    #         Gtol=1e-3,
+    #         gtol=1e-4,
+    #         htol=1e-3,
+    #         Δtol=1e-8,
+    #     ),
+    #     vqe_options=VQE_OPTIONS(
+    #         ftol=1e-10,
+    #         gtol=1e-6,
+    #         maxiter=1000,
+    #         verbose=1,
+    #     ),
+    # )
 end

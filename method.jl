@@ -91,7 +91,15 @@ function run_vqe(
         return energy, grad
     end
 
-    return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    e_opt, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+
+    lv .= v0
+    
+    for i in eachindex(idxs)
+        f_tvec(idxs[i], x_opt[i], lv)
+    end
+
+    return e_opt, x_opt, lv
 end
 
 
@@ -246,50 +254,6 @@ function run_rk4(
 end
 
 
-function estimate_max_eigen(hvec!, dim::Int; maxiter::Int=20)
-    v = randn(Float64, dim)
-    w = zeros(Float64, dim)
-    normalize!(v)
-    
-    λ_max = 0.0
-    # 迭代 15-20 次即可获得相当准确的最高本征值
-    for _ in 1:maxiter
-        hvec!(v, w)
-        λ_max = real(dot(v, w))
-        nw = norm(w) 
-        @. v = w / nw
-    end
-    
-    println("Estimated λ_max: $λ_max")
-
-    return λ_max
-end
-
-
-# function estimate_max_step(hvec!, dim::Int, E_ground_guess::Float64)
-#     v = rand(Float64, dim)
-#     w = zeros(Float64, dim)
-#     normalize!(v)
-    
-#     λ_max = 0.0
-#     # 迭代 15-20 次即可获得相当准确的最高本征值
-#     for _ in 1:20
-#         hvec!(v, w)
-#         λ_max = real(dot(v, w))
-#         nw = norm(w) 
-#         @. v = w / nw
-#     end
-    
-#     # 根据理论公式计算绝对极限步长
-#     dτ_limit = 2.0 / (λ_max + E_ground_guess)
-    
-#     println("Estimated λ_max: $λ_max")
-#     println("Theoretical dτ limit: $dτ_limit")
-    
-#     # 实际运行时为了安全，通常取极限值的 0.95 倍
-#     return dτ_limit * 0.95 
-# end
-
 function estimate_max_step(hvec!::Function, dim::Int, E_ground_guess::Float64)
     v = randn(Float64, dim)
     w = zeros(Float64, dim)
@@ -303,7 +267,7 @@ function estimate_max_step(hvec!::Function, dim::Int, E_ground_guess::Float64)
         # 这确保了正方向的能量绝对值被彻底放大
         @. w = w - E_ground_guess * v
         
-        # 此时得到的本征值是平移后的，需要加回来
+        # 此时得到的本征值是平移后的, 需要加回来
         λ_shifted = real(dot(v, w))
         λ_max = λ_shifted + E_ground_guess
         
@@ -329,6 +293,7 @@ function estimate_max_step(hvec!::Function, dim::Int, E_ground_guess::Float64)
     
     return dτ_limit
 end
+
 
 function run_euler(
     basis::BasisManager, 
@@ -412,15 +377,15 @@ function run_krylov(
     ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     v0::Vector{Tv}, 
     e_scale::Float64;
-    dτ::Float64=1.0,       # Krylov 允许极其激进的大步长 (甚至可以直接设为 1.0)
-    krylov_dim::Int=20,    # Krylov 子空间维度 m
-    max_step::Int64=200,   # 因为单步迈得远，总步数会大幅减少
+    dτ::Float64=1.0, 
+    krylov_dim::Int=20, 
+    max_step::Int64=200, 
     tol::Float64=1e-8,
-    net::String="agg"
+    net::String="agg",
 ) where {Ti,Tv,TK,TV}
     """
     Krylov 子空间指数法虚时演化 (m 次 hvec/步):
-    利用 Lanczos 算法构建 m 维子空间，投影哈密顿量为三对角矩阵 Tm
+    利用 Lanczos 算法构建 m 维子空间, 投影哈密顿量为三对角矩阵 Tm
     psi(τ + dτ) ≈ V * exp(-dτ * Tm) * e1
     """
 
@@ -437,13 +402,11 @@ function run_krylov(
         error("Undefined NET name $(net)")
     end
 
-    v = copy(v0)
+    v = v0
     normalize!(v)
 
-    # 【内存预分配】
-    # V 矩阵存储 Krylov 基底 (按列排布以利用 Julia 的列主序连续内存)
-    V = zeros(Tv, basis.dim, krylov_dim)
-    w = zeros(Tv, basis.dim) # 用于存放 H|v_j>
+    V = [zeros(Tv, basis.dim) for _ in 1:krylov_dim]
+    w = zeros(Tv, basis.dim) 
     α = zeros(Float64, krylov_dim)
     β = zeros(Float64, krylov_dim)
 
@@ -455,49 +418,46 @@ function run_krylov(
         step += 1
         
         # 1. 初始基向量
-        copyto!(view(V, :, 1), v)
+        copyto!(V[1], v)
         m_actual = krylov_dim
 
         # 2. Lanczos 迭代构建子空间
         for j in 1:krylov_dim
-            v_j = V[:, j]
-            hvec!(v_j, w) # w = H|v_j>
+            v_j = V[j]    # 极速获取引用, 类型为纯正的 Vector{Tv}
+            hvec!(v_j, w) # 这里 hvec! 接收的将是完美的纯向量, 毫无阻碍
 
-            # 第一步时提取当前态的能量期望和方差 (因为 v_1 就是当前的波函数 v)
             if j == 1
                 rn = norm(w)^2
                 E  = real(dot(v_j, w))
-                dH = max(0.0, rn - E^2) # 这里 ln 恒为 1.0，因为已经 normalize
+                dH = max(0.0, rn - E^2)
                 push!(E_hist, E)
                 push!(dH_hist, dH)
             end
 
             α[j] = real(dot(v_j, w))
 
-            # Gram-Schmidt 正交化 (计算残差向量)
             @. w = w - α[j] * v_j
             if j > 1
-                v_prev = view(V, :, j-1)
+                v_prev = V[j-1]
                 @. w = w - β[j-1] * v_prev
             end
 
-            # 再次施加完全正交化(Full Reorthogonalization)以抵抗浮点误差带来的基底坍塌
+            # 完全正交化
             for i in 1:j
-                v_i = view(V, :, i)
+                v_i = V[i]
                 c = dot(v_i, w)
                 @. w = w - c * v_i
             end
 
             norm_w = norm(w)
             
-            # Krylov 空间提前闭合判定 (命中精确不变量子空间)
             if j < krylov_dim
                 if norm_w < 1e-12
                     m_actual = j
                     break
                 end
                 β[j] = norm_w
-                v_next = view(V, :, j+1)
+                v_next = V[j+1]
                 @. v_next = w / norm_w
             end
         end
@@ -511,24 +471,228 @@ function run_krylov(
 
         # 3. 构造子空间投影的三对角矩阵 Tm 并求指数
         Tm = SymTridiagonal(α[1:m_actual], β[1:m_actual-1])
-        # 将矩阵转为密集矩阵求 exp，由于维度极小(如20x20)，这一步耗时几乎为 0
         U = exp(-dτ * Matrix(Tm)) 
         
-        # 演化后的新系数，就是 U 的第一列
         c = U[:, 1]
 
-        # 4. 映射回全空间：|v_new> = V * c
+        # 4. 映射回全空间
         fill!(v, 0.0)
         for j in 1:m_actual
-            v_j = view(V, :, j)
+            v_j = V[j]
             @. v += c[j] * v_j
         end
 
         normalize!(v)
     end 
     
-    println("  Converged at step $step\n")
+    println("  \nConverged at step $step\n")
 
     return E_hist[end]
+end
+
+
+function run_enpt2(
+    basis::BasisManager, 
+    ham::BinaryQubitAABB{Ti,Tv,K,V}, 
+    v0::Vector{Tv},
+    e_scale::Float64;
+    net::String="agg",
+    ref_tol::Float64=1e-4, 
+    level_shift::Float64=0.0
+) where {Ti,Tv,K,V}
+    """
+    Epstein-Nesbet 二阶微扰理论 (ENPT2) 后处理校正
+    利用已收敛的近似波函数 v0, 计算残差并估计动态相关能。
+    
+    公式: E^(2) = sum_{i ∉ ref} |<i|H - E0|v0>|^2 / (E0 - H_ii - shift)
+    """
+    println("\n--- Starting ENPT2 Post-Processing ---")
+    
+    # 获取哈密顿量对角元作为零阶哈密顿量 H0
+    diags = get_diags(basis, ham)
+
+    if net == "agg"
+        ret = @timed agg = AGG(basis, ham)
+        println("Successfully Generate Ham AGG in $(ret.time) seconds")
+        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
+    elseif net == "otf"
+        ret = @timed otf = OTF(basis, ham)
+        println("Successfully Generate Ham OTF in $(ret.time) seconds")
+        hvec! = (src, dst) -> hvec_otf!(basis, otf, src, dst)
+    else
+        error("Undefined NET name $(net)")
+    end
+
+    # 确保参考态已经归一化
+    v = copy(v0)
+    normalize!(v)
+    
+    w = zeros(Tv, basis.dim)
+    
+    # 1. 计算 H|v0> 
+    hvec!(v, w)
+
+    # 2. 计算零阶能量 E0 = <v0|H|v0>
+    E0 = real(dot(v, w))
+    
+    # 3. 计算残差向量 |r> = (H - E0)|v0>
+    # 注意此时 w 存储的是 H|v0>
+    r = zeros(Tv, basis.dim)
+    @. r = w - E0 * v
+
+    # 4. 计算二阶能量校正 E2
+    E2 = 0.0
+    diverge_count = 0
+    ref_size = 0
+    
+    for i in 1:basis.dim
+        # 判断当前行列式是否在参考空间外（权重系数极小）
+        if abs(v[i]) < ref_tol
+            # 计算分母：E0 - H_ii - shift
+            denominator = E0 - diags[i] - level_shift
+            
+            # 防止闯入态问题 (Intruder state problem), 分母必须为负且有一定大小
+            if denominator < -1e-6
+                E2 += abs2(r[i]) / denominator
+            else
+                diverge_count += 1
+            end
+        else
+            ref_size += 1
+        end
+    end
+
+    @printf("\n  Reference space size : %d / %d (tol = %.1e)\n", ref_size, basis.dim, ref_tol)
+    @printf("  Zero-order E0        : %.14f\n", E0)
+    @printf("  PT2 Correction E2    : %.14f\n", E2)
+    @printf("  Total Energy (E0+E2) : %.14f\n", E0 + E2)
+    @printf("  Error                : %.4e\n", abs(E0 + E2 - e_scale))
+    
+    if diverge_count > 0
+        @printf("  Warning: %d states ignored due to denominator > -1e-6 (Intruder states)\n", diverge_count)
+    end
+    println("--------------------------------------\n")
+
+    return E0, E2
+end
+
+
+function run_qse(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,K,V},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
+    v0::Vector{Tv},
+    e_scale::Float64;
+    S_tol::Float64=1e-8,
+    n_states::Int=5
+) where {Ti,Tv,K,V}
+    """
+    量子子空间展开 (QSE) 后处理
+    利用 VQE 收敛后的波函数 v0 和算符池 pool 构建子空间，求解激发态并缓解基态误差。
+    """
+    println("============================================================================")
+    println("\n--- Starting Quantum Subspace Expansion (QSE) ---")
+    
+    N_pool = length(pool)
+    N_sub  = N_pool + 1
+    println("Operator pool size  : $(N_pool)")
+    println("Subspace dimension  : $(N_sub)\n")
+
+    ret = @timed ham_otf = OTF(basis, ham)
+    println("Successfully Generate Ham OTF in $(ret.time) seconds\n")    
+    hvec! = (src, dst) -> hvec_otf!(basis, ham_otf, src, dst)
+
+    print("Pre-compiling operator OTFs ... ")
+    time_ops = @elapsed pool_otfs = [OTF(basis, op) for op in pool]
+    @printf("Done in %.4f seconds\n\n", time_ops)
+
+    print("Building S and H Matrices ... \n")
+    v_i_buf  = zeros(Tv, basis.dim)
+    v_j_buf  = zeros(Tv, basis.dim)
+    hv_j_buf = zeros(Tv, basis.dim)
+
+    get_V! = (k, dst) -> begin
+        if k == 1
+            copyto!(dst, v0)
+        else
+            hvec_otf!(basis, pool_otfs[k-1], v0, dst)
+        end
+    end
+
+    S_mat = zeros(Tv, N_sub, N_sub)
+    H_mat = zeros(Tv, N_sub, N_sub)
+
+    time_mat = @elapsed begin
+        # 逐列生成，保证 Hvec 每列只调用一次
+        for j in 1:N_sub
+            # 1. 生成列向量 |V_j> 存入 v_j_buf
+            get_V!(j, v_j_buf)
+            # 2. 计算 H|V_j> 存入 hv_j_buf
+            hvec!(v_j_buf, hv_j_buf)
+            # 3. 扫过行索引 i (利用厄米对称性，只算上三角 i <= j)
+            for i in 1:j
+                if i == j
+                    # 对角元直接自己和自己内积
+                    S_mat[j, j] = real(dot(v_j_buf, v_j_buf))
+                    H_mat[j, j] = real(dot(v_j_buf, hv_j_buf))
+                else
+                    # 重新生成行向量 |V_i> (这就是牺牲时间换取空间的核心)
+                    get_V!(i, v_i_buf)
+                    
+                    s_val = real(dot(v_i_buf, v_j_buf))
+                    h_val = real(dot(v_i_buf, hv_j_buf))
+                    # 对称赋值
+                    S_mat[i, j] = s_val; S_mat[j, i] = s_val
+                    H_mat[i, j] = h_val; H_mat[j, i] = h_val
+                end
+            end
+        end
+    end
+    
+    S_mat = Hermitian(S_mat)
+    H_mat = Hermitian(H_mat)
+    @printf("Matrices built successfully in %.4f seconds\n", time_mat)
+
+    # 5. Canonical Orthogonalization (正则正交化消除线性相关)
+    λ_S, U_S = eigen(S_mat)
+    
+    valid_idx = findall(x -> x > S_tol, λ_S)
+    N_valid   = length(valid_idx)
+    @printf("\nConditioning S matrix: %d / %d basis vectors kept (S_tol = %.1e)\n", N_valid, N_sub, S_tol)
+
+    if N_valid == 0
+        error("No linearly independent basis vectors found. Try reducing S_tol.")
+    end
+
+    λ_S_valid = λ_S[valid_idx]
+    U_S_valid = U_S[:, valid_idx]
+
+    # 正交化转换矩阵
+    X = U_S_valid * Diagonal(1.0 ./ sqrt.(λ_S_valid))
+
+    # 6. 将哈密顿量转换到正交基底并对角化 H_orth = X^† * H * X
+    H_orth = Hermitian(X' * H_mat * X)
+    E_qse, C_orth = eigen(H_orth)
+
+    # 7. 映射回原 QSE 基底的系数
+    C_qse = X * C_orth
+
+    println("\n--- QSE Energy Spectrum ---")
+
+    @printf("  %-10s %-18s    %-18s\n", 
+            "State", "Energy", "ΔE (vs Ground)")
+
+    for i in 1:min(n_states, N_valid)
+        if i == 1
+            @printf("  %03d (GS)   % 15.10f       (err)%.2e\n", 
+                i-1, E_qse[i], abs(E_qse[i] - e_scale))
+        else
+            @printf("  %03d        % 15.10f    % 15.10f\n", 
+                i-1, E_qse[i], E_qse[i] - E_qse[1])
+        end
+    end
+    println("============================================================================\n")
+
+    return E_qse, C_qse
 end
 
