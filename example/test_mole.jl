@@ -38,7 +38,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             ftol=1e-8,
             gtol=1e-6,
             maxiter=1000,
-            verbose=2,
+            verbose=0,
         ),
     )
 end

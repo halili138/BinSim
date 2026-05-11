@@ -159,10 +159,11 @@ function run_vqe(
         return energy[], grad
     end
 
-    e_opt, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
-
-    println("VQE optimizing finished:")
-    show_optimze(energy[], norm_g[], δ²H[], error[])
+    println("Performing VQE optimization ... ")
+    time_ops = @elapsed e_opt, x_opt = optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    @printf("Converged in %.4f seconds with:\n f: %.14f  |g|: %.3e  δ²H: %.3e  err: %.3e\n", 
+            time_ops, energy[], norm_g[], δ²H[], error[])
+    println("\n")
 
     lv .= v0
     

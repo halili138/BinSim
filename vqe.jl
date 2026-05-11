@@ -30,7 +30,7 @@ function optimze_fg!(
     optim_options::Optim.Options,
     verbose::Int64,
 )
-    verbose > 0 && println("Classical optimizing...")
+    # verbose > 0 && println("Classical optimizing...")
 
     function fg!(F, G, x)
         f, g = obj_func(x)
@@ -212,12 +212,15 @@ function _adapt_vqe(
             return e_l[], gradient
         end
 
-        e_opt, amplitudes = optimze_fg!(
+        println("Performing VQE optimization ... ")
+        time_ops = @elapsed e_opt, amplitudes = optimze_fg!(
             amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
 
-        if vqe_options.verbose > 0
-            println("VQE optimizing finished:")
-            show_optimze(e_l[], ng_l[], δ²H_l[], err_l[])
+        if vqe_options.verbose == 1
+            @printf("Converged in %.4f seconds with:\n f: %.14f  |g|: %.3e  δ²H: %.3e  err: %.3e\n", 
+                    time_ops, e_l[], ng_l[], δ²H_l[], err_l[])
+        elseif vqe_options.verbose >= 2
+            @printf("Converged in %.4f seconds\n", time_ops)
         end
 
         if !isempty(adapt_options.save_path)
@@ -241,7 +244,7 @@ function _adapt_vqe(
         if length(e_hist) > 5
             Δe_max = maximum(abs.(diff(e_hist[end-4:end])))
             if Δe_max < Δtol
-                @printf("  ΔE: %9.3e < %.1e, ADAPT loop finished!\n", Δe_max, Δtol)
+                @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", Δe_max, Δtol)
                 cond3 = true
             end
         end
