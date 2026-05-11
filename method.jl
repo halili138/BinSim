@@ -220,7 +220,7 @@ function run_adapt_vqe(
 end
 
 
-function run_rk4(
+function run_rk4_ite(
     basis::BasisManager, 
     ham::BinaryQubitAABB{Ti,Tv,K,V}, 
     v0::Vector{Tv}, 
