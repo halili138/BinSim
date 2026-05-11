@@ -11,14 +11,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
     
-    e_scales, _ = run_krylovkit_diag(basis, ham; k=5)
+    e_scales, _ = run_fci(basis, ham; k=5)
 
     v0 = get_hf(basis, mole.nelec)
     orbs = Orbitals()
     kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
 
-    e_opt, x_opt, v_opt = run_vqe(basis, ham, pool, v0, e_scales[1], net="otf",
+    e_opt, v_opt, x_opt = run_vqe(basis, ham, pool, v0, e_scales[1], net="otf",
         options=VQE_OPTIONS(
             ftol=1e-10,
             gtol=1e-6,
@@ -26,7 +26,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             verbose=1),
     )
 
-    run_enpt2(basis, ham, v_opt, e_scales[1], net="otf")
+    # run_enpt2(basis, ham, v_opt, e_scales[1], net="otf")
 
     kernel(mole, orbs, excited_order=3)
     pool = FEB(orbs)

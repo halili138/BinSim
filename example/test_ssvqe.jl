@@ -12,8 +12,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     ham = JW_hamiltonian(mole)
 
     k = 5
-    e_scales, _ = run_krylovkit_diag(basis, ham; k=k)
-    e_scales = length(e_scales) > k ? e_scales[1:k] : e_scales
+    e_scales, _ = run_fci(basis, ham; k=k)
 
     orbs = Orbitals()
     kernel(mole, orbs, generalize=true)
@@ -21,26 +20,26 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     v0s, weights, _ = generate_ssvqe_inputs(basis, ham, k_states=k)
 
-    # run_ssvqe(basis, ham, pool, v0s, weights, e_scales,
-    #     options=VQE_OPTIONS(
-    #         ftol=1e-8,
-    #         gtol=1e-6,
-    #         maxiter=100000,
-    #         verbose=2)
-    # )
-
-    run_adapt_ssvqe(basis, ham, pool, v0s, weights, e_scales,
-        adapt_options=ADAPT_OPTIONS(
-            Gtol=1e-3,
-            gtol=1e-4,
-            htol=1e-3,
-            Δtol=1e-8,
-        ),
-        vqe_options=VQE_OPTIONS(
+    run_ssvqe(basis, ham, pool, v0s, weights, e_scales,
+        options=VQE_OPTIONS(
             ftol=1e-8,
             gtol=1e-6,
-            maxiter=1000,
-            verbose=2,
-        ),
+            maxiter=100000,
+            verbose=2)
     )
+
+    # run_adapt_ssvqe(basis, ham, pool, v0s, weights, e_scales,
+    #     adapt_options=ADAPT_OPTIONS(
+    #         Gtol=1e-3,
+    #         gtol=1e-4,
+    #         htol=1e-3,
+    #         Δtol=1e-8,
+    #     ),
+    #     vqe_options=VQE_OPTIONS(
+    #         ftol=1e-8,
+    #         gtol=1e-6,
+    #         maxiter=1000,
+    #         verbose=2,
+    #     ),
+    # )
 end

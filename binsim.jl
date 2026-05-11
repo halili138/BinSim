@@ -14,8 +14,9 @@ using NLSolversBase
 using LineSearches
 using CPUTime
 using FFTW
-using KrylovKit
 using DataFrames
+using Arpack
+using LinearMaps
 
 BLAS.set_num_threads(1)
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")

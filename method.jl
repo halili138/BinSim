@@ -51,14 +51,8 @@ function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, pool::
 end
 
 
-function run_fci(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,K,V},
-    v0::Vector{Tv};
-    net::String="agg"
-) where {Ti,Tv,K,V}
-    psi_space = basis.dim * 8 / (1 << 30)
-    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim, psi_space)
+function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}; net::String="agg") where {Ti,Tv,K,V}
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim,  basis.dim*8/(1<<30))
     diags = get_diags(basis, ham)
 
     if net == "agg"
@@ -75,44 +69,44 @@ function run_fci(
     else
         error("Undefined NET name $(net)")
     end
-
-    # @time ham_sp = to_sparse_matrix(ham, pbc.norb, pbc.nelec)
-    # @time λ, ϕ = eigs(ham_sp, nev=1, which=:SR)
-    # println(λ)
     
     return @time davidson(hvec!, v0, diags, tol=1e-5)
 end
 
 
-function run_krylovkit_diag(fci_basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1) where {Ti,Tv,K,V}
-    net = OTF(fci_basis, ham)
+function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1) where {Ti,Tv,K,V}
+    dim = basis.dim
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim,  dim*8/(1<<30))
 
-    aop = (src::Vector{Tv}) -> begin
-        dst = similar(src) 
-        hvec_otf!(fci_basis, net, src, dst) 
-        return dst 
-    end
+    print("Pre-compiling Ham OTF ... ")
+    time_ops = @elapsed otf = OTF(basis, ham)
+    @printf("Done in %.4f seconds\n", time_ops)
 
-    v0   = randn(Tv, fci_basis.dim)
-    v0 ./= norm(v0)
-
-    println("Running KrylovKit Arnoldi Solver...")
-
-    @time vals, vecs, info = eigsolve(
-        aop,                # 传入修改后的单参数函数
-        v0,                 # 纯随机正态分布初始向量
-        k,                  # 找 k 个特征值
-        :SR,                # 找实部最小的 (Smallest Real)
-        tol = 1e-5,         # 容差
-        krylovdim = 20,     # Krylov 子空间最大维度 
-        verbosity = 0       # 打印详细迭代日志
+    hvec_map = LinearMap{Tv}(
+        (dst, src) -> hvec_otf!(basis, otf, src, dst), 
+        dim, 
+        ismutating=true, 
+        ishermitian=true
     )
 
-    println("Energys: ", real.(vals))
-    println("Convergence info: ", info)
+    print("Running Arpack directly on C++ OTF Network...")
+    time_ops = @elapsed λ_aggs, ϕ_aggs = eigs(hvec_map, nev=k, which=:SR)
+    @printf("Done in %.4f seconds\n", time_ops)
+
+    λ_aggs = real.(λ_aggs)
+    df_states   = [i == 1 ? "000 (GS)" : @sprintf("%03d", i-1) for i in 1:k]
+    df_energies = [@sprintf("%.14f", e) for e in λ_aggs]
+
+    df_step = DataFrame(
+        "State" => df_states,
+        "f (Energy)" => df_energies,
+    )
+
+    println("-------------------------------")
+    show(stdout, df_step, summary=false, eltypes=false, show_row_number=false)
     println("\n")
 
-    return real.(vals), vecs
+    return λ_aggs, ϕ_aggs
 end
 
 
@@ -1154,5 +1148,4 @@ function run_qpe(
     
     return peaks
 end
-
 

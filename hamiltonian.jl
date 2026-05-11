@@ -329,3 +329,29 @@ function apply_constraint(
 
     return linearcombine([H0b, (N-sum(nelec))^2, S2, Sz], [1.0, constr_c...], 0.0, 1e-12)
 end
+
+
+function ising_module(nq::Int64, J::Float64=1.0, h::Float64=0.5; 
+    Ti::DataType=UInt32, Tv::DataType=Float64, is_pbc::Bool=false)
+
+    ops = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
+    cs  = Tv[]
+
+    for i in 0:nq-2
+        push!(ops, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], -J, Ti, Tv))
+        push!(cs, 1)
+    end
+
+    if is_pbc
+        push!(ops, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], -J, Ti, Tv))
+        push!(cs, 1)
+    end
+
+    for i in 0:nq-1
+        push!(ops, QubitOperatorAABB([(i, "X")], -h, Ti, Tv))
+        push!(cs, 1)
+    end
+
+    return linearcombine(ops, cs, 0.0, 1e-12)
+end
+
