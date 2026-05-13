@@ -1,6 +1,8 @@
 #include "otf.hpp"
 #include "oft_hvec.hpp"
-#include "otf_evol.hpp"
+#include "otf_tvec.hpp"
+#include "otf_expm.hpp"
+#include "otf_grad.hpp"
 
 extern "C"
 {
@@ -92,6 +94,19 @@ extern "C"
         const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
 
         return grad_svd_network_otf<uint32, double>(basis, net, idx, theta, lp, rp);
+    }
+
+    void tvec_contract_otf_f64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double *__restrict__ src,
+        double *__restrict__ dst)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        tvec_svd_network_otf<uint32, double>(basis, net, idx, src, dst);
     }
 }
 
@@ -185,5 +200,18 @@ extern "C"
         const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
 
         return grad_svd_network_otf<uint32, complexf64>(basis, net, idx, theta, lp, rp);
+    }
+
+    void tvec_contract_otf_c64(
+        void *__restrict__ basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const complexf64 *__restrict__ src,
+        complexf64 *__restrict__ dst)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        tvec_svd_network_otf<uint32, complexf64>(basis, net, idx, src, dst);
     }
 }

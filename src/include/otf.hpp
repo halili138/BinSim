@@ -120,6 +120,173 @@ void destroy_network_otf(void *net_ptr)
     delete net;
 }
 
+template <typename Ti,
+          typename Tv>
+void *build_network_otf(
+    const BasisManager<Ti> *basis,
+    int64 norb, int64 ngs,
+    const Ti *axs,
+    const Ti *bxs,
+    const int64 *ranks,
+    const int64 *num_zas,
+    const int64 *num_zbs,
+    const Ti *flat_zas,
+    const Ti *flat_zbs,
+    const Tv *flat_wa,
+    const Tv *flat_wb)
+{
+    Network_OTF<Ti, Tv> *net = new Network_OTF<Ti, Tv>();
+    net->num_groups = ngs;
+
+    int32 map_size = 1 << norb;
+    int32 *a_map = new int32[map_size];
+    int32 *b_map = new int32[map_size];
+    std::fill(a_map, a_map + map_size, -1);
+    std::fill(b_map, b_map + map_size, -1);
+
+    for (int64 i = 0; i < basis->num_blocks; ++i)
+    {
+        for (int32 a = 0; a < basis->blocks[i].num_a; ++a)
+            a_map[basis->blocks[i].astrs[a]] = a;
+        for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
+            b_map[basis->blocks[i].bstrs[b]] = b;
+    }
+    net->map.a_idx_map = a_map;
+    net->map.b_idx_map = b_map;
+
+    uint64 z_offset_a = 0, z_offset_b = 0;
+    uint64 w_offset_a = 0, w_offset_b = 0;
+
+    for (int64 g = 0; g < ngs; ++g)
+    {
+        SVDGroup_OTF<Ti, Tv> group;
+        group.ax = axs[g];
+        group.bx = bxs[g];
+        group.rank = ranks[g];
+        group.num_za = num_zas[g];
+        group.num_zb = num_zbs[g];
+
+        group.unique_zas = new Ti[group.num_za];
+        std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + group.num_za, group.unique_zas);
+        z_offset_a += group.num_za;
+
+        group.unique_zbs = new Ti[group.num_zb];
+        std::copy(flat_zbs + z_offset_b, flat_zbs + z_offset_b + group.num_zb, group.unique_zbs);
+        z_offset_b += group.num_zb;
+
+        uint64 wa_size = group.num_za * group.rank;
+        group.wa = new Tv[wa_size];
+        std::copy(flat_wa + w_offset_a, flat_wa + w_offset_a + wa_size, group.wa);
+        w_offset_a += wa_size;
+
+        uint64 wb_size = group.num_zb * group.rank;
+        group.wb = new Tv[wb_size];
+        std::copy(flat_wb + w_offset_b, flat_wb + w_offset_b + wb_size, group.wb);
+        w_offset_b += wb_size;
+
+        if (group.ax == 0 && group.bx == 0)
+            net->diag_groups.push_back(group);
+        else if (group.ax != 0 && group.bx == 0)
+            net->pure_a_groups.push_back(group);
+        else if (group.ax == 0 && group.bx != 0)
+            net->pure_b_groups.push_back(group);
+        else
+            net->mixed_groups.push_back(group);
+    }
+
+    auto rank_comparator = [](const SVDGroup_OTF<Ti, Tv> &a, const SVDGroup_OTF<Ti, Tv> &b)
+    {
+        return a.rank < b.rank;
+    };
+
+    std::sort(net->diag_groups.begin(), net->diag_groups.end(), rank_comparator);
+    std::sort(net->pure_a_groups.begin(), net->pure_a_groups.end(), rank_comparator);
+    std::sort(net->pure_b_groups.begin(), net->pure_b_groups.end(), rank_comparator);
+    std::sort(net->mixed_groups.begin(), net->mixed_groups.end(), rank_comparator);
+
+    return static_cast<void *>(net);
+}
+
+template <typename Ti, typename Tv>
+void *build_pool_network_otf(
+    const BasisManager<Ti> *basis,
+    int64 norb, int64 ngs,
+    const Ti *axs,
+    const Ti *bxs,
+    const int64 *ranks,
+    const int64 *num_zas,
+    const int64 *num_zbs,
+    const Ti *flat_zas,
+    const Ti *flat_zbs,
+    const Tv *flat_wa,
+    const Tv *flat_wb)
+{
+    Network_OTF<Ti, Tv> *net = new Network_OTF<Ti, Tv>();
+    net->num_groups = ngs;
+
+    int32 map_size = 1 << norb;
+    int32 *a_map = new int32[map_size];
+    int32 *b_map = new int32[map_size];
+    std::fill(a_map, a_map + map_size, -1);
+    std::fill(b_map, b_map + map_size, -1);
+
+    for (int64 i = 0; i < basis->num_blocks; ++i)
+    {
+        for (int32 a = 0; a < basis->blocks[i].num_a; ++a)
+            a_map[basis->blocks[i].astrs[a]] = a;
+        for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
+            b_map[basis->blocks[i].bstrs[b]] = b;
+    }
+    net->map.a_idx_map = a_map;
+    net->map.b_idx_map = b_map;
+
+    net->excit_types = new uint8[ngs];
+    net->flat_groups = new SVDGroup_OTF<Ti, Tv>[ngs];
+
+    uint64 z_offset_a = 0, z_offset_b = 0;
+    uint64 w_offset_a = 0, w_offset_b = 0;
+
+    for (int64 g = 0; g < ngs; ++g)
+    {
+        SVDGroup_OTF<Ti, Tv> &group = net->flat_groups[g];
+        group.ax = axs[g];
+        group.bx = bxs[g];
+        group.rank = ranks[g];
+        group.num_za = num_zas[g];
+        group.num_zb = num_zbs[g];
+
+        if (group.ax == 0 && group.bx == 0)
+            net->excit_types[g] = 0; // Diag
+        else if (group.ax != 0 && group.bx == 0)
+            net->excit_types[g] = 1; // Pure A
+        else if (group.ax == 0 && group.bx != 0)
+            net->excit_types[g] = 2; // Pure B
+        else
+            net->excit_types[g] = 3; // Mixed
+
+        // 拷贝数据
+        group.unique_zas = new Ti[group.num_za];
+        std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + group.num_za, group.unique_zas);
+        z_offset_a += group.num_za;
+
+        group.unique_zbs = new Ti[group.num_zb];
+        std::copy(flat_zbs + z_offset_b, flat_zbs + z_offset_b + group.num_zb, group.unique_zbs);
+        z_offset_b += group.num_zb;
+
+        uint64 wa_size = group.num_za * group.rank;
+        group.wa = new Tv[wa_size];
+        std::copy(flat_wa + w_offset_a, flat_wa + w_offset_a + wa_size, group.wa);
+        w_offset_a += wa_size;
+
+        uint64 wb_size = group.num_zb * group.rank;
+        group.wb = new Tv[wb_size];
+        std::copy(flat_wb + w_offset_b, flat_wb + w_offset_b + wb_size, group.wb);
+        w_offset_b += wb_size;
+    }
+
+    return static_cast<void *>(net);
+}
+
 template <int Rank,
           typename Ti,
           typename Tv>

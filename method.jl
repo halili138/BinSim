@@ -1150,3 +1150,248 @@ function run_qpe(
     return peaks
 end
 
+
+function run_exact_vqe(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,K,V},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
+    v0::Vector{Tv},
+    e_scale::Float64;
+    x0::Vector{Float64}=Float64[],
+    options::VQE_OPTIONS=VQE_OPTIONS(),
+    n_steps::Int=50
+) where {Ti,Tv,K,V}
+    println("============================================================================")
+    println("--- Optimized Exact UCC VQE (ODE Adjoint Method) ---")
+    
+    ham_net  = OTF(basis, ham)
+    # pool_net = OTF(basis, pool)
+    pool_nets = [OTF(basis, op) for op in pool]
+        
+    hvec! = (src, dst) -> hvec_otf!(basis, ham_net, src, dst)
+    # tvec! = (idx, θ, vec) -> tvec_svd!(basis, pool_net, idx, θ, vec)
+    pool_hvec! = (idx, src, dst) -> hvec_otf!(basis, pool_nets[idx], src, dst)
+
+    if !isempty(x0)
+        @assert length(x0) == length(pool)
+    else
+        x0 = zeros(Float64, length(pool))
+    end
+
+    vt  = zeros(Tv, basis.dim)
+    v   = zeros(Tv, basis.dim)
+    Hv  = zeros(Tv, basis.dim)
+    vs  = [zeros(Tv, basis.dim) for _ in 1:4]
+    Hvs = [zeros(Tv, basis.dim) for _ in 1:4]
+    dτ  = 1.0 / n_steps
+    # θ   = pi / 2
+
+    obj_func = x -> begin
+        if norm(x) < 1e-12
+            v .= v0
+            hvec!(v, Hv)
+            E   = real(dot(v, Hv))
+            ln  = norm(v) ^ 2
+            rn  = norm(Hv) ^ 2
+            δ²H = max(0.0, rn / ln - E^2)
+
+            Hv .*= 2.0
+            g_tot = zeros(Float64, length(pool))
+            for i in eachindex(pool)
+                # vt .= v
+                # tvec!(i, θ, vt)
+                # g_tot[i] = real(dot(vt, Hv))
+                pool_hvec!(i, v, vt)
+                g_tot[i] = real(dot(vt, Hv))
+            end
+            
+            options.verbose > 0 && show_optimze(E, norm(g_tot), δ²H, abs(E - e_scale))
+
+            return E, g_tot
+        end
+
+        # 常规通道：线性组合并生成演化算子
+        T = linearcombine(pool, x, 0.0, 1e-12)
+        if T == zero(T)
+            Tvec! = (src, dst) -> fill!(dst, 0.0);
+        else
+            T_otf = OTF(basis, T)
+            Tvec! = (src, dst) -> hvec_otf!(basis, T_otf, src, dst)
+        end
+
+        # 1. 正向演化
+        v .= v0
+        for _ in 1:n_steps
+            Tvec!(v,  vs[1])
+            @. vt = v + vs[1] * dτ / 2
+            Tvec!(vt, vs[2])
+            @. vt = v + vs[2] * dτ / 2
+            Tvec!(vt, vs[3])
+            @. vt = v + vs[3] * dτ 
+            Tvec!(vt, vs[4])
+            @. v += (vs[1] + 2 * vs[2] + 2 * vs[3] + vs[4]) * dτ / 6
+        end
+
+        normalize!(v)
+        hvec!(v, Hv)
+        E   = real(dot(v, Hv))
+        ln  = norm(v) ^ 2
+        rn  = norm(Hv) ^ 2
+        δ²H = max(0.0, rn / ln - E^2)
+
+        Hv .*= 2.0
+        g_tot  = zeros(Float64, length(pool))
+        g_curr = zeros(Float64, length(pool))
+        g_next = zeros(Float64, length(pool))
+        for i in eachindex(pool)
+            # vt .= v
+            # tvec!(i, θ, vt)
+            # g_curr[i] = real(dot(vt, Hv))
+            pool_hvec!(i, v, vt)
+            g_curr[i] = real(dot(vt, Hv)) / ln
+        end
+
+        # 2. 反向伴随演化与梯度积分
+        for _ in 1:n_steps
+            # 演化波函数 v
+            Tvec!(v,  vs[1])
+            @. vt = v - vs[1] * dτ / 2
+            Tvec!(vt, vs[2])
+            @. vt = v - vs[2] * dτ / 2
+            Tvec!(vt, vs[3])
+            @. vt = v - vs[3] * dτ 
+            Tvec!(vt, vs[4])
+            @. v -= (vs[1] + 2 * vs[2] + 2 * vs[3] + vs[4]) * dτ / 6
+
+            # 演化伴随态 Hv
+            Tvec!(Hv, Hvs[1])
+            @. vt = Hv - Hvs[1] * dτ / 2
+            Tvec!(vt, Hvs[2])
+            @. vt = Hv - Hvs[2] * dτ / 2
+            Tvec!(vt, Hvs[3])
+            @. vt = Hv - Hvs[3] * dτ 
+            Tvec!(vt, Hvs[4])
+            @. Hv -= (Hvs[1] + 2 * Hvs[2] + 2 * Hvs[3] + Hvs[4]) * dτ / 6
+
+            ln = norm(v) ^ 2
+            for i in eachindex(pool)
+                # vt .= v
+                # tvec!(i, θ, vt)
+                # g_next[i] = real(dot(vt, Hv))
+                pool_hvec!(i, v, vt)
+                g_next[i] = real(dot(vt, Hv)) / ln
+            end
+
+            @. g_tot += (g_curr + g_next) * dτ / 2
+            g_curr .= g_next
+        end
+
+        options.verbose > 0 && show_optimze(E, norm(g_tot), δ²H, abs(E - e_scale))
+
+        return E, g_tot
+    end
+
+    return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+end
+
+
+using DifferentialEquations
+using RecursiveArrayTools
+
+function run_exact_vqe_adaptive(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,K,V},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
+    v0::Vector{Tv},
+    e_scale::Float64;
+    x0::Vector{Float64}=Float64[],
+    options::VQE_OPTIONS=VQE_OPTIONS(),
+    ode_tol::Float64=1e-8 # ODE 积分精度
+) where {Ti,Tv,K,V}
+    println("============================================================================")
+    println("--- Adaptive Exact UCC VQE (Augmented ODE Adjoint Method) ---")
+    
+    ham_net  = OTF(basis, ham)
+    pool_nets = [OTF(basis, op) for op in pool]
+
+    hvec! = (src, dst) -> hvec_otf!(basis, ham_net, src, dst)
+    pool_hvec! = (idx, src, dst) -> hvec_otf!(basis, pool_nets[idx], src, dst)
+    
+    if !isempty(x0)
+        @assert length(x0) == length(pool)
+    else
+        x0 = zeros(Float64, length(pool))
+    end
+
+    Hv = zeros(Tv, basis.dim)
+    a  = zeros(Tv, basis.dim)
+    vt = zeros(Tv, basis.dim)
+
+    obj_func = x -> begin
+        if norm(x) < 1e-12
+            hvec!(v0, Hv)
+            E   = real(dot(v0, Hv))
+            δ²H = max(0.0, norm(Hv)^2 / norm(v0)^2 - E^2)
+
+            @. a = 2.0 * Hv 
+            g_tot = zeros(Float64, length(pool))
+            for i in eachindex(pool)
+                pool_hvec!(i, v0, vt)
+                g_tot[i] = real(dot(vt, a))
+            end
+            
+            options.verbose > 0 && show_optimze(E, norm(g_tot), δ²H, abs(E - e_scale))
+
+            return E, g_tot
+        end
+
+        T = linearcombine(pool, x, 0.0, 1e-12)
+        if T == zero(T)
+            Tvec! = (src, dst) -> fill!(dst, 0.0);
+        else
+            T_otf = OTF(basis, T)
+            Tvec! = (src, dst) -> hvec_otf!(basis, T_otf, src, dst)
+        end
+
+        f_forward! = (du, u, p, s) -> Tvec!(u, du)
+        prob_fwd = ODEProblem(f_forward!, v0, (0.0, 1.0))
+        sol_fwd = solve(prob_fwd, Tsit5(), abstol=ode_tol, reltol=ode_tol, save_everystep=false)
+        
+        v_final = sol_fwd.u[end] 
+        normalize!(v_final)
+        
+        hvec!(v_final, Hv)
+        E = real(dot(v_final, Hv))
+        δ²H = max(0.0, norm(Hv)^2 / norm(v_final)^2 - E^2)
+
+        @. a = 2.0 * Hv 
+        g_init = zeros(Float64, length(pool))
+        u_back_init = ArrayPartition(v_final, a, g_init)
+        f_backward! = (du, u, p, s) -> begin
+            ψ_curr = u.x[1]; 
+            a_curr = u.x[2];
+            dψ     = du.x[1]; 
+            da     = du.x[2]; 
+            dg     = du.x[3]
+            
+            Tvec!(ψ_curr, dψ)
+            Tvec!(a_curr, da)
+            
+            for i in eachindex(pool)
+                pool_hvec!(i, ψ_curr, vt)
+                dg[i] = -real(dot(a_curr, vt))
+            end
+        end
+
+        prob_bwd = ODEProblem(f_backward!, u_back_init, (1.0, 0.0))
+        sol_bwd  = solve(prob_bwd, Tsit5(), abstol=ode_tol, reltol=ode_tol, save_everystep=false)
+        g_tot    = sol_bwd.u[end].x[3]
+
+        options.verbose > 0 && show_optimze(E, norm(g_tot), δ²H, abs(E - e_scale))
+
+        return E, g_tot
+    end
+
+    return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+end
+
