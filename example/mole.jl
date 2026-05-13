@@ -70,6 +70,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     pool = FEB(orbs)
 
     # run_exact_vqe_adaptive(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale)
+    # run_exact_vqe_adaptive(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale)
 
     e_opt, v_opt, x_opt = run_vqe(
         basis, 

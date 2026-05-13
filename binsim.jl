@@ -17,6 +17,8 @@ using FFTW
 using DataFrames
 using Arpack
 using LinearMaps
+using DifferentialEquations
+using RecursiveArrayTools
 
 BLAS.set_num_threads(1)
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
@@ -41,7 +43,6 @@ const eps3::Float64 = 1e-16
 include("integer.jl")
 include("tools.jl")
 include("load_data.jl")
-# include("binqubit.jl")
 include("binqubitabab.jl")
 include("binqubitaabb.jl")
 include("hamiltonian.jl")

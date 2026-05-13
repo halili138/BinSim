@@ -8,8 +8,7 @@ static inline void tvec_diag_impl(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
@@ -79,10 +78,8 @@ static inline void tvec_diag_impl(
                     src_a = ja.src_idx;
                     src_b = jb.src_idx;
                 }
-
-                const Tv u = fast_diag_exp<Tv>(vt, theta);
                 const int64 idx = MIXED_IDX(blk_src, src_a, src_b);
-                vec[idx] *= u;
+                dst_vec[idx] = src_vec[idx] * vt;
             }
         }
     }
@@ -95,11 +92,8 @@ static inline void tvec_pure_a_impl(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
-    const double cd = std::cos(theta) - 1.0;
-    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
@@ -168,17 +162,9 @@ static inline void tvec_pure_a_impl(
                     src_idx = j.src_idx;
                     dst_idx = j.dst_idx;
                 }
-
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
                 const int64 si = PURE_A_IDX(blk_src, src_idx, ib);
                 const int64 di = PURE_A_IDX(blk_dst, dst_idx, ib);
-
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
+                tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
             }
         }
     }
@@ -191,11 +177,8 @@ static inline void tvec_pure_b_impl(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
-    const double cd = std::cos(theta) - 1.0;
-    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
@@ -263,17 +246,9 @@ static inline void tvec_pure_b_impl(
                     src_idx = j.src_idx;
                     dst_idx = j.dst_idx;
                 }
-
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
                 const int64 si = PURE_B_IDX(blk_src, ia, src_idx);
                 const int64 di = PURE_B_IDX(blk_dst, ia, dst_idx);
-
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
+                tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
             }
         }
     }
@@ -286,11 +261,8 @@ static inline void tvec_mixed_impl(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
-    const double cd = std::cos(theta) - 1.0;
-    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
 #pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
@@ -366,17 +338,9 @@ static inline void tvec_mixed_impl(
                     dst_a = ja.dst_idx;
                     dst_b = jb.dst_idx;
                 }
-
-                const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-                const Tv vo_fwd = co * vt;
-                const Tv vo_rev = co * math_conj(vt);
                 const int64 si = MIXED_IDX(blk_src, src_a, src_b);
                 const int64 di = MIXED_IDX(blk_dst, dst_a, dst_b);
-
-                const Tv vi = vec[si];
-                const Tv vj = vec[di];
-                vec[si] = vi * vd - vj * vo_rev;
-                vec[di] = vj * vd + vi * vo_fwd;
+                tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
             }
         }
     }
@@ -390,8 +354,7 @@ static void tvec_diag(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     if (!num_routes)
         return;
@@ -399,13 +362,13 @@ static void tvec_diag(
     switch (rank)
     {
     case 1:
-        tvec_diag_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_diag_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     case 2:
-        tvec_diag_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_diag_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     default:
-        tvec_diag_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_diag_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     }
 }
@@ -418,8 +381,7 @@ static void tvec_pure_a(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     if (!num_routes)
         return;
@@ -427,13 +389,13 @@ static void tvec_pure_a(
     switch (rank)
     {
     case 1:
-        tvec_pure_a_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_a_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     case 2:
-        tvec_pure_a_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_a_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     default:
-        tvec_pure_a_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_a_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     }
 }
@@ -446,8 +408,7 @@ static void tvec_pure_b(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     if (!num_routes)
         return;
@@ -455,13 +416,13 @@ static void tvec_pure_b(
     switch (rank)
     {
     case 1:
-        tvec_pure_b_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_b_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     case 2:
-        tvec_pure_b_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_b_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     default:
-        tvec_pure_b_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_pure_b_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     }
 }
@@ -474,8 +435,7 @@ static void tvec_mixed(
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     if (!num_routes)
         return;
@@ -483,13 +443,13 @@ static void tvec_mixed(
     switch (rank)
     {
     case 1:
-        tvec_mixed_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_mixed_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     case 2:
-        tvec_mixed_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_mixed_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     default:
-        tvec_mixed_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        tvec_mixed_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, src_vec, dst_vec);
         break;
     }
 }
@@ -500,32 +460,37 @@ void tvec_svd_network(
     const BasisManager<Ti> *__restrict__ basis,
     const SVDNetwork<Ti, Tv> *__restrict__ net,
     const int64 idx,
-    const double theta,
-    Tv *__restrict__ vec)
+    const Tv *__restrict__ src_vec, Tv *__restrict__ dst_vec)
 {
     int type = net->excit_types[idx];
+
+#pragma omp parallel for schedule(static)
+    for (int64 i = 0; i < basis->dim; ++i)
+    {
+        dst_vec[i] = {};
+    }
 
     switch (type)
     {
     case 0:
         tvec_diag<Ti, Tv>(
             basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, vec);
+            net->group_ranks[idx], net->arenas[idx], src_vec, dst_vec);
         break;
     case 1:
         tvec_pure_a<Ti, Tv>(
             basis, net->pure_a_routes[idx], net->num_pure_a_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, vec);
+            net->group_ranks[idx], net->arenas[idx], src_vec, dst_vec);
         break;
     case 2:
         tvec_pure_b<Ti, Tv>(
             basis, net->pure_b_routes[idx], net->num_pure_b_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, vec);
+            net->group_ranks[idx], net->arenas[idx], src_vec, dst_vec);
         break;
     case 3:
         tvec_mixed<Ti, Tv>(
             basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, vec);
+            net->group_ranks[idx], net->arenas[idx], src_vec, dst_vec);
         break;
     default:
         std::cerr << "Error: Unexpected type = " << static_cast<int>(type)

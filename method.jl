@@ -4,13 +4,17 @@ function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, net::S
         time_ops = @elapsed agg = AGG(basis, ham)
         @printf("Done in %.4f seconds\n", time_ops)
         print_info(agg)
-        hvec! = (src, dst) -> hvec_direct_agg!(basis, agg, src, dst)
+
+        hvec! = (src, dst) -> hvec_agg!(basis, agg, src, dst)
+
         return hvec!
     elseif net == "otf"
         print("Pre-compiling Ham OTF ... ")
         time_ops = @elapsed otf = OTF(basis, ham)
         @printf("Done in %.4f seconds\n", time_ops)
+
         hvec! = (src, dst) ->hvec_otf!(basis, otf, src, dst)
+
         return hvec!
     else
         error("Undefined NET name $(net)")
@@ -18,7 +22,7 @@ function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, net::S
 end
 
 
-function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB}, net::String)
+function get_multiply_function1(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB}, net::String)
     if net == "agg"
         print("Pre-compiling Ham AGG ... ")
         time_ops = @elapsed ham_agg = AGG(basis, ham)
@@ -28,10 +32,11 @@ function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, pool::
         time_ops = @elapsed pool_net = NET(basis, pool)
         @printf("Done in %.4f seconds\n", time_ops)
 
-        f_hvec = (lvec, rvec) -> hvec_direct_agg!(basis, ham_agg, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_net, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_net, idx, x, lvec, rvec)
-        return f_hvec, f_tvec, f_grad
+        f_hvec = (v, Hv) -> hvec_agg!(basis, ham_agg, v, Hv)
+        f_tvec = (idx, v, Tv) -> tvec_svd!(basis, pool_net, idx, v, Tv)
+
+        return f_hvec, f_tvec
+
     elseif net == "otf"
         print("Pre-compiling Ham OTF ... ")
         time_ops = @elapsed ham_otf  = OTF(basis, ham)
@@ -41,17 +46,53 @@ function get_multiply_function(basis::BasisManager, ham::BinaryQubitAABB, pool::
         time_ops = @elapsed pool_otf = OTF(basis, pool)
         @printf("Done in %.4f seconds\n", time_ops)
 
-        f_hvec = (lvec, rvec) -> hvec_otf!(basis, ham_otf, lvec, rvec)
-        f_tvec = (idx, x, vec) -> tvec_svd!(basis, pool_otf, idx, x, vec)
-        f_grad = (idx, x, lvec, rvec) -> return grad_svd(basis, pool_otf, idx, x, lvec, rvec)
-        return f_hvec, f_tvec, f_grad
+        f_hvec = (v, Hv) -> hvec_otf!(basis, ham_otf, v, Hv)
+        f_tvec = (idx, v, Tv) -> tvec_svd!(basis, pool_otf, idx, v, Tv)
+        
+        return f_hvec, f_tvec
     else
         error("Undefined NET name $(net)")
     end
 end
 
 
-function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}; net::String="agg") where {Ti,Tv,K,V}
+function get_multiply_function2(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB}, net::String)
+    if net == "agg"
+        print("Pre-compiling Ham AGG ... ")
+        time_ops = @elapsed ham_agg = AGG(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        print("Pre-compiling Pool NET ... ")
+        time_ops = @elapsed pool_net = NET(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_hvec = (v, Hv) -> hvec_agg!(basis, ham_agg, v, Hv)
+        f_expm = (idx, θ, v) -> expm_svd!(basis, pool_net, idx, θ, v)
+        f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_net, idx, θ, lv, rv)
+
+        return f_hvec, f_expm, f_grad
+
+    elseif net == "otf"
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed ham_otf  = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        print("Pre-compiling Pool OTF ... ")
+        time_ops = @elapsed pool_otf = OTF(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_hvec = (v, Hv) -> hvec_otf!(basis, ham_otf, v, Hv)
+        f_expm = (idx, θ, v) -> expm_svd!(basis, pool_otf, idx, θ, v)
+        f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_otf, idx, θ, lv, rv)
+
+        return f_hvec, f_expm, f_grad
+    else
+        error("Undefined NET name $(net)")
+    end
+end
+
+
+function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}; net::String="otf") where {Ti,Tv,K,V}
     @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim,  basis.dim*8/(1<<30))
     diags = get_diags(basis, ham)
 
@@ -60,7 +101,7 @@ function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vecto
         time_ops = @elapsed agg = AGG(basis, ham)
         @printf("Done in %.4f seconds\n", time_ops)
         print_info(agg)
-        hvec! = (src, dst) -> @printf("hvec time %.6f seconds", @elapsed hvec_direct_agg!(basis, agg, src, dst))
+        hvec! = (src, dst) -> @printf("hvec time %.6f seconds", @elapsed hvec_agg!(basis, agg, src, dst))
     elseif net == "otf"
         print("Pre-compiling Ham OTF ... ")
         time_ops = @elapsed otf = OTF(basis, ham)
@@ -116,7 +157,7 @@ function run_vqe(
     pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
     v0::Vector{Tv},
     e_scale::Float64;
-    net::String="agg",
+    net::String="otf",
     x0::Vector{Float64}=Float64[],
     options::VQE_OPTIONS=VQE_OPTIONS()
 ) where {Ti,Tv,K,V}
@@ -127,7 +168,7 @@ function run_vqe(
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
+    f_hvec, f_expm, f_grad = get_multiply_function2(basis, ham, pool, net)
 
     if !isempty(x0)
         @assert length(x0) == length(idxs)
@@ -148,7 +189,7 @@ function run_vqe(
         end
 
         lv .= v0
-        result = @timed energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
+        result = @timed energy_objective(f_hvec, f_expm, f_grad, idxs, x, lv, rv)
         energy[], grad, δ²H[] = result.value
 
         norm_g[] = norm(grad)
@@ -168,7 +209,7 @@ function run_vqe(
     lv .= v0
     
     for i in eachindex(idxs)
-        f_tvec(idxs[i], x_opt[i], lv)
+        f_expm(idxs[i], x_opt[i], lv)
     end
 
     return e_opt, lv, x_opt
@@ -181,7 +222,7 @@ function run_adapt_vqe(
     pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
     v0::Vector{Tv},
     e_scale::Float64;
-    net::String="agg",
+    net::String="otf",
     amplitudes::Vector{Float64}=Float64[], 
     selec_idxs::Vector{Int64}=Int64[],
     adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(),
@@ -195,7 +236,7 @@ function run_adapt_vqe(
     rv = zeros(Tv, basis.dim)
     idxs = [i for i in eachindex(pool)]
 
-    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
+    f_hvec, f_expm, f_grad = get_multiply_function2(basis, ham, pool, net)
 
     if !isempty(amplitudes) && !isempty(selec_idxs)
         @assert length(amplitudes) == length(selec_idxs)
@@ -206,7 +247,7 @@ function run_adapt_vqe(
 
     _adapt_vqe(
         f_hvec,
-        f_tvec, 
+        f_expm, 
         f_grad,  
         idxs, 
         v0, 
@@ -229,7 +270,7 @@ function run_rk4_ite(
     dτ::Float64=0.02, 
     max_step::Int64=1000, 
     tol::Float64=1e-8,
-    net::String="agg",
+    net::String="otf",
 ) where {Ti,Tv,K,V}
     """
     四阶 Runge-Kutta 虚时演化 (4 次 hvec/步):
@@ -345,7 +386,7 @@ function run_euler_ite(
     dτ::Float64=0.0,
     max_step::Int64=5000, 
     tol::Float64=1e-8,
-    net::String="agg",
+    net::String="otf",
 ) where {Ti,Tv,K,V}
     """
     一阶 Euler 虚时演化 (1 次 hvec/步):
@@ -412,7 +453,7 @@ function run_krylov_ite(
     krylov_dim::Int=20, 
     max_step::Int64=200, 
     tol::Float64=1e-8,
-    net::String="agg",
+    net::String="otf",
 ) where {Ti,Tv,TK,TV}
     """
     Krylov 子空间指数法虚时演化 (m 次 hvec/步):
@@ -516,7 +557,7 @@ function run_enpt2(
     ham::BinaryQubitAABB{Ti,Tv,K,V}, 
     v0::Vector{Tv},
     e_scale::Float64;
-    net::String="agg",
+    net::String="otf",
     ref_tol::Float64=1e-4, 
     level_shift::Float64=0.0
 ) where {Ti,Tv,K,V}
@@ -594,7 +635,8 @@ function run_qse(
     v0::Vector{Tv};
     e_scales::Vector{Float64}=Float64[],
     S_tol::Float64=1e-8,
-    n_states::Int=5
+    n_states::Int=5,
+    net::String="otf"
 ) where {Ti,Tv,K,V}
 
     println("\n--- Starting Quantum Subspace Expansion (QSE) ---\n")
@@ -603,16 +645,13 @@ function run_qse(
     N_sub  = N_pool + 1
     println("Operator pool size: $(N_pool)")
 
-    hvec! = get_multiply_function(basis, ham, "otf")
-    
-    print("Pre-compiling operator OTFs ... ")
-    time_ops = @elapsed pool_otfs = [OTF(basis, op) for op in pool]
-    @printf("Done in %.4f seconds\n", time_ops)
+    hvec!, tvec! = get_multiply_function1(basis, ham, pool, net)
+        
     get_V! = (k, dst) -> begin
         if k == 1
             copyto!(dst, v0)
         else
-            hvec_otf!(basis, pool_otfs[k-1], v0, dst)
+            tvec!(k-1, v0, dst)
         end
     end
 
@@ -625,23 +664,16 @@ function run_qse(
 
     time_ops = @elapsed begin
         for j in 1:N_sub
-            # 1. 生成列向量 |V_j> 存入 v_j_buf
             get_V!(j, v_j_buf)
-            # 2. 计算 H|V_j> 存入 hv_j_buf
             hvec!(v_j_buf, hv_j_buf)
-            # 3. 扫过行索引 i (利用厄米对称性, 只算上三角 i <= j)
             for i in 1:j
                 if i == j
-                    # 对角元直接自己和自己内积
                     S_mat[j, j] = real(dot(v_j_buf, v_j_buf))
                     H_mat[j, j] = real(dot(v_j_buf, hv_j_buf))
                 else
-                    # 重新生成行向量 |V_i> (这就是牺牲时间换取空间的核心)
                     get_V!(i, v_i_buf)
-                    
                     s_val = real(dot(v_i_buf, v_j_buf))
                     h_val = real(dot(v_i_buf, hv_j_buf))
-                    # 对称赋值
                     S_mat[i, j] = s_val; S_mat[j, i] = s_val
                     H_mat[i, j] = h_val; H_mat[j, i] = h_val
                 end
@@ -696,187 +728,6 @@ function run_qse(
 end
 
 
-function run_ssvqe(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,K,V},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
-    v0s::Vector{Vector{Tv}},
-    weights::Vector{Float64},
-    e_scales::Vector{Float64};
-    net::String="agg",
-    x0::Vector{Float64}=Float64[],
-    options::VQE_OPTIONS=VQE_OPTIONS()
-) where {Ti,Tv,K,V}
-    K_states = length(v0s)
-    @assert length(weights) == K_states "Number of weights must match number of initial states"
-    @assert length(e_scales) == K_states "Number of energy scales must match number of initial states"
-
-    println("Num symmetry allowed elements: $(basis.dim)\n")
-    println("Operator pool size: $(length(pool))\n")
-    println("SSVQE Target States: $(K_states)\n")
-
-    lv = zeros(Tv, basis.dim)
-    rv = zeros(Tv, basis.dim)
-    idxs = [i for i in eachindex(pool)]
-
-    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
-
-    if !isempty(x0)
-        @assert length(x0) == length(idxs)
-    else
-        x0 = zeros(Float64, length(pool))
-    end
-
-    step_counter = Ref(0)
-
-    obj_func = x -> begin
-        if !isempty(options.save_path)
-            jldopen(options.save_path, "w") do file
-                file["x"] = x
-            end
-        end
-
-        total_L = 0.0
-        total_grad = zeros(Float64, length(x))
-        max_δ²H = 0.0
-        state_metrics = []
-
-        time_ops = @elapsed for k in 1:K_states
-            lv .= v0s[k]
-            e_k, g_k, δ²H_k = energy_objective(f_hvec, f_tvec, f_grad, idxs, x, lv, rv)
-            
-            total_L += weights[k] * e_k
-            total_grad .+= weights[k] .* g_k
-            max_δ²H = max(max_δ²H, δ²H_k)
-
-            # 计算并记录当前态的指标
-            norm_gk = norm(g_k)
-            err_k = abs(e_k - e_scales[k])
-            push!(state_metrics, (k, e_k, norm_gk, δ²H_k, err_k))
-        end
-
-        if options.verbose > 1
-            step_counter[] += 1
-            norm_g = norm(total_grad)
-            target_L = sum(weights .* e_scales)
-            error = total_L - target_L
-
-            @printf(" SSVQE Eval %04d\n", step_counter[])
-            @printf(" f: %.14f   |g|: %.3e   err: %.3e   time: %.3fs\n", 
-                      total_L, norm_g, error, time_ops)
-            show_ssvqe_optimze(state_metrics)
-        end
-
-        return total_L, total_grad
-    end
-
-    _, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
-
-    e_opts = zeros(Float64, K_states)
-    v_opts = [zeros(Tv, basis.dim) for _ in 1:K_states]
-
-    for k in 1:K_states
-        v_opts[k] .= v0s[k]
-        
-        for i in eachindex(idxs)
-            f_tvec(idxs[i], x_opt[i], v_opts[k])
-        end
-        
-        f_hvec(v_opts[k], rv)
-        e_opts[k] = real(dot(v_opts[k], rv))
-    end
-
-    return e_opts, v_opts, x_opt
-end
-
-
-function run_adapt_ssvqe(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,K,V},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
-    v0s::Vector{Vector{Tv}},
-    weights::Vector{Float64},
-    e_scales::Vector{Float64};
-    net::String="agg",
-    amplitudes::Vector{Float64}=Float64[], 
-    selec_idxs::Vector{Int64}=Int64[],
-    adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(),
-    vqe_options::VQE_OPTIONS=VQE_OPTIONS(ftol=1.0e-10, maxiter=1000, verbose=1),
-) where {Ti,Tv,K,V}
-
-    println("Num symmetry allowed elements: $(basis.dim)\n")
-    println("Operator pool size: $(length(pool))\n")
-    println("SSVQE Target States: $(length(v0s))\n")
-
-    lv = zeros(Tv, basis.dim)
-    rv = zeros(Tv, basis.dim)
-    idxs = [i for i in eachindex(pool)]
-
-    f_hvec, f_tvec, f_grad = get_multiply_function(basis, ham, pool, net)
-
-    if !isempty(amplitudes) && !isempty(selec_idxs)
-        @assert length(amplitudes) == length(selec_idxs)
-    else
-        amplitudes = Float64[]
-        selec_idxs = Int64[]
-    end
-
-    _adapt_ssvqe(
-        f_hvec, f_tvec, f_grad, idxs, v0s, weights, lv, rv, 
-        e_scales, amplitudes, selec_idxs, adapt_options, vqe_options
-    )
-end
-
-
-function generate_ssvqe_inputs(
-    basis::BasisManager, 
-    ham::BinaryQubitAABB{Ti,Tv,K,V}; 
-    k_states::Int=2, 
-    weight_decay::Float64 = 0.5
-) where {Ti,Tv,K,V}
-    """
-    自动生成 SSVQE 所需的正交初态 v0s 和严格递减的 weights。
-    策略: 基于哈密顿量对角元，选取能量最低的 K 个独立计算基矢(Slater行列式)。
-    """
-
-    println("--- Generating SSVQE Initial States ---")
-    @assert k_states > 0 && k_states <= basis.dim "k_states must be within basis dimension"
-
-    # 1. 获取对角元 (零阶能量)
-    diags = get_diags(basis, ham)
-    
-    # 2. 找到对角元能量最低的 K 个构型的索引
-    # sortperm 会返回从小到大排序的索引集
-    sorted_idxs = sortperm(diags)
-    selected_idxs = sorted_idxs[1:k_states]
-
-    # 3. 构造正交初始态 (v0s)
-    v0s = Vector{Vector{Tv}}(undef, k_states)
-    for k in 1:k_states
-        v = zeros(Tv, basis.dim)
-        idx = selected_idxs[k]
-        v[idx] = 1.0  # 设置为计算基矢 (One-hot 向量)，天然相互正交
-        v0s[k] = v
-        
-        # 打印选出的基矢能量，用于物理检查 (比如基态是不是 HF 态)
-        @printf("  State %d -> Basis Index: %-8d Zero-order Energy: %.6f\n", k, idx, diags[idx])
-    end
-
-    # 4. 构造递减权重 (weights)
-    # 使用指数衰减策略: 1.0, 0.5, 0.25... (归一化以防止梯度爆炸)
-    raw_weights = [weight_decay^(k-1) for k in 1:k_states]
-    weights = raw_weights ./ sum(raw_weights)
-
-    # 5. 生成对应的 e_scales (用于打印误差参考，如果没有 FCI 参考可以设为零阶能量)
-    e_scales = [diags[idx] for idx in selected_idxs]
-
-    println("  Weights   : ", round.(weights, digits=4))
-    println("---------------------------------------\n")
-
-    return v0s, weights, e_scales
-end
-
-
 function run_qeom(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,K,V},
@@ -884,7 +735,8 @@ function run_qeom(
     v0::Vector{Tv};
     e_scales::Vector{Float64}=Float64[],
     S_tol::Float64=1e-8,
-    n_states::Int=5
+    n_states::Int=5,
+    net::String="otf"
 ) where {Ti,Tv,K,V}
 
     println("\n--- Starting Quantum Equation-of-Motion (qEOM) ---\n")
@@ -892,12 +744,7 @@ function run_qeom(
     N_pool = length(pool)
     println("Operator pool size: $(N_pool)")
 
-    hvec! = get_multiply_function(basis, ham, "otf")
-
-    print("Pre-compiling operator OTFs ... ")
-    time_ops = @elapsed pool_otfs = [OTF(basis, op) for op in pool]
-    @printf("Done in %.4f seconds\n", time_ops)
-    pool_hvec! = (k, src, dst) -> hvec_otf!(basis, pool_otfs[k], src, dst)
+    hvec!, tvec! = get_multiply_function1(basis, ham, pool, net)
 
     # 2. 准备 qEOM 核心的辅助态
     v0_tilde = zeros(Tv, basis.dim)
@@ -916,20 +763,13 @@ function run_qeom(
         M_mat     = zeros(Tv, N_pool, N_pool)
 
         for j in 1:N_pool
-            # 生成列向基底
-            pool_hvec!(j, v0, v_j)               # |v_j> = O_j |v0>
-            pool_hvec!(j, v0_tilde, v_j_tilde)   # |v_j_tilde> = O_j |v0_tilde> = O_j H |v0>
-            
+            tvec!(j, v0, v_j)               # |v_j> = O_j |v0>
+            tvec!(j, v0_tilde, v_j_tilde)   # |v_j_tilde> = O_j |v0_tilde> = O_j H |v0>
             hvec!(v_j, hv_j)                     # H |v_j>
-            
             for i in 1:j
-                # 生成行向基底
-                pool_hvec!(i, v0, v_i)
-                pool_hvec!(i, v0_tilde, v_i_tilde)
-                
-                # 矩阵元计算 (利用多重换位子展开式)
+                tvec!(i, v0, v_i)
+                tvec!(i, v0_tilde, v_i_tilde)
                 S_val = real(dot(v_i, v_j))
-                
                 term1 = real(dot(v_i, hv_j))       # <v_i | H | v_j>
                 term2 = real(dot(v_i_tilde, v_j))  # <v_i_tilde | v_j>
                 term3 = real(dot(v_i, v_j_tilde))  # <v_i | v_j_tilde>
@@ -992,6 +832,187 @@ function run_qeom(
     println("\n")
 
     return ΔE_qeom, C_qeom
+end
+
+
+function run_ssvqe(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,K,V},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
+    v0s::Vector{Vector{Tv}},
+    weights::Vector{Float64},
+    e_scales::Vector{Float64};
+    net::String="otf",
+    x0::Vector{Float64}=Float64[],
+    options::VQE_OPTIONS=VQE_OPTIONS()
+) where {Ti,Tv,K,V}
+    K_states = length(v0s)
+    @assert length(weights) == K_states "Number of weights must match number of initial states"
+    @assert length(e_scales) == K_states "Number of energy scales must match number of initial states"
+
+    println("Num symmetry allowed elements: $(basis.dim)\n")
+    println("Operator pool size: $(length(pool))\n")
+    println("SSVQE Target States: $(K_states)\n")
+
+    lv = zeros(Tv, basis.dim)
+    rv = zeros(Tv, basis.dim)
+    idxs = [i for i in eachindex(pool)]
+
+    f_hvec, f_expm, f_grad = get_multiply_function2(basis, ham, pool, net)
+
+    if !isempty(x0)
+        @assert length(x0) == length(idxs)
+    else
+        x0 = zeros(Float64, length(pool))
+    end
+
+    step_counter = Ref(0)
+
+    obj_func = x -> begin
+        if !isempty(options.save_path)
+            jldopen(options.save_path, "w") do file
+                file["x"] = x
+            end
+        end
+
+        total_L = 0.0
+        total_grad = zeros(Float64, length(x))
+        max_δ²H = 0.0
+        state_metrics = []
+
+        time_ops = @elapsed for k in 1:K_states
+            lv .= v0s[k]
+            e_k, g_k, δ²H_k = energy_objective(f_hvec, f_expm, f_grad, idxs, x, lv, rv)
+            
+            total_L += weights[k] * e_k
+            total_grad .+= weights[k] .* g_k
+            max_δ²H = max(max_δ²H, δ²H_k)
+
+            # 计算并记录当前态的指标
+            norm_gk = norm(g_k)
+            err_k = abs(e_k - e_scales[k])
+            push!(state_metrics, (k, e_k, norm_gk, δ²H_k, err_k))
+        end
+
+        if options.verbose > 1
+            step_counter[] += 1
+            norm_g = norm(total_grad)
+            target_L = sum(weights .* e_scales)
+            error = total_L - target_L
+
+            @printf(" SSVQE Eval %04d\n", step_counter[])
+            @printf(" f: %.14f   |g|: %.3e   err: %.3e   time: %.3fs\n", 
+                      total_L, norm_g, error, time_ops)
+            show_ssvqe_optimze(state_metrics)
+        end
+
+        return total_L, total_grad
+    end
+
+    _, x_opt = @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+
+    e_opts = zeros(Float64, K_states)
+    v_opts = [zeros(Tv, basis.dim) for _ in 1:K_states]
+
+    for k in 1:K_states
+        v_opts[k] .= v0s[k]
+        
+        for i in eachindex(idxs)
+            f_expm(idxs[i], x_opt[i], v_opts[k])
+        end
+        
+        f_hvec(v_opts[k], rv)
+        e_opts[k] = real(dot(v_opts[k], rv))
+    end
+
+    return e_opts, v_opts, x_opt
+end
+
+
+function run_adapt_ssvqe(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,K,V},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
+    v0s::Vector{Vector{Tv}},
+    weights::Vector{Float64},
+    e_scales::Vector{Float64};
+    net::String="otf",
+    amplitudes::Vector{Float64}=Float64[], 
+    selec_idxs::Vector{Int64}=Int64[],
+    adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(),
+    vqe_options::VQE_OPTIONS=VQE_OPTIONS(ftol=1.0e-10, maxiter=1000, verbose=1),
+) where {Ti,Tv,K,V}
+
+    println("Num symmetry allowed elements: $(basis.dim)\n")
+    println("Operator pool size: $(length(pool))\n")
+    println("SSVQE Target States: $(length(v0s))\n")
+
+    lv = zeros(Tv, basis.dim)
+    rv = zeros(Tv, basis.dim)
+    idxs = [i for i in eachindex(pool)]
+
+    f_hvec, f_expm, f_grad = get_multiply_function2(basis, ham, pool, net)
+
+    if !isempty(amplitudes) && !isempty(selec_idxs)
+        @assert length(amplitudes) == length(selec_idxs)
+    else
+        amplitudes = Float64[]
+        selec_idxs = Int64[]
+    end
+
+    _adapt_ssvqe(
+        f_hvec, f_expm, f_grad, idxs, v0s, weights, lv, rv, 
+        e_scales, amplitudes, selec_idxs, adapt_options, vqe_options
+    )
+end
+
+
+function generate_ssvqe_inputs(
+    basis::BasisManager, 
+    ham::BinaryQubitAABB{Ti,Tv,K,V}; 
+    k_states::Int=2, 
+    weight_decay::Float64 = 0.5
+) where {Ti,Tv,K,V}
+    """
+    自动生成 SSVQE 所需的正交初态 v0s 和严格递减的 weights。
+    策略: 基于哈密顿量对角元，选取能量最低的 K 个独立计算基矢(Slater行列式)。
+    """
+
+    println("--- Generating SSVQE Initial States ---")
+    @assert k_states > 0 && k_states <= basis.dim "k_states must be within basis dimension"
+
+    # 1. 获取对角元 (零阶能量)
+    diags = get_diags(basis, ham)
+    
+    # 2. 找到对角元能量最低的 K 个构型的索引
+    # sortperm 会返回从小到大排序的索引集
+    sorted_idxs = sortperm(diags)
+    selected_idxs = sorted_idxs[1:k_states]
+
+    # 3. 构造正交初始态 (v0s)
+    v0s = Vector{Vector{Tv}}(undef, k_states)
+    for k in 1:k_states
+        v = zeros(Tv, basis.dim)
+        idx = selected_idxs[k]
+        v[idx] = 1.0  # 设置为计算基矢 (One-hot 向量)，天然相互正交
+        v0s[k] = v
+        
+        # 打印选出的基矢能量，用于物理检查 (比如基态是不是 HF 态)
+        @printf("  State %d -> Basis Index: %-8d Zero-order Energy: %.6f\n", k, idx, diags[idx])
+    end
+
+    # 4. 构造递减权重 (weights)
+    # 使用指数衰减策略: 1.0, 0.5, 0.25... (归一化以防止梯度爆炸)
+    raw_weights = [weight_decay^(k-1) for k in 1:k_states]
+    weights = raw_weights ./ sum(raw_weights)
+
+    # 5. 生成对应的 e_scales (用于打印误差参考，如果没有 FCI 参考可以设为零阶能量)
+    e_scales = [diags[idx] for idx in selected_idxs]
+
+    println("  Weights   : ", round.(weights, digits=4))
+    println("---------------------------------------\n")
+
+    return v0s, weights, e_scales
 end
 
 
@@ -1083,7 +1104,7 @@ function run_qpe(
     dt::Float64=0.05, 
     max_step::Int64=4000,  # 推荐增加步长以提高分辨率
     krylov_dim::Int=20,
-    net::String="agg"
+    net::String="otf"
 ) where {Ti,Tv,TK,TV}
 
     println("\n--- Starting Quantum Phase Estimation (QPE) ---")
@@ -1159,18 +1180,13 @@ function run_exact_vqe(
     e_scale::Float64;
     x0::Vector{Float64}=Float64[],
     options::VQE_OPTIONS=VQE_OPTIONS(),
-    n_steps::Int=50
+    n_steps::Int=50, 
+    net::String="otf"
 ) where {Ti,Tv,K,V}
     println("============================================================================")
     println("--- Optimized Exact UCC VQE (ODE Adjoint Method) ---")
-    
-    ham_net  = OTF(basis, ham)
-    # pool_net = OTF(basis, pool)
-    pool_nets = [OTF(basis, op) for op in pool]
         
-    hvec! = (src, dst) -> hvec_otf!(basis, ham_net, src, dst)
-    # tvec! = (idx, θ, vec) -> tvec_svd!(basis, pool_net, idx, θ, vec)
-    pool_hvec! = (idx, src, dst) -> hvec_otf!(basis, pool_nets[idx], src, dst)
+    hvec!, tvec! = get_multiply_function1(basis, ham, pool, net)
 
     if !isempty(x0)
         @assert length(x0) == length(pool)
@@ -1184,7 +1200,6 @@ function run_exact_vqe(
     vs  = [zeros(Tv, basis.dim) for _ in 1:4]
     Hvs = [zeros(Tv, basis.dim) for _ in 1:4]
     dτ  = 1.0 / n_steps
-    # θ   = pi / 2
 
     obj_func = x -> begin
         if norm(x) < 1e-12
@@ -1198,10 +1213,7 @@ function run_exact_vqe(
             Hv .*= 2.0
             g_tot = zeros(Float64, length(pool))
             for i in eachindex(pool)
-                # vt .= v
-                # tvec!(i, θ, vt)
-                # g_tot[i] = real(dot(vt, Hv))
-                pool_hvec!(i, v, vt)
+                tvec!(i, v, vt)
                 g_tot[i] = real(dot(vt, Hv))
             end
             
@@ -1244,11 +1256,8 @@ function run_exact_vqe(
         g_curr = zeros(Float64, length(pool))
         g_next = zeros(Float64, length(pool))
         for i in eachindex(pool)
-            # vt .= v
-            # tvec!(i, θ, vt)
-            # g_curr[i] = real(dot(vt, Hv))
-            pool_hvec!(i, v, vt)
-            g_curr[i] = real(dot(vt, Hv)) / ln
+            tvec!(i, v, vt)
+            g_curr[i] = real(dot(vt, Hv))
         end
 
         # 2. 反向伴随演化与梯度积分
@@ -1275,11 +1284,8 @@ function run_exact_vqe(
 
             ln = norm(v) ^ 2
             for i in eachindex(pool)
-                # vt .= v
-                # tvec!(i, θ, vt)
-                # g_next[i] = real(dot(vt, Hv))
-                pool_hvec!(i, v, vt)
-                g_next[i] = real(dot(vt, Hv)) / ln
+                tvec!(i, v, vt)
+                g_next[i] = real(dot(vt, Hv))
             end
 
             @. g_tot += (g_curr + g_next) * dτ / 2
@@ -1295,9 +1301,6 @@ function run_exact_vqe(
 end
 
 
-using DifferentialEquations
-using RecursiveArrayTools
-
 function run_exact_vqe_adaptive(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,K,V},
@@ -1306,16 +1309,13 @@ function run_exact_vqe_adaptive(
     e_scale::Float64;
     x0::Vector{Float64}=Float64[],
     options::VQE_OPTIONS=VQE_OPTIONS(),
-    ode_tol::Float64=1e-8 # ODE 积分精度
+    ode_tol::Float64=1e-8, # ODE 积分精度
+    net::String="otf"
 ) where {Ti,Tv,K,V}
     println("============================================================================")
     println("--- Adaptive Exact UCC VQE (Augmented ODE Adjoint Method) ---")
     
-    ham_net  = OTF(basis, ham)
-    pool_nets = [OTF(basis, op) for op in pool]
-
-    hvec! = (src, dst) -> hvec_otf!(basis, ham_net, src, dst)
-    pool_hvec! = (idx, src, dst) -> hvec_otf!(basis, pool_nets[idx], src, dst)
+    hvec!, tvec! = get_multiply_function1(basis, ham, pool, net)
     
     if !isempty(x0)
         @assert length(x0) == length(pool)
@@ -1336,7 +1336,7 @@ function run_exact_vqe_adaptive(
             @. a = 2.0 * Hv 
             g_tot = zeros(Float64, length(pool))
             for i in eachindex(pool)
-                pool_hvec!(i, v0, vt)
+                tvec!(i, v0, vt)
                 g_tot[i] = real(dot(vt, a))
             end
             
@@ -1378,7 +1378,7 @@ function run_exact_vqe_adaptive(
             Tvec!(a_curr, da)
             
             for i in eachindex(pool)
-                pool_hvec!(i, ψ_curr, vt)
+                tvec!(i, ψ_curr, vt)
                 dg[i] = -real(dot(a_curr, vt))
             end
         end

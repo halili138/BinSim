@@ -1,20 +1,6 @@
 #pragma once
 #include "otf.hpp"
 
-template <typename Tv>
-static FORCE_INLINE void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, double co)
-{
-    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-    const Tv vo_fwd = co * vt;
-    const Tv vo_rev = co * math_conj(vt);
-
-    const Tv vi = *sp;
-    const Tv vj = *dp;
-
-    *sp = vi * vd - vj * vo_rev;
-    *dp = vj * vd + vi * vo_fwd;
-}
-
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void expm_contract_diag_otf_impl(
     const BasisManager<Ti> *basis,

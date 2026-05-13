@@ -2,19 +2,17 @@
 #include "net.hpp"
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_diag_impl(
+static inline void expm_diag_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    Tv res = {};
-#pragma omp parallel reduction(+ : res)
+#pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const MixedRoute &R = routes[i];
@@ -82,32 +80,28 @@ static inline Tv grad_diag_impl(
                     src_b = jb.src_idx;
                 }
 
-                const Tv du = fast_diag_grad<Tv>(vt, theta);
-                const int64 si = MIXED_IDX(blk_src, src_a, src_b);
-                res += math_conj(lp[si] * du) * rp[si];
+                const Tv u = fast_diag_exp<Tv>(vt, theta);
+                const int64 idx = MIXED_IDX(blk_src, src_a, src_b);
+                vec[idx] *= u;
             }
         }
     }
-
-    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static inline Tv grad_pure_a_impl(
+static inline void expm_pure_a_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
-    const double cd = -sin(theta);
-    const double co = cos(theta);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    Tv res = {};
-#pragma omp parallel reduction(+ : res)
+#pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const PureRoute &R = routes[i];
@@ -176,30 +170,26 @@ static inline Tv grad_pure_a_impl(
                 }
                 const int64 si = PURE_A_IDX(blk_src, src_idx, ib);
                 const int64 di = PURE_A_IDX(blk_dst, dst_idx, ib);
-                grad_update<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                expm_update<Tv>(vec + si, vec + di, vt, cd, co);
             }
         }
     }
-
-    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE Tv grad_pure_b_impl(
+static inline void expm_pure_b_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
-    const double cd = -sin(theta);
-    const double co = cos(theta);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    Tv res = {};
-#pragma omp parallel reduction(+ : res)
+#pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const PureRoute &R = routes[i];
@@ -267,30 +257,26 @@ static FORCE_INLINE Tv grad_pure_b_impl(
                 }
                 const int64 si = PURE_B_IDX(blk_src, ia, src_idx);
                 const int64 di = PURE_B_IDX(blk_dst, ia, dst_idx);
-                grad_update<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                expm_update<Tv>(vec + si, vec + di, vt, cd, co);
             }
         }
     }
-
-    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE Tv grad_mixed_impl(
+static inline void expm_mixed_impl(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
-    const double cd = -sin(theta);
-    const double co = cos(theta);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     const BlockDesc<Ti> *__restrict__ blocks = basis->blocks;
-    Tv res = {};
-#pragma omp parallel reduction(+ : res)
+#pragma omp parallel
     for (uint64 i = 0; i < num_routes; ++i)
     {
         const MixedRoute &R = routes[i];
@@ -366,157 +352,161 @@ static FORCE_INLINE Tv grad_mixed_impl(
                 }
                 const int64 si = MIXED_IDX(blk_src, src_a, src_b);
                 const int64 di = MIXED_IDX(blk_dst, dst_a, dst_b);
-                grad_update<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                expm_update<Tv>(vec + si, vec + di, vt, cd, co);
             }
         }
     }
-
-    return res;
 }
 
 template <typename Ti,
           typename Tv>
-static Tv grad_diag(
+static void expm_diag(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     if (!num_routes)
-        return {};
+        return;
+
     switch (rank)
     {
     case 1:
-        return grad_diag_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_diag_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     case 2:
-        return grad_diag_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_diag_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     default:
-        return grad_diag_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_diag_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-static Tv grad_pure_a(
+static void expm_pure_a(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     if (!num_routes)
-        return {};
+        return;
 
     switch (rank)
     {
     case 1:
-        return grad_pure_a_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_a_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     case 2:
-        return grad_pure_a_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_a_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     default:
-        return grad_pure_a_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_a_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-static Tv grad_pure_b(
+static void expm_pure_b(
     const BasisManager<Ti> *__restrict__ basis,
     const PureRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     if (!num_routes)
-        return {};
+        return;
 
     switch (rank)
     {
     case 1:
-        return grad_pure_b_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_b_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     case 2:
-        return grad_pure_b_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_b_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     default:
-        return grad_pure_b_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_pure_b_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-static Tv grad_mixed(
+static void expm_mixed(
     const BasisManager<Ti> *__restrict__ basis,
     const MixedRoute *__restrict__ routes,
     const uint64 num_routes,
     const uint16 rank,
     const GroupArena<Ti, Tv> &arena,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     if (!num_routes)
-        return {};
+        return;
 
     switch (rank)
     {
     case 1:
-        return grad_mixed_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_mixed_impl<1, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     case 2:
-        return grad_mixed_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_mixed_impl<2, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     default:
-        return grad_mixed_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, lp, rp);
+        expm_mixed_impl<0, Ti, Tv>(basis, routes, num_routes, rank, arena, theta, vec);
+        break;
     }
 }
 
 template <typename Ti,
           typename Tv>
-Tv grad_svd_network(
+void expm_svd_network(
     const BasisManager<Ti> *__restrict__ basis,
     const SVDNetwork<Ti, Tv> *__restrict__ net,
     const int64 idx,
     const double theta,
-    const Tv *__restrict__ lp,
-    const Tv *__restrict__ rp)
+    Tv *__restrict__ vec)
 {
     int type = net->excit_types[idx];
-    Tv res = {};
 
     switch (type)
     {
     case 0:
-        res = grad_diag<Ti, Tv>(
+        expm_diag<Ti, Tv>(
             basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, lp, rp);
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 1:
-        res = grad_pure_a<Ti, Tv>(
+        expm_pure_a<Ti, Tv>(
             basis, net->pure_a_routes[idx], net->num_pure_a_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, lp, rp);
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 2:
-        res = grad_pure_b<Ti, Tv>(
+        expm_pure_b<Ti, Tv>(
             basis, net->pure_b_routes[idx], net->num_pure_b_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, lp, rp);
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     case 3:
-        res = grad_mixed<Ti, Tv>(
+        expm_mixed<Ti, Tv>(
             basis, net->mixed_routes[idx], net->num_mixed_routes[idx],
-            net->group_ranks[idx], net->arenas[idx], theta, lp, rp);
+            net->group_ranks[idx], net->arenas[idx], theta, vec);
         break;
     default:
-        std::cerr << "Error: Unexpected type = " << type
-                  << " when grad_svd" << std::endl;
+        std::cerr << "Error: Unexpected type = " << static_cast<int>(type)
+                  << " when expm_svd"
+                  << std::endl;
         break;
     }
-
-    return res;
 }

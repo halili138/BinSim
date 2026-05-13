@@ -75,6 +75,38 @@ FORCE_INLINE Tv fast_diag_grad(const Tv &vt, double theta)
     }
 }
 
+template <typename Tv>
+FORCE_INLINE void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, double co)
+{
+    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
+    const Tv vo_fwd = co * vt;
+    const Tv vo_rev = co * math_conj(vt);
+
+    const Tv vi = *sp;
+    const Tv vj = *dp;
+
+    *sp = vi * vd - vj * vo_rev;
+    *dp = vj * vd + vi * vo_fwd;
+}
+
+template <typename Tv>
+FORCE_INLINE void grad_update(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt, double cd, double co)
+{
+    const Tv vd = cd * (vt * math_conj(vt));
+    const Tv vo_fwd = co * vt;
+    const Tv vo_rev = co * math_conj(vt);
+
+    res += math_conj(*ls) * (*rs * vd + *rd * vo_rev) +
+           math_conj(*ld) * (*rd * vd - *rs * vo_fwd);
+}
+
+template <typename Tv>
+FORCE_INLINE void tvec_update(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
+{
+    *ds = *sd * (-math_conj(vt));
+    *dd = *ss * vt;
+}
+
 template <typename T>
 FORCE_INLINE int phase(T x)
 {

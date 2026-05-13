@@ -1,20 +1,6 @@
 #pragma once
 #include "otf.hpp"
 
-template <typename Tv>
-static FORCE_INLINE void grad_update(
-    Tv &res,
-    const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd,
-    Tv vt, double cd, double co)
-{
-    const Tv vd = cd * (vt * math_conj(vt));
-    const Tv vo_fwd = co * vt;
-    const Tv vo_rev = co * math_conj(vt);
-
-    res += math_conj(*ls) * (*rs * vd + *rd * vo_rev) +
-           math_conj(*ld) * (*rd * vd - *rs * vo_fwd);
-}
-
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE Tv grad_contract_diag_otf_impl(
     const BasisManager<Ti> *basis,

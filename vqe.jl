@@ -144,7 +144,7 @@ end
 
 function _adapt_vqe(
     f_hvec::Function,
-    f_tvec::Function,
+    f_expm::Function,
     f_grad::Function,
     idxs::Vector{Int64},
     v0::Vector{Tv},
@@ -161,7 +161,7 @@ function _adapt_vqe(
     if !isempty(amplitudes)
         lv .= v0
         for i in eachindex(amplitudes)
-            f_tvec(selec_idxs[i], amplitudes[i], lv)
+            f_expm(selec_idxs[i], amplitudes[i], lv)
         end
     end
 
@@ -201,7 +201,7 @@ function _adapt_vqe(
 
         obj_func = x -> begin
             lv .= v0
-            result = @timed energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)
+            result = @timed energy_objective(f_hvec, f_expm, f_grad, selec_idxs, x, lv, rv)
             e_l[], gradient, δ²H_l[] = result.value
 
             ng_l[]  = norm(gradient)
@@ -234,7 +234,7 @@ function _adapt_vqe(
 
         lv .= v0
         for i in eachindex(amplitudes)
-            f_tvec(selec_idxs[i], amplitudes[i], lv)
+            f_expm(selec_idxs[i], amplitudes[i], lv)
         end
 
         cond1::Bool = iter > maxiter
@@ -297,7 +297,7 @@ end
 
 function _adapt_ssvqe(
     f_hvec::Function, 
-    f_tvec::Function, 
+    f_expm::Function, 
     f_grad::Function, 
     idxs::Vector{Int64},
     v0s::Vector{Vector{Tv}}, 
@@ -341,7 +341,7 @@ function _adapt_ssvqe(
             
             # 演化当前波函数
             for i in eachindex(amplitudes)
-                f_tvec(selec_idxs[i], amplitudes[i], lv)
+                f_expm(selec_idxs[i], amplitudes[i], lv)
             end
             
             # 计算 H|ψ_k>
@@ -383,7 +383,7 @@ function _adapt_ssvqe(
 
             time_ops = @elapsed for k in 1:K_states
                 lv .= v0s[k]
-                e_k, g_k, δ²H_k = energy_objective(f_hvec, f_tvec, f_grad, selec_idxs, x, lv, rv)                
+                e_k, g_k, δ²H_k = energy_objective(f_hvec, f_expm, f_grad, selec_idxs, x, lv, rv)                
                 total_L += weights[k] * e_k
                 total_grad .+= weights[k] .* g_k
                 max_δ²H = max(max_δ²H, δ²H_k)

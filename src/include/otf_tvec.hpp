@@ -1,13 +1,6 @@
 #pragma once
 #include "otf.hpp"
 
-template <typename Tv>
-static FORCE_INLINE void tvec_update(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
-{
-    *ds = *sd * (-math_conj(vt));
-    *dd = *ss * vt;
-}
-
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void tvec_contract_diag_otf_impl(
     const BasisManager<Ti> *basis,

@@ -497,14 +497,8 @@ mutable struct NET
     end
 end
 
-function tvec_svd!(
-    basis::BasisManager,
-    net::NET,
-    idx::Int64,
-    θ::Float64,
-    vec::Vector{Float64},
-)
-    @ccall LIB_NET.tvec_svd_network_f64(
+function expm_svd!(basis::BasisManager, net::NET, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{Float64,1}}
+    @ccall LIB_NET.expm_svd_network_f64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
         (idx - 1)::Int64,
@@ -513,14 +507,8 @@ function tvec_svd!(
     )::Cvoid
 end
 
-function tvec_svd!(
-    basis::BasisManager,
-    net::NET,
-    idx::Int64,
-    θ::Float64,
-    vec::Vector{ComplexF64},
-)
-    @ccall LIB_NET.tvec_svd_network_c64(
+function expm_svd!(basis::BasisManager, net::NET, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{ComplexF64,1}}
+    @ccall LIB_NET.expm_svd_network_c64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
         (idx - 1)::Int64,
@@ -529,14 +517,7 @@ function tvec_svd!(
     )::Cvoid
 end
 
-function grad_svd(
-    basis::BasisManager,
-    net::NET,
-    idx::Int64,
-    θ::Float64,
-    lv::Vector{Float64},
-    rv::Vector{Float64},
-)
+function grad_svd(basis::BasisManager, net::NET, idx::Int64, θ::Float64, lv::T, rv::T) where {T<:AbstractArray{Float64,1}}
     return @ccall LIB_NET.grad_svd_network_f64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
@@ -547,14 +528,7 @@ function grad_svd(
     )::Cdouble
 end
 
-function grad_svd(
-    basis::BasisManager,
-    net::NET,
-    idx::Int64,
-    θ::Float64,
-    lv::Vector{ComplexF64},
-    rv::Vector{ComplexF64},
-)
+function grad_svd(basis::BasisManager, net::NET, idx::Int64, θ::Float64, lv::T, rv::T) where {T<:AbstractArray{ComplexF64,1}}
     return @ccall LIB_NET.grad_svd_network_c64(
         basis.ptr::Ptr{Cvoid},
         net.ptr::Ptr{Cvoid},
@@ -563,6 +537,26 @@ function grad_svd(
         lv::Ptr{ComplexF64},
         rv::Ptr{ComplexF64},
     )::ComplexF64
+end
+
+function tvec_svd!(basis::BasisManager, net::NET, idx::Int64, src::T, dst::T) where {T<:AbstractArray{Float64,1}}
+    @ccall LIB_NET.tvec_svd_network_f64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64,
+        src::Ptr{Cdouble},
+        dst::Ptr{Cdouble},
+    )::Cvoid
+end
+
+function tvec_svd!(basis::BasisManager, net::NET, idx::Int64, src::T, dst::T) where {T<:AbstractArray{ComplexF64,1}}
+    @ccall LIB_NET.tvec_svd_network_c64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64,
+        src::Ptr{ComplexF64},
+        dst::Ptr{ComplexF64},
+    )::Cvoid
 end
 
 mutable struct AGG
@@ -647,12 +641,7 @@ mutable struct AGG
     end
 end
 
-function hvec_direct_agg!(
-    basis::BasisManager,
-    agg::AGG,
-    src::T,
-    dst::T,
-) where {T<:AbstractArray{Float64,1}}
+function hvec_agg!(basis::BasisManager, agg::AGG, src::T, dst::T) where {T<:AbstractArray{Float64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_f64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
@@ -661,12 +650,7 @@ function hvec_direct_agg!(
     )::Cvoid
 end
 
-function hvec_direct_agg!(
-    basis::BasisManager,
-    agg::AGG,
-    src::T,
-    dst::T,
-) where {T<:AbstractArray{ComplexF64,1}}
+function hvec_agg!(basis::BasisManager, agg::AGG, src::T, dst::T) where {T<:AbstractArray{ComplexF64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_c64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
@@ -683,13 +667,7 @@ function print_info(agg::AGG)
     end
 end
 
-function hvec_direct_agg_benchmark!(
-    basis::BasisManager,
-    agg::AGG,
-    src::T,
-    dst::T,
-    measure::Bool,
-) where {T<:AbstractArray{Float64,1}}
+function hvec_agg_benchmark!(basis::BasisManager, agg::AGG, src::T, dst::T, measure::Bool,) where {T<:AbstractArray{Float64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_benchmark_f64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
@@ -699,13 +677,7 @@ function hvec_direct_agg_benchmark!(
     )::Cvoid
 end
 
-function hvec_direct_agg_benchmark!(
-    basis::BasisManager,
-    agg::AGG,
-    src::T,
-    dst::T,
-    measure::Bool,
-) where {T<:AbstractArray{ComplexF64,1}}
+function hvec_agg_benchmark!(basis::BasisManager, agg::AGG, src::T, dst::T, measure::Bool) where {T<:AbstractArray{ComplexF64,1}}
     @ccall LIB_AGG.hvec_direct_agg_network_benchmark_c64(
         basis.ptr::Ptr{Cvoid},
         agg.ptr::Ptr{Cvoid},
@@ -934,7 +906,7 @@ function hvec_otf!(basis::BasisManager, otf::OTF, src::T, dst::T) where {T<:Abst
     )::Cvoid
 end
 
-function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{Float64,1}}
+function expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{Float64,1}}
     @ccall LIB_OTF.expm_contract_otf_f64(
         basis.ptr::Ptr{Cvoid},
         otf.ptr::Ptr{Cvoid},
@@ -944,7 +916,7 @@ function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::
     )::Cvoid
 end
 
-function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{ComplexF64,1}}
+function expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::T) where {T<:AbstractArray{ComplexF64,1}}
     @ccall LIB_OTF.expm_contract_otf_c64(
         basis.ptr::Ptr{Cvoid},
         otf.ptr::Ptr{Cvoid},
@@ -976,19 +948,31 @@ function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T,
     )::ComplexF64
 end
 
-function energy_objective(
-    f_hvec::Function,
-    f_tvec::Function,
-    f_grad::Function,
-    idxs::Vector{Int64},
-    x::Vector{Float64},
-    lv::Vector{Tv},
-    rv::Vector{Tv},
-) where Tv
+function tvec_svd!(basis::BasisManager, net::OTF, idx::Int64, src::T, dst::T) where {T<:AbstractArray{Float64,1}}
+    @ccall LIB_OTF.tvec_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64,
+        src::Ptr{Cdouble},
+        dst::Ptr{Cdouble},
+    )::Cvoid
+end
+
+function tvec_svd!(basis::BasisManager, net::OTF, idx::Int64, src::T, dst::T) where {T<:AbstractArray{ComplexF64,1}}
+    @ccall LIB_OTF.tvec_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid},
+        net.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64,
+        src::Ptr{ComplexF64},
+        dst::Ptr{ComplexF64},
+    )::Cvoid
+end
+
+function energy_objective(f_hvec::Function, f_expm::Function, f_grad::Function, idxs::Vector{Int64}, x::Vector{Float64}, lv::T, rv::T) where {Tv, T<:AbstractArray{Tv,1}}
     nparas = length(x)
 
     for i in 1:nparas
-        f_tvec(idxs[i], x[i], lv)
+        f_expm(idxs[i], x[i], lv)
     end
 
     f_hvec(lv, rv)
@@ -1000,9 +984,9 @@ function energy_objective(
     grad = Vector{Float64}(undef, nparas)
 
     for i in nparas:-1:1
-        f_tvec(idxs[i], -x[i], lv)
+        f_expm(idxs[i], -x[i], lv)
         grad[i] = real(f_grad(idxs[i], x[i], lv, rv)) * 2 / lnorm
-        f_tvec(idxs[i], -x[i], rv)
+        f_expm(idxs[i], -x[i], rv)
     end
 
     return energy, grad, δ²H

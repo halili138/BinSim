@@ -26,11 +26,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
             verbose=1),
     )
 
-    # run_enpt2(basis, ham, v_opt, e_scales[1], net="otf")
+    run_enpt2(basis, ham, v_opt, e_scales[1], net="otf")
 
     kernel(mole, orbs, excited_order=3)
     pool = FEB(orbs)
 
-    run_qse(basis, ham, pool, v_opt, e_scales=e_scales, n_states=length(e_scales))
-    run_qeom(basis, ham, pool, v_opt, e_scales=e_scales, n_states=length(e_scales))
+    run_qse(basis, ham, pool, v_opt, e_scales=e_scales, n_states=length(e_scales), net="otf")
+    run_qeom(basis, ham, pool, v_opt, e_scales=e_scales, n_states=length(e_scales), net="otf")
 end
