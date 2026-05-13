@@ -238,7 +238,7 @@ function _adapt_vqe(
         end
 
         cond1::Bool = iter > maxiter
-        cond2::Bool = (G < Gtol && gi_max < gtol && δ²H < htol)
+        cond2::Bool = (G < Gtol && gi_max < gtol && δ²H_l[] < htol)
         cond3::Bool = false
 
         if length(e_hist) > 5
@@ -255,7 +255,7 @@ function _adapt_vqe(
             @printf("\nIteration: %d\n",                            iter)
             @printf("   E0: %.14f\n",                               e_opt)
             @printf("  err: %9.3e\n",                               e_opt-e_scale)
-            @printf("  |G|: %9.3e    gmax: %9.3e     δ²H: %9.3e\n", G, gi_max, δ²H)
+            @printf("  |G|: %9.3e    gmax: %9.3e     δ²H: %9.3e\n", G, gi_max, δ²H_l[])
             println("============================================================================")
         end
     end
