@@ -992,3 +992,23 @@ function energy_objective(f_hvec::Function, f_expm::Function, f_grad::Function, 
     return energy, grad, δ²H
 end
 
+function tran_svd(basis::BasisManager, otf::OTF, lv::T, rv::T, trans::Vector{Float64}) where {T<:AbstractArray{Float64,1}}
+    @ccall LIB_OTF.batch_tran_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        lv::Ptr{Float64},
+        rv::Ptr{Float64},
+        trans::Ptr{Float64},
+    )::Cvoid
+end
+
+function tran_svd(basis::BasisManager, otf::OTF, lv::T, rv::T, trans::Vector{ComplexF64}) where {T<:AbstractArray{ComplexF64,1}}
+    @ccall LIB_OTF.batch_tran_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid},
+        otf.ptr::Ptr{Cvoid},
+        lv::Ptr{ComplexF64},
+        rv::Ptr{ComplexF64},
+        trans::Ptr{ComplexF64},
+    )::Cvoid
+end
+

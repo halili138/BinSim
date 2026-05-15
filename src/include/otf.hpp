@@ -7,33 +7,80 @@ template <typename Ti,
           typename Tv>
 struct SVDGroup_OTF
 {
-    Ti ax;
-    Ti bx;
-    int rank;
+    Ti ax = {};
+    Ti bx = {};
+    int rank = {};
 
-    int num_za;
-    Ti *unique_zas;
-    int num_zb;
-    Ti *unique_zbs;
+    int num_za = {};
+    Ti *unique_zas = nullptr;
+    int num_zb = {};
+    Ti *unique_zbs = nullptr;
 
-    Tv *wa;
-    Tv *wb;
+    Tv *wa = nullptr;
+    Tv *wb = nullptr;
 
     inline Tv *ptr_wa(int r) const { return wa + r * num_za; }
     inline Tv *ptr_wb(int r) const { return wb + r * num_zb; }
+
+    void clear()
+    {
+        if (unique_zas)
+        {
+            delete[] unique_zas;
+            unique_zas = nullptr;
+        }
+        if (unique_zbs)
+        {
+            delete[] unique_zbs;
+            unique_zbs = nullptr;
+        }
+        if (wa)
+        {
+            delete[] wa;
+            wa = nullptr;
+        }
+        if (wb)
+        {
+            delete[] wb;
+            wb = nullptr;
+        }
+    }
 };
 
 struct IndexMap
 {
-    const int *a_idx_map;
-    const int *b_idx_map;
+    const int *a_idx_map = nullptr;
+    const int *b_idx_map = nullptr;
+
+    void clear()
+    {
+        if (a_idx_map)
+        {
+            delete[] a_idx_map;
+            a_idx_map = nullptr;
+        }
+        if (b_idx_map)
+        {
+            delete[] b_idx_map;
+            b_idx_map = nullptr;
+        }
+    }
 };
 
-template <typename Ti, typename Tv>
+template <typename Ti,
+          typename Tv>
+struct PoolGradJob
+{
+    int64 original_idx = {};
+    const SVDGroup_OTF<Ti, Tv> *group = nullptr;
+};
+
+template <typename Ti,
+          typename Tv>
 struct Network_OTF
 {
-    IndexMap map;
-    int64 num_groups;
+    IndexMap map = {};
+    int64 num_groups = {};
 
     std::vector<SVDGroup_OTF<Ti, Tv>> diag_groups;
     std::vector<SVDGroup_OTF<Ti, Tv>> pure_a_groups;
@@ -42,83 +89,57 @@ struct Network_OTF
 
     uint8 *excit_types = nullptr;
     SVDGroup_OTF<Ti, Tv> *flat_groups = nullptr;
+
+    std::vector<PoolGradJob<Ti, Tv>> pool_diag_jobs;
+    std::vector<PoolGradJob<Ti, Tv>> pool_pure_a_jobs;
+    std::vector<PoolGradJob<Ti, Tv>> pool_pure_b_jobs;
+    std::vector<PoolGradJob<Ti, Tv>> pool_mixed_jobs;
+
+    void clear()
+    {
+        map.clear();
+
+        if (flat_groups)
+        {
+            for (int64 i = 0; i < num_groups; ++i)
+            {
+                flat_groups[i].clear();
+            }
+            delete[] flat_groups;
+            flat_groups = nullptr;
+        }
+
+        auto clear_bucket = [](std::vector<SVDGroup_OTF<Ti, Tv>> &bucket)
+        {
+            for (auto &g : bucket)
+                g.clear();
+            bucket.clear();
+        };
+
+        clear_bucket(diag_groups);
+        clear_bucket(pure_a_groups);
+        clear_bucket(pure_b_groups);
+        clear_bucket(mixed_groups);
+
+        if (excit_types)
+        {
+            delete[] excit_types;
+            excit_types = nullptr;
+        }
+
+        pool_diag_jobs.clear();
+        pool_pure_a_jobs.clear();
+        pool_pure_b_jobs.clear();
+        pool_mixed_jobs.clear();
+
+        num_groups = 0;
+    }
+
+    ~Network_OTF()
+    {
+        clear();
+    }
 };
-
-template <typename Ti, typename Tv>
-void destroy_network_otf(void *net_ptr)
-{
-    if (!net_ptr)
-        return;
-
-    Network_OTF<Ti, Tv> *net = static_cast<Network_OTF<Ti, Tv> *>(net_ptr);
-
-    auto free_group_inner = [](SVDGroup_OTF<Ti, Tv> &group)
-    {
-        if (group.unique_zas)
-        {
-            delete[] group.unique_zas;
-            group.unique_zas = nullptr;
-        }
-        if (group.unique_zbs)
-        {
-            delete[] group.unique_zbs;
-            group.unique_zbs = nullptr;
-        }
-        if (group.wa)
-        {
-            delete[] group.wa;
-            group.wa = nullptr;
-        }
-        if (group.wb)
-        {
-            delete[] group.wb;
-            group.wb = nullptr;
-        }
-    };
-
-    auto clear_bucket = [&](std::vector<SVDGroup_OTF<Ti, Tv>> &group_vec)
-    {
-        for (auto &group : group_vec)
-        {
-            free_group_inner(group);
-        }
-        group_vec.clear();
-    };
-
-    clear_bucket(net->diag_groups);
-    clear_bucket(net->pure_a_groups);
-    clear_bucket(net->pure_b_groups);
-    clear_bucket(net->mixed_groups);
-
-    if (net->flat_groups)
-    {
-        for (int64 i = 0; i < net->num_groups; ++i)
-        {
-            free_group_inner(net->flat_groups[i]);
-        }
-        delete[] net->flat_groups;
-        net->flat_groups = nullptr;
-    }
-
-    if (net->excit_types)
-    {
-        delete[] net->excit_types;
-        net->excit_types = nullptr;
-    }
-
-    if (net->map.a_idx_map)
-    {
-        delete[] net->map.a_idx_map;
-        net->map.a_idx_map = nullptr;
-    }
-    if (net->map.b_idx_map)
-    {
-        delete[] net->map.b_idx_map;
-        net->map.b_idx_map = nullptr;
-    }
-
-    delete net;
-}
 
 template <typename Ti,
           typename Tv>
@@ -237,6 +258,7 @@ void *build_pool_network_otf(
         for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
             b_map[basis->blocks[i].bstrs[b]] = b;
     }
+
     net->map.a_idx_map = a_map;
     net->map.b_idx_map = b_map;
 
@@ -251,20 +273,32 @@ void *build_pool_network_otf(
         SVDGroup_OTF<Ti, Tv> &group = net->flat_groups[g];
         group.ax = axs[g];
         group.bx = bxs[g];
-        group.rank = ranks[g];
-        group.num_za = num_zas[g];
-        group.num_zb = num_zbs[g];
+        group.rank = (int)ranks[g];
+        group.num_za = (int)num_zas[g];
+        group.num_zb = (int)num_zbs[g];
 
+        uint8 type;
         if (group.ax == 0 && group.bx == 0)
-            net->excit_types[g] = 0; // Diag
+            type = 0;
         else if (group.ax != 0 && group.bx == 0)
-            net->excit_types[g] = 1; // Pure A
+            type = 1;
         else if (group.ax == 0 && group.bx != 0)
-            net->excit_types[g] = 2; // Pure B
+            type = 2;
         else
-            net->excit_types[g] = 3; // Mixed
+            type = 3;
 
-        // 拷贝数据
+        net->excit_types[g] = type;
+        PoolGradJob<Ti, Tv> job = {g, &group};
+
+        if (type == 0)
+            net->pool_diag_jobs.push_back(job);
+        else if (type == 1)
+            net->pool_pure_a_jobs.push_back(job);
+        else if (type == 2)
+            net->pool_pure_b_jobs.push_back(job);
+        else
+            net->pool_mixed_jobs.push_back(job);
+
         group.unique_zas = new Ti[group.num_za];
         std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + group.num_za, group.unique_zas);
         z_offset_a += group.num_za;
@@ -273,16 +307,26 @@ void *build_pool_network_otf(
         std::copy(flat_zbs + z_offset_b, flat_zbs + z_offset_b + group.num_zb, group.unique_zbs);
         z_offset_b += group.num_zb;
 
-        uint64 wa_size = group.num_za * group.rank;
+        uint64 wa_size = (uint64)group.num_za * group.rank;
         group.wa = new Tv[wa_size];
         std::copy(flat_wa + w_offset_a, flat_wa + w_offset_a + wa_size, group.wa);
         w_offset_a += wa_size;
 
-        uint64 wb_size = group.num_zb * group.rank;
+        uint64 wb_size = (uint64)group.num_zb * group.rank;
         group.wb = new Tv[wb_size];
         std::copy(flat_wb + w_offset_b, flat_wb + w_offset_b + wb_size, group.wb);
         w_offset_b += wb_size;
     }
+
+    auto rank_cmp = [](const PoolGradJob<Ti, Tv> &a, const PoolGradJob<Ti, Tv> &b)
+    {
+        return a.group->rank < b.group->rank;
+    };
+
+    std::sort(net->pool_diag_jobs.begin(), net->pool_diag_jobs.end(), rank_cmp);
+    std::sort(net->pool_pure_a_jobs.begin(), net->pool_pure_a_jobs.end(), rank_cmp);
+    std::sort(net->pool_pure_b_jobs.begin(), net->pool_pure_b_jobs.end(), rank_cmp);
+    std::sort(net->pool_mixed_jobs.begin(), net->pool_mixed_jobs.end(), rank_cmp);
 
     return static_cast<void *>(net);
 }
@@ -294,7 +338,7 @@ FORCE_INLINE void get_upper(
     const BlockDesc<Ti> *blocks,
     const SVDGroup_OTF<Ti, Tv> *groups,
     int64 num_blocks, int64 num_groups,
-    int &max_a_count, int &max_b_count, int &max_rank)
+    int64 &batch_size, int &max_a_count, int &max_b_count, int &max_rank)
 {
     for (int64 i = 0; i < num_blocks; ++i)
     {
@@ -316,6 +360,56 @@ FORCE_INLINE void get_upper(
             if (groups[g].rank > max_rank)
                 max_rank = groups[g].rank;
         }
+    }
+
+    if constexpr (Rank == 1 || Rank == 2)
+    {
+        batch_size = 256;
+    }
+    else
+    {
+        batch_size = 1;
+    }
+}
+
+template <int Rank,
+          typename Ti,
+          typename Tv>
+FORCE_INLINE void get_upper_batched(
+    const BlockDesc<Ti> *blocks,
+    const std::vector<PoolGradJob<Ti, Tv>> &batch_groups,
+    int64 num_blocks,
+    int64 &batch_size, int &max_a_count, int &max_b_count, int &max_rank)
+{
+    for (int64 i = 0; i < num_blocks; ++i)
+    {
+        if (blocks[i].num_a > max_a_count)
+            max_a_count = blocks[i].num_a;
+
+        if (blocks[i].num_b > max_b_count)
+            max_b_count = blocks[i].num_b;
+    }
+
+    if constexpr (Rank == 1 || Rank == 2)
+    {
+        max_rank = Rank;
+    }
+    else
+    {
+        for (const auto &job : batch_groups)
+        {
+            if (job.group->rank > max_rank)
+                max_rank = job.group->rank;
+        }
+    }
+
+    if constexpr (Rank == 1 || Rank == 2)
+    {
+        batch_size = 256;
+    }
+    else
+    {
+        batch_size = 1;
     }
 }
 

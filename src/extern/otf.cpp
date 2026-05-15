@@ -3,11 +3,23 @@
 #include "otf_tvec.hpp"
 #include "otf_expm.hpp"
 #include "otf_grad.hpp"
+#include "otf_grad_batch.hpp"
+#include "otf_tran_batch.hpp"
 
 extern "C"
 {
+    void destroy_network_otf_f64(void *net_ptr)
+    {
+        if (net_ptr == nullptr)
+            return;
+
+        Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        delete net;
+    }
+
     void *build_network_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -30,7 +42,7 @@ extern "C"
     }
 
     void *build_pool_network_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -52,14 +64,8 @@ extern "C"
             flat_zas, flat_zbs, flat_wa, flat_wb);
     }
 
-    void destroy_network_otf_f64(void *net_ptr)
-    {
-        Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
-        destroy_network_otf<uint32, double>(net);
-    }
-
     void hvec_gather_contract_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const double *__restrict__ src,
         double *__restrict__ dst)
@@ -70,7 +76,7 @@ extern "C"
     }
 
     void expm_contract_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const double theta,
@@ -83,7 +89,7 @@ extern "C"
     }
 
     double grad_contract_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const double theta,
@@ -97,7 +103,7 @@ extern "C"
     }
 
     void tvec_contract_otf_f64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const double *__restrict__ src,
@@ -108,12 +114,49 @@ extern "C"
 
         tvec_svd_network_otf<uint32, double>(basis, net, idx, src, dst);
     }
+
+    void batch_grad_contract_otf_f64(
+        void *basis_ptr,
+        void *net_ptr,
+        const double *__restrict__ thetas,
+        const double *__restrict__ lp,
+        const double *__restrict__ rp,
+        double *__restrict__ grads)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        grad_pool_network_batched_otf<uint32, double>(basis, net, thetas, lp, rp, grads);
+    }
+
+    void batch_tran_contract_otf_f64(
+        void *basis_ptr,
+        void *net_ptr,
+        const double *__restrict__ lp,
+        const double *__restrict__ rp,
+        double *__restrict__ trans)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        tran_pool_network_batched_otf<uint32, double>(basis, net, lp, rp, trans);
+    }
 }
 
 extern "C"
 {
+    void destroy_network_otf_c64(void *net_ptr)
+    {
+        if (net_ptr == nullptr)
+            return;
+
+        Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        delete net;
+    }
+
     void *build_network_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -136,7 +179,7 @@ extern "C"
     }
 
     void *build_pool_network_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -158,14 +201,8 @@ extern "C"
             flat_zas, flat_zbs, flat_wa, flat_wb);
     }
 
-    void destroy_network_otf_c64(void *net_ptr)
-    {
-        Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
-        destroy_network_otf<uint32, complexf64>(net);
-    }
-
     void hvec_gather_contract_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const complexf64 *__restrict__ src,
         complexf64 *__restrict__ dst)
@@ -176,7 +213,7 @@ extern "C"
     }
 
     void expm_contract_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const double theta,
@@ -189,7 +226,7 @@ extern "C"
     }
 
     complexf64 grad_contract_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const double theta,
@@ -203,7 +240,7 @@ extern "C"
     }
 
     void tvec_contract_otf_c64(
-        void *__restrict__ basis_ptr,
+        void *basis_ptr,
         void *net_ptr,
         const int64 idx,
         const complexf64 *__restrict__ src,
@@ -213,5 +250,32 @@ extern "C"
         const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
 
         tvec_svd_network_otf<uint32, complexf64>(basis, net, idx, src, dst);
+    }
+
+    void batch_grad_contract_otf_c64(
+        void *basis_ptr,
+        void *net_ptr,
+        const double *__restrict__ thetas,
+        const complexf64 *__restrict__ lp,
+        const complexf64 *__restrict__ rp,
+        complexf64 *__restrict__ grads)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        grad_pool_network_batched_otf<uint32, complexf64>(basis, net, thetas, lp, rp, grads);
+    }
+
+    void batch_tran_contract_otf_c64(
+        void *basis_ptr,
+        void *net_ptr,
+        const complexf64 *__restrict__ lp,
+        const complexf64 *__restrict__ rp,
+        complexf64 *__restrict__ trans)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        tran_pool_network_batched_otf<uint32, complexf64>(basis, net, lp, rp, trans);
     }
 }

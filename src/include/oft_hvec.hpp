@@ -41,49 +41,40 @@ static inline void gather_contract_diag_batched_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
 
+    int64 batch_size = 0;
     int max_a_count = 0, max_b_count = 0, max_rank = 0;
+    get_upper<Rank, Ti, Tv>(blocks, groups, num_blocks, num_groups, batch_size, max_a_count, max_b_count, max_rank);
 
-    get_upper<Rank, Ti, Tv>(
-        blocks, groups, num_blocks, num_groups, max_a_count, max_b_count, max_rank);
-
-    std::vector<Tv> phase_b(BATCH_SIZE * max_b_count * max_rank);
+    std::vector<Tv> phase_b(batch_size * max_b_count * max_rank);
 
 #pragma omp parallel
     {
         for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
         {
             const BlockDesc<Ti> &block = blocks[block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+            for (int64 batch_start = 0; batch_start < num_groups; batch_start += batch_size)
             {
-                const int64 cur_batch_size = std::min(BATCH_SIZE, num_groups - batch_start);
+                const int64 cur_batch_size = std::min(batch_size, num_groups - batch_start);
 #pragma omp for schedule(dynamic)
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                 {
                     const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
                     Tv *pb0 = phase_b.data() + batch_idx * max_b_count * max_rank;
-                    compute_phases<Rank, 1, Ti, Tv>(block.bstrs, block.num_b,
-                                                    group.unique_zbs, group.num_zb, group.wb,
-                                                    pb0, max_b_count, group.rank);
+                    compute_phases<Rank, 1, Ti, Tv>(block.bstrs, block.num_b, group.unique_zbs, group.num_zb, group.wb, pb0, max_b_count, group.rank);
                 }
 #pragma omp for schedule(dynamic)
                 for (int a = 0; a < block.num_a; ++a)
                 {
                     const Ti str_a = block.astrs[a];
-                    const Tv *src = src_vec + block.offset + a * block.num_b;
-                    Tv *dst = dst_vec + block.offset + a * block.num_b;
+                    const Tv *sa = src_vec + block.offset + a * block.num_b;
+                    Tv *da = dst_vec + block.offset + a * block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
                         const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
                         const Tv *pb0 = phase_b.data() + batch_idx * max_b_count * max_rank;
                         Tv pa0 = {}, pa1 = {}, pan[64] = {};
-                        compute_a_phase<Rank, Ti, Tv>(str_a,
-                                                      group.unique_zas, group.num_za,
-                                                      group.wa, group.rank,
-                                                      pa0, pa1, pan);
-                        update_dst<Rank, 1, 0, Tv>(block.num_b,
-                                                   group.rank, pa0, pa1, pan,
-                                                   pb0, max_b_count,
-                                                   nullptr, nullptr, src, dst);
+                        compute_a_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, group.rank, pa0, pa1, pan);
+                        update_dst<Rank, 1, 0, Tv>(block.num_b, group.rank, pa0, pa1, pan, pb0, max_b_count, nullptr, nullptr, sa, da);
                     }
                 }
             }
@@ -106,22 +97,21 @@ static inline void gather_contract_pure_a_batched_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 batch_size = 0;
     int max_a_count = 0, max_b_count = 0, max_rank = 0;
+    get_upper<Rank, Ti, Tv>(blocks, groups, num_blocks, num_groups, batch_size, max_a_count, max_b_count, max_rank);
 
-    get_upper<Rank, Ti, Tv>(
-        blocks, groups, num_blocks, num_groups, max_a_count, max_b_count, max_rank);
-
-    std::vector<Tv> phase_b(BATCH_SIZE * max_b_count * max_rank);
-    std::vector<int> src_block_idxs(BATCH_SIZE);
+    std::vector<Tv> phase_b(batch_size * max_b_count * max_rank);
+    std::vector<int> src_block_idxs(batch_size);
 
 #pragma omp parallel
     {
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+            for (int64 batch_start = 0; batch_start < num_groups; batch_start += batch_size)
             {
-                const int64 cur_batch_size = std::min(BATCH_SIZE, num_groups - batch_start);
+                const int64 cur_batch_size = std::min(batch_size, num_groups - batch_start);
 #pragma omp for schedule(dynamic)
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                 {
@@ -129,22 +119,19 @@ static inline void gather_contract_pure_a_batched_impl(
                     const int64 axsym = get_string_sym(group.ax, orbsym);
                     const int64 bid = (dst_block.asym ^ axsym) * num_irreps + dst_block.bsym;
                     const int64 src_block_idx = block_map[bid];
-
                     src_block_idxs[batch_idx] = src_block_idx;
 
                     if (src_block_idx == -1)
                         continue;
 
                     Tv *pb0 = phase_b.data() + batch_idx * max_b_count * max_rank;
-                    compute_phases<Rank, 1, Ti, Tv>(dst_block.bstrs, dst_block.num_b,
-                                                    group.unique_zbs, group.num_zb, group.wb,
-                                                    pb0, max_b_count, group.rank);
+                    compute_phases<Rank, 1, Ti, Tv>(dst_block.bstrs, dst_block.num_b, group.unique_zbs, group.num_zb, group.wb, pb0, max_b_count, group.rank);
                 }
 #pragma omp for schedule(dynamic)
                 for (int a = 0; a < dst_block.num_a; ++a)
                 {
                     const Ti dst_str_a = dst_block.astrs[a];
-                    Tv *dst = dst_vec + dst_block.offset + a * dst_block.num_b;
+                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
                         const int src_block_idx = src_block_idxs[batch_idx];
@@ -161,16 +148,10 @@ static inline void gather_contract_pure_a_batched_impl(
 
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const Tv *pb0 = phase_b.data() + batch_idx * max_b_count * max_rank;
-                        const Tv *src = src_vec + src_block.offset + src_a_idx * src_block.num_b;
+                        const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
                         Tv pa0 = {}, pa1 = {}, pan[64] = {};
-                        compute_a_phase<Rank, Ti, Tv>(src_str_a,
-                                                      group.unique_zas, group.num_za,
-                                                      group.wa, group.rank,
-                                                      pa0, pa1, pan);
-                        update_dst<Rank, 1, 0, Tv>(dst_block.num_b,
-                                                   group.rank, pa0, pa1, pan,
-                                                   pb0, max_b_count,
-                                                   nullptr, nullptr, src, dst);
+                        compute_a_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, group.rank, pa0, pa1, pan);
+                        update_dst<Rank, 1, 0, Tv>(dst_block.num_b, group.rank, pa0, pa1, pan, pb0, max_b_count, nullptr, nullptr, sa, da);
                     }
                 }
             }
@@ -193,21 +174,20 @@ static inline void gather_contract_pure_b_batched_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 batch_size = 0;
     int max_a_count = 0, max_b_count = 0, max_rank = 0;
+    get_upper<Rank, Ti, Tv>(blocks, groups, num_blocks, num_groups, batch_size, max_a_count, max_b_count, max_rank);
 
-    get_upper<Rank, Ti, Tv>(
-        blocks, groups, num_blocks, num_groups, max_a_count, max_b_count, max_rank);
-
-    SharedBatchBuffer<Tv> batch_buf(BATCH_SIZE, max_b_count, max_rank);
+    SharedBatchBuffer<Tv> batch_buf(batch_size, max_b_count, max_rank);
 
 #pragma omp parallel
     {
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+            for (int64 batch_start = 0; batch_start < num_groups; batch_start += batch_size)
             {
-                const int64 cur_batch_size = std::min(BATCH_SIZE, num_groups - batch_start);
+                const int64 cur_batch_size = std::min(batch_size, num_groups - batch_start);
 #pragma omp for schedule(dynamic)
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                 {
@@ -215,7 +195,6 @@ static inline void gather_contract_pure_b_batched_impl(
                     const int64 bxsym = get_string_sym(group.bx, orbsym);
                     const int64 bid = dst_block.asym * num_irreps + (dst_block.bsym ^ bxsym);
                     const int64 src_block_idx = block_map[bid];
-
                     batch_buf.src_block_idxs[batch_idx] = src_block_idx;
 
                     if (src_block_idx == -1)
@@ -224,19 +203,13 @@ static inline void gather_contract_pure_b_batched_impl(
                         continue;
                     }
 
-                    batch_buf.valid_b_counts[batch_idx] = compute_phases_symm<Rank, 1, Ti, Tv>(
-                        group.bx, idx_map.b_idx_map,
-                        dst_block.bstrs, dst_block.num_b,
-                        group.unique_zbs, group.num_zb, group.wb,
-                        batch_buf.ptr_phase(batch_idx), max_b_count, group.rank,
-                        batch_buf.ptr_src_b(batch_idx), batch_buf.ptr_dst_b(batch_idx),
-                        false, false);
+                    batch_buf.valid_b_counts[batch_idx] = compute_phases_symm<Rank, 1, Ti, Tv>(group.bx, idx_map.b_idx_map, dst_block.bstrs, dst_block.num_b, group.unique_zbs, group.num_zb, group.wb, batch_buf.ptr_phase(batch_idx), max_b_count, group.rank, batch_buf.ptr_src_b(batch_idx), batch_buf.ptr_dst_b(batch_idx), false, false);
                 }
 #pragma omp for schedule(dynamic)
                 for (int a = 0; a < dst_block.num_a; ++a)
                 {
                     const Ti str_a = dst_block.astrs[a];
-                    Tv *dst = dst_vec + dst_block.offset + a * dst_block.num_b;
+                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
                         const int valid_b_count = batch_buf.valid_b_counts[batch_idx];
@@ -247,19 +220,13 @@ static inline void gather_contract_pure_b_batched_impl(
                         const int src_block_idx = batch_buf.src_block_idxs[batch_idx];
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
+                        const Tv *sa = src_vec + src_block.offset + a * src_block.num_b;
                         const Tv *pb0 = batch_buf.ptr_phase(batch_idx);
-                        const int *src_b_idx = batch_buf.ptr_src_b(batch_idx);
-                        const int *dst_b_idx = batch_buf.ptr_dst_b(batch_idx);
-                        const Tv *src = src_vec + src_block.offset + a * src_block.num_b;
+                        const int *si = batch_buf.ptr_src_b(batch_idx);
+                        const int *di = batch_buf.ptr_dst_b(batch_idx);
                         Tv pa0 = {}, pa1 = {}, pan[64] = {};
-                        compute_a_phase<Rank, Ti, Tv>(str_a,
-                                                      group.unique_zas, group.num_za,
-                                                      group.wa, group.rank,
-                                                      pa0, pa1, pan);
-                        update_dst<Rank, 1, 1, Tv>(valid_b_count,
-                                                   group.rank, pa0, pa1, pan,
-                                                   pb0, max_b_count,
-                                                   src_b_idx, dst_b_idx, src, dst);
+                        compute_a_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, group.rank, pa0, pa1, pan);
+                        update_dst<Rank, 1, 1, Tv>(valid_b_count, group.rank, pa0, pa1, pan, pb0, max_b_count, si, di, sa, da);
                     }
                 }
             }
@@ -282,21 +249,20 @@ static inline void gather_contract_mixed_batched_impl(
     const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
+    int64 batch_size = 0;
     int max_a_count = 0, max_b_count = 0, max_rank = 0;
+    get_upper<Rank, Ti, Tv>(blocks, groups, num_blocks, num_groups, batch_size, max_a_count, max_b_count, max_rank);
 
-    get_upper<Rank, Ti, Tv>(
-        blocks, groups, num_blocks, num_groups, max_a_count, max_b_count, max_rank);
-
-    SharedBatchBuffer<Tv> batch_buf(BATCH_SIZE, max_b_count, max_rank);
+    SharedBatchBuffer<Tv> batch_buf(batch_size, max_b_count, max_rank);
 
 #pragma omp parallel
     {
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+            for (int64 batch_start = 0; batch_start < num_groups; batch_start += batch_size)
             {
-                const int64 cur_batch_size = std::min(BATCH_SIZE, num_groups - batch_start);
+                const int64 cur_batch_size = std::min(batch_size, num_groups - batch_start);
 #pragma omp for schedule(dynamic)
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                 {
@@ -305,7 +271,6 @@ static inline void gather_contract_mixed_batched_impl(
                     const int64 bxsym = get_string_sym(group.bx, orbsym);
                     const int64 bid = (dst_block.asym ^ axsym) * num_irreps + (dst_block.bsym ^ bxsym);
                     const int64 src_block_idx = block_map[bid];
-
                     batch_buf.src_block_idxs[batch_idx] = src_block_idx;
 
                     if (src_block_idx == -1)
@@ -314,19 +279,13 @@ static inline void gather_contract_mixed_batched_impl(
                         continue;
                     }
 
-                    batch_buf.valid_b_counts[batch_idx] = compute_phases_symm<Rank, 1, Ti, Tv>(
-                        group.bx, idx_map.b_idx_map,
-                        dst_block.bstrs, dst_block.num_b,
-                        group.unique_zbs, group.num_zb, group.wb,
-                        batch_buf.ptr_phase(batch_idx), max_b_count, group.rank,
-                        batch_buf.ptr_src_b(batch_idx), batch_buf.ptr_dst_b(batch_idx),
-                        false, false);
+                    batch_buf.valid_b_counts[batch_idx] = compute_phases_symm<Rank, 1, Ti, Tv>(group.bx, idx_map.b_idx_map, dst_block.bstrs, dst_block.num_b, group.unique_zbs, group.num_zb, group.wb, batch_buf.ptr_phase(batch_idx), max_b_count, group.rank, batch_buf.ptr_src_b(batch_idx), batch_buf.ptr_dst_b(batch_idx), false, false);
                 }
 #pragma omp for schedule(dynamic)
                 for (int a = 0; a < dst_block.num_a; ++a)
                 {
                     const Ti dst_str_a = dst_block.astrs[a];
-                    Tv *dst = dst_vec + dst_block.offset + a * dst_block.num_b;
+                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
                         const int valid_b_count = batch_buf.valid_b_counts[batch_idx];
@@ -344,18 +303,12 @@ static inline void gather_contract_mixed_batched_impl(
                         const int src_block_idx = batch_buf.src_block_idxs[batch_idx];
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const Tv *pb0 = batch_buf.ptr_phase(batch_idx);
-                        const int *src_b_idx = batch_buf.ptr_src_b(batch_idx);
-                        const int *dst_b_idx = batch_buf.ptr_dst_b(batch_idx);
-                        const Tv *src = src_vec + src_block.offset + src_a_idx * src_block.num_b;
+                        const int *si = batch_buf.ptr_src_b(batch_idx);
+                        const int *di = batch_buf.ptr_dst_b(batch_idx);
+                        const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
                         Tv pa0 = {}, pa1 = {}, pan[64] = {};
-                        compute_a_phase<Rank, Ti, Tv>(src_str_a,
-                                                      group.unique_zas, group.num_za,
-                                                      group.wa, group.rank,
-                                                      pa0, pa1, pan);
-                        update_dst<Rank, 1, 1, Tv>(valid_b_count,
-                                                   group.rank, pa0, pa1, pan,
-                                                   pb0, max_b_count,
-                                                   src_b_idx, dst_b_idx, src, dst);
+                        compute_a_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, group.rank, pa0, pa1, pan);
+                        update_dst<Rank, 1, 1, Tv>(valid_b_count, group.rank, pa0, pa1, pan, pb0, max_b_count, si, di, sa, da);
                     }
                 }
             }

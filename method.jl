@@ -91,6 +91,20 @@ function get_multiply_function2(basis::BasisManager, ham::BinaryQubitAABB, pool:
     end
 end
 
+function get_multiply_function3(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB})
+    print("Pre-compiling Ham OTF ... ")
+    time_ops = @elapsed ham_otf  = OTF(basis, ham)
+    @printf("Done in %.4f seconds\n", time_ops)
+
+    print("Pre-compiling Pool OTF ... ")
+    time_ops = @elapsed pool_otf = OTF(basis, pool)
+    @printf("Done in %.4f seconds\n", time_ops)
+
+    f_hvec = (v, Hv) -> hvec_otf!(basis, ham_otf, v, Hv)
+    f_tran = (lv, rv, trans) -> return tran_svd(basis, pool_otf, lv, rv, trans)
+
+    return f_hvec, f_tran
+end
 
 function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}; net::String="otf") where {Ti,Tv,K,V}
     @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim,  basis.dim*8/(1<<30))
@@ -1172,6 +1186,103 @@ function run_qpe(
 end
 
 
+function run_qpe_ode(
+    basis::BasisManager, 
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
+    v0::Vector{Tv};
+    dt::Float64=0.05, 
+    max_step::Int64=4000, 
+    ode_tol::Float64=1e-8,
+    net::String="otf"
+) where {Ti,Tv,TK,TV}
+
+    println("\n--- Starting Quantum Phase Estimation (QPE via ODE) ---")
+    
+    # 1. 初始化网络与态向量 (全面拥抱复数)
+    # 假设你已经有 get_multiply_function
+    hvec! = get_multiply_function(basis, ham, net)
+    
+    v0_c = complex.(v0)
+    w_temp = zeros(ComplexF64, basis.dim)
+    
+    # 计算参考能量 E_ref，用于平移能谱避免高频相位混叠
+    hvec!(v0_c, w_temp)
+    E_ref = real(dot(v0_c, w_temp)) / norm(v0_c)^2
+    
+    @printf("Reference Energy: %.6f Hartree\n", E_ref)
+    @printf("Time step (dt)  : %.4f\n", dt)
+    @printf("Total steps     : %d\n", max_step)
+    resolution = 2 * pi / (max_step * dt)
+    @printf("Energy Resol.   : %.4f Hartree\n", resolution)
+
+    # 2. 定义薛定谔方程 ODE: dψ/dt = -i * (H - E_ref) * ψ
+    f_schrodinger! = (du, u, p, t) -> begin
+        hvec!(u, w_temp)
+        # 提取公共因子以利用 SIMD 加速
+        @. du = -im * (w_temp - E_ref * u)
+    end
+
+    # 3. 设定采样时间点
+    # FFT 需要严格等距的时间采样点：0, dt, 2dt, ..., (max_step-1)*dt
+    tspan = (0.0, (max_step - 1) * dt)
+    save_times = range(0.0, step=dt, length=max_step)
+
+    # 4. 执行自适应 ODE 演化
+    prob = ODEProblem(f_schrodinger!, v0_c, tspan)
+    
+    print("Running ODE Real-Time Evolution ... ")
+    t_evo = @elapsed begin
+        # saveat=save_times 是灵魂：求解器内部会自动按自适应步长积分，
+        # 但只在我们指定的时间点通过高阶插值把波函数保存下来！
+        sol = solve(prob, Tsit5(), saveat=save_times, abstol=ode_tol, reltol=ode_tol)
+    end
+    @printf("Done in %.4f seconds\n", t_evo)
+
+    # 5. 提取自相关函数 C(t)
+    C_t = zeros(ComplexF64, max_step)
+    for i in 1:max_step
+        # sol.u[i] 就是精确在 t = (i-1)*dt 时刻的波函数
+        C_t[i] = dot(v0_c, sol.u[i])
+    end
+
+    # 6. 信号处理与 FFT 
+    window = [0.5 * (1 - cos(2 * pi * i / (max_step - 1))) for i in 0:(max_step-1)]
+    C_t_windowed = C_t .* window
+    S = fft(C_t_windowed)
+    freqs = fftfreq(max_step, 2 * pi / dt) 
+    
+    # 频率转换回能量并加回参考点
+    energies = -freqs .+ E_ref 
+    powers = abs.(S)
+
+    # 7. 寻峰算法
+    peaks = []
+    threshold = 0.01 * maximum(powers) 
+    
+    for i in 2:(max_step-1)
+        if powers[i] > powers[i-1] && powers[i] > powers[i+1] && powers[i] > threshold
+            push!(peaks, (energies[i], powers[i]))
+        end
+    end
+    sort!(peaks, by=x->x[2], rev=true)
+
+    # 8. 打印结果
+    println("\n--- QPE Extracted Energy Spectrum (Top Peaks) ---")
+    @printf("  %-6s %-18s %-18s\n", "Peak", "Energy", "Relative Power")
+    if isempty(peaks)
+        println("  No significant peaks found.")
+    else
+        max_power = peaks[1][2]
+        for (i, (E, P)) in enumerate(peaks[1:min(10, length(peaks))])
+            @printf("  %03d    % 15.10f      % 10.4f\n", i, E, P / max_power)
+        end
+    end
+    println("=================================================================\n")
+    
+    return peaks
+end
+
+
 function run_exact_vqe(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,K,V},
@@ -1315,8 +1426,8 @@ function run_exact_vqe_adaptive(
     println("============================================================================")
     println("--- Adaptive Exact UCC VQE (Augmented ODE Adjoint Method) ---")
     
-    hvec!, tvec! = get_multiply_function1(basis, ham, pool, net)
-    
+    hvec!, tran = get_multiply_function3(basis, ham, pool)
+
     if !isempty(x0)
         @assert length(x0) == length(pool)
     else
@@ -1325,24 +1436,26 @@ function run_exact_vqe_adaptive(
 
     Hv = zeros(Tv, basis.dim)
     a  = zeros(Tv, basis.dim)
-    vt = zeros(Tv, basis.dim)
+    gt = zeros(Tv, length(pool))
 
     obj_func = x -> begin
+        if !isempty(options.save_path)
+            jldopen(options.save_path, "w") do file
+                file["x"] = x
+            end
+        end
+
         if norm(x) < 1e-12
             hvec!(v0, Hv)
             E   = real(dot(v0, Hv))
             δ²H = max(0.0, norm(Hv)^2 / norm(v0)^2 - E^2)
 
             @. a = 2.0 * Hv 
-            g_tot = zeros(Float64, length(pool))
-            for i in eachindex(pool)
-                tvec!(i, v0, vt)
-                g_tot[i] = real(dot(vt, a))
-            end
+            tran(v0, a, gt)
             
-            options.verbose > 0 && show_optimze(E, norm(g_tot), δ²H, abs(E - e_scale))
+            options.verbose > 0 && show_optimze(E, norm(gt), δ²H, abs(E - e_scale))
 
-            return E, g_tot
+            return E, real.(gt)
         end
 
         T = linearcombine(pool, x, 0.0, 1e-12)
@@ -1376,11 +1489,9 @@ function run_exact_vqe_adaptive(
             
             Tvec!(ψ_curr, dψ)
             Tvec!(a_curr, da)
-            
-            for i in eachindex(pool)
-                tvec!(i, ψ_curr, vt)
-                dg[i] = -real(dot(a_curr, vt))
-            end
+
+            tran(ψ_curr, a_curr, gt)
+            @. dg = -real(gt)
         end
 
         prob_bwd = ODEProblem(f_backward!, u_back_init, (1.0, 0.0))
