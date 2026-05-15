@@ -91,6 +91,7 @@ function get_multiply_function2(basis::BasisManager, ham::BinaryQubitAABB, pool:
     end
 end
 
+
 function get_multiply_function3(basis::BasisManager, ham::BinaryQubitAABB, pool::Vector{<:BinaryQubitAABB})
     print("Pre-compiling Ham OTF ... ")
     time_ops = @elapsed ham_otf  = OTF(basis, ham)
@@ -105,6 +106,7 @@ function get_multiply_function3(basis::BasisManager, ham::BinaryQubitAABB, pool:
 
     return f_hvec, f_tran
 end
+
 
 function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}; net::String="otf") where {Ti,Tv,K,V}
     @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", basis.dim,  basis.dim*8/(1<<30))
@@ -401,6 +403,7 @@ function run_euler_ite(
     max_step::Int64=5000, 
     tol::Float64=1e-8,
     net::String="otf",
+    save_path::String="",
 ) where {Ti,Tv,K,V}
     """
     一阶 Euler 虚时演化 (1 次 hvec/步):
@@ -454,6 +457,12 @@ function run_euler_ite(
     
     println("  \nConverged at step $step\n")
 
+    if !isempty(save_path)
+        jldopen(save_path, "w") do file
+            file["v"] = v
+        end
+    end
+    
     return E_hist[end]
 end
 
@@ -1421,7 +1430,6 @@ function run_exact_vqe_adaptive(
     x0::Vector{Float64}=Float64[],
     options::VQE_OPTIONS=VQE_OPTIONS(),
     ode_tol::Float64=1e-8, # ODE 积分精度
-    net::String="otf"
 ) where {Ti,Tv,K,V}
     println("============================================================================")
     println("--- Adaptive Exact UCC VQE (Augmented ODE Adjoint Method) ---")
