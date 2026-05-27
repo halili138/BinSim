@@ -29,9 +29,8 @@ end
 mutable struct CuOTF
     ptr::Ptr{Cvoid}
 
-    function CuOTF(basis::BasisManager, otf::OTF)
+    function CuOTF(otf::OTF)
         ptr = @ccall LIB_CUOTF.build_networkdev_f64(
-            basis.ptr::Ptr{Cvoid},
             otf.ptr::Ptr{Cvoid},
         )::Ptr{Cvoid}
 
@@ -71,7 +70,7 @@ function run_euler_ite_cuda(
 ) where {Ti,Tv,K,V}
     otf = OTF(basis, ham)
     cubasis = CuBasisManager(basis)
-    cuotf = CuOTF(basis, otf)
+    cuotf = CuOTF(otf)
     v = CuArray{Tv,1,CUDA.DeviceMemory}(v0)
     w = CUDA.zeros(Tv, basis.dim)
 

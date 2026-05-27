@@ -1,0 +1,52 @@
+#include "cuda_hvec.cuh"
+
+extern "C"
+{
+    void destroy_basisdev_f64(void *basis_ptr)
+    {
+        if (basis_ptr == nullptr)
+            return;
+
+        BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+
+        basis->clear();
+        delete basis;
+    }
+
+    void *build_basisdev_f64(void *host_basis_ptr)
+    {
+        const BasisManager<uint32> *h_basis = static_cast<BasisManager<uint32> *>(host_basis_ptr);
+
+        return upload_basis<uint32>(h_basis);
+    }
+
+    void destroy_networkdev_f64(void *net_ptr)
+    {
+        if (net_ptr == nullptr)
+            return;
+
+        NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        net->clear();
+        delete net;
+    }
+
+    void *build_networkdev_f64(void *host_net_ptr)
+    {
+        const Network_OTF<uint32, double> *h_net = static_cast<Network_OTF<uint32, double> *>(host_net_ptr);
+
+        return upload_network<uint32, double>(h_net);
+    }
+
+    void hvec_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        const double *__restrict__ src,
+        double *__restrict__ dst)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        cuda_hvec<uint32, double>(*basis, *net, src, dst);
+    }
+}
