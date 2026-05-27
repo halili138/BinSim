@@ -129,7 +129,7 @@ template <typename Tv>
 FORCE_INLINE void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, double co)
 {
     const Tv vt_c = math_conj(vt);
-    
+
     const Tv vd = 1.0 + cd * (vt * vt_c);
     const Tv vo_fwd = co * vt;
     const Tv vo_rev = co * vt_c;
@@ -199,36 +199,3 @@ FORCE_INLINE void backgrad_update(Tv &res, Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv vt
     *rs = rvi * evd - rvj * evo_rev;
     *rd = rvj * evd + rvi * evo_fwd;
 }
-
-// template <typename Tv>
-// FORCE_INLINE void backgrad_update(Tv &res, Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv vt, double gcd, double gco)
-// {
-//     const Tv vt_c = math_conj(vt);
-//     const Tv v_tc = vt * vt_c;
-
-//     const Tv gvd = gcd * v_tc;
-//     const Tv gvo_fwd = gco * vt;
-//     const Tv gvo_rev = gco * vt_c;
-
-//     const Tv evd = (gvd - v_tc) + 1.0;
-//     const Tv evo_fwd = gcd * vt;
-//     const Tv evo_rev = gcd * vt_c;
-
-//     const Tv lvi = *ls;
-//     const Tv lvj = *ld;
-//     const Tv rvi = *rs;
-//     const Tv rvj = *rd;
-
-//     const Tv els = lvi * evd - lvj * evo_rev;
-//     const Tv eld = lvj * evd + lvi * evo_fwd;
-//     *ls = els;
-//     *ld = eld;
-
-//     const Tv n_rs = rvi * evd - rvj * evo_rev;
-//     const Tv n_rd = rvj * evd + rvi * evo_fwd;
-//     *rs = n_rs;
-//     *rd = n_rd;
-
-//     res += math_conj(els) * (rvi * gvd + rvj * gvo_rev) +
-//            math_conj(eld) * (rvj * gvd - rvi * gvo_fwd);
-// }

@@ -14,26 +14,26 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
 
     orbs = Orbitals()
-    kernel(mole, orbs, generalize=true)
+    kernel(mole, orbs, generalize=false)
     pool = FEB(orbs)
 
-    # run_vqe(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
-    #     options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-8,
-    #         maxiter=100000,
-    #         verbose=2,
-    #     )
-    # )
-    run_adapt_vqe(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
-        adapt_options=ADAPT_OPTIONS(verbose=1),
-        vqe_options=VQE_OPTIONS(
+    run_vqe(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
+        options=VQE_OPTIONS(
             ftol=1e-10,
-            gtol=1e-6,
-            maxiter=1000,
-            verbose=0,
+            gtol=1e-8,
+            maxiter=100000,
+            verbose=2,
         )
     )
+    # run_adapt_vqe(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
+    #     adapt_options=ADAPT_OPTIONS(verbose=1),
+    #     vqe_options=VQE_OPTIONS(
+    #         ftol=1e-10,
+    #         gtol=1e-6,
+    #         maxiter=1000,
+    #         verbose=0,
+    #     )
+    # )
 
     # run_exact_vqe_adaptive(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
     #     options=VQE_OPTIONS(

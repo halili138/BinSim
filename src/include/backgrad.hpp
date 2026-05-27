@@ -56,14 +56,6 @@ static FORCE_INLINE Tv backgrad_contract_diag_otf_impl(
                 for (int b = 0; b < b_count; ++b)
                 {
                     const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    // const Tv u = fast_diag_exp<Tv>(vt, -theta);
-                    // const Tv du = fast_diag_grad<Tv>(vt, theta);
-                    // const int64 i = offset + (int64)a * b_count + b;
-                    // const Tv li = lp[i] * u;
-                    // const Tv ri = rp[i];
-                    // res += math_conj(li * du) * ri;
-                    // lp[i] = li;
-                    // rp[i] = ri * u;
                     const Tv u = fast_diag_exp<Tv>(vt, -theta);
                     const Tv du = fast_diag_grad<Tv>(vt, theta);
                     const int64 i = offset + (int64)a * b_count + b;
