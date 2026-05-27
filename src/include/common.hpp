@@ -387,7 +387,6 @@ void *create_custom_basis_manager_tmpl(
         basis->num_astrs = new int64[num_irreps]();
         basis->num_bstrs = new int64[num_irreps]();
 
-        // 1. 统计每个对称性块下的组态数量
         for (int64 i = 0; i < num_astrs_total; ++i)
         {
             int64 sym = get_string_sym(input_astrs[i], orbsym);
@@ -402,7 +401,6 @@ void *create_custom_basis_manager_tmpl(
                 basis->num_bstrs[sym]++;
         }
 
-        // 2. 统计有效的对称性块 (Block) 数量
         for (int64 asym = 0; asym < num_irreps; ++asym)
         {
             int64 bsym = total_sym ^ asym;
@@ -412,8 +410,6 @@ void *create_custom_basis_manager_tmpl(
             }
         }
 
-        // 3. 分配内存空间
-        // 直接按传入的总长度分配底层一维数组，即使某些非法对称性的弦被丢弃，稍微多分配一点也是安全的
         basis->all_astrs = new Ti[num_astrs_total];
         basis->all_bstrs = new Ti[num_bstrs_total];
 
@@ -426,7 +422,6 @@ void *create_custom_basis_manager_tmpl(
         basis->block_map = new int64[num_irreps * num_irreps];
         std::fill_n(basis->block_map, num_irreps * num_irreps, -1);
 
-        // 4. 设定各不可约表示 (irrep) 的二级指针偏移量
         int64 a_offset = 0;
         int64 b_offset = 0;
         for (int64 i = 0; i < num_irreps; ++i)
@@ -438,7 +433,6 @@ void *create_custom_basis_manager_tmpl(
             b_offset += basis->num_bstrs[i];
         }
 
-        // 5. 将用户输入的弦按对称性分发到对应的桶 (bucket) 中
         int64 *a_idx = new int64[num_irreps]();
         for (int64 i = 0; i < num_astrs_total; ++i)
         {
@@ -461,7 +455,6 @@ void *create_custom_basis_manager_tmpl(
         }
         delete[] b_idx;
 
-        // 6. 对每个桶内的弦进行升序排序 (对齐二分查找的需求)
         for (int64 i = 0; i < num_irreps; ++i)
         {
             if (basis->num_astrs[i] > 0)
@@ -471,7 +464,6 @@ void *create_custom_basis_manager_tmpl(
                 std::sort(basis->bstrs_vec[i], basis->bstrs_vec[i] + basis->num_bstrs[i]);
         }
 
-        // 7. 组装 Blocks 并计算哈密顿量维度 (dim)
         int64 block_counter = 0;
         basis->dim = 0;
         for (int64 asym = 0; asym < num_irreps; ++asym)
