@@ -24,7 +24,7 @@ MPI_JL_INC  := -I$(MPI_JL_HOME)/include
 MPI_JL_LIBS := -L$(MPI_JL_HOME)/lib -Wl,-rpath=$(MPI_JL_HOME)/lib -lmpi
 
 TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
-		   lib/libcuotf.so libdist.so
+		   lib/libcuotf.so lib/libdist.so
 
 .PHONY: all clean
 

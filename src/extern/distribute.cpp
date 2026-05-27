@@ -88,6 +88,55 @@ extern "C"
         contract_network_otf_distributed<uint32, double>(db, dn, local_src, local_dst);
     }
 
+    void distributed_compute_local_diags_f64(
+        void *db_ptr,
+        const uint32 *azs, const uint32 *bzs,
+        const double *cs, int64 nterms,
+        double *out)
+    {
+        auto *db = static_cast<DistributedBasisManager<uint32, double> *>(db_ptr);
+        if (nterms == 0)
+            return;
+
+#pragma omp parallel
+        {
+            bool *parity_a = new bool[nterms];
+
+            for (int64 bi = 0; bi < db->num_local_blocks; ++bi)
+            {
+                const auto &block = db->local_blocks[bi];
+#pragma omp for schedule(guided) nowait
+                for (int32 a = 0; a < block.num_a; ++a)
+                {
+                    const uint32 astr = block.astrs[a];
+                    const int64 row_ptr = block.offset + a * block.num_b;
+
+                    for (int64 k = 0; k < nterms; ++k)
+                    {
+                        parity_a[k] = std::popcount(azs[k] & astr) & 1;
+                    }
+
+                    for (int32 b = 0; b < block.num_b; ++b)
+                    {
+                        const uint32 bstr = block.bstrs[b];
+
+                        double vt = {};
+                        for (int64 k = 0; k < nterms; ++k)
+                        {
+                            const bool parity_b = std::popcount(bzs[k] & bstr) & 1;
+                            const bool parity = parity_a[k] ^ parity_b;
+                            vt += parity ? -cs[k] : cs[k];
+                        }
+
+                        out[row_ptr + b] += vt;
+                    }
+                }
+            }
+
+            delete[] parity_a;
+        }
+    }
+
     // ─── DistributedBasisManager (complex double) ────────────────────────────────
     void *create_distributed_basis_c64(MPI_Comm comm, void *basis_ptr, int64 norb)
     {
@@ -170,6 +219,56 @@ extern "C"
         auto *db = static_cast<DistributedBasisManager<uint32, complexf64> *>(dbasis_ptr);
         auto *dn = static_cast<DistributedNetwork_OTF<uint32, complexf64> *>(dnet_ptr);
         contract_network_otf_distributed<uint32, complexf64>(db, dn, local_src, local_dst);
+    }
+
+    void distributed_compute_local_diags_c64(
+        void *db_ptr,
+        const uint32 *azs, const uint32 *bzs,
+        const complexf64 *cs, int64 nterms,
+        complexf64 *out)
+    {
+        auto *db = static_cast<DistributedBasisManager<uint32, complexf64> *>(db_ptr);
+        if (nterms == 0)
+            return;
+
+#pragma omp parallel
+        {
+            bool *parity_a = new bool[nterms];
+
+            for (int64 bi = 0; bi < db->num_local_blocks; ++bi)
+            {
+                const auto &block = db->local_blocks[bi];
+#pragma omp for schedule(guided) nowait
+                for (int32 a = 0; a < block.num_a; ++a)
+                {
+                    const uint32 astr = block.astrs[a];
+                    const int64 row_ptr = block.offset + a * block.num_b;
+
+                    for (int64 k = 0; k < nterms; ++k)
+                    {
+                        parity_a[k] = std::popcount(azs[k] & astr) & 1;
+                    }
+
+                    for (int32 b = 0; b < block.num_b; ++b)
+                    {
+                        const uint32 bstr = block.bstrs[b];
+
+                        complexf64 vt = {};
+                        for (int64 k = 0; k < nterms; ++k)
+                        {
+                            const bool parity_b = std::popcount(bzs[k] & bstr) & 1;
+                            const bool parity = parity_a[k] ^ parity_b;
+                            complexf64 val = parity ? -cs[k] : cs[k];
+                            vt += complexf64(val.real(), 0.0);
+                        }
+
+                        out[row_ptr + b] += vt;
+                    }
+                }
+            }
+
+            delete[] parity_a;
+        }
     }
 
 } // extern "C"
