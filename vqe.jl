@@ -145,7 +145,8 @@ end
 function _adapt_vqe(
     f_hvec::Function,
     f_expm::Function,
-    f_grad::Function,
+    f_backgrad::Function,
+    f_batchgrad::Function,
     idxs::Vector{Int64},
     v0::Vector{Tv},
     lv::Vector{Tv},
@@ -172,15 +173,15 @@ function _adapt_vqe(
     e_hist::Array{Float64,1} = [];   Δtol::Float64 = adapt_options.Δtol
 
     zero_grads = Vector{Float64}(undef, length(idxs))
+    zero_amp = zeros(length(idxs))
     converged::Bool = false
     @time while !converged
         iter += 1
         
         f_hvec(lv, rv)
         
-        for i in eachindex(idxs)
-            zero_grads[i] = real(f_grad(idxs[i], 0.0, lv, rv)) * 2
-        end
+        f_batchgrad(lv, rv, zero_grads, zero_amp)
+        @. zero_grads = real(zero_grads) * 2
         
         max_idx = sortperm(abs.(zero_grads), rev=true)[1]
         G       = norm(zero_grads)
@@ -201,7 +202,7 @@ function _adapt_vqe(
 
         obj_func = x -> begin
             lv .= v0
-            result = @timed energy_objective(f_hvec, f_expm, f_grad, selec_idxs, x, lv, rv)
+            result = @timed energy_objective(f_hvec, f_expm, f_backgrad, selec_idxs, x, lv, rv)
             e_l[], gradient, δ²H_l[] = result.value
 
             ng_l[]  = norm(gradient)
@@ -212,12 +213,12 @@ function _adapt_vqe(
             return e_l[], gradient
         end
 
-        println("Performing VQE optimization ... ")
+        vqe_options.verbose > 0 && println("Performing VQE optimization ... ")
         time_ops = @elapsed e_opt, amplitudes = optimze_fg!(
             amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
 
         if vqe_options.verbose == 1
-            @printf("Converged in %.4f seconds with:\n f: %.14f  |g|: %.3e  δ²H: %.3e  err: %.3e\n", 
+            @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n", 
                     time_ops, e_l[], ng_l[], δ²H_l[], err_l[])
         elseif vqe_options.verbose >= 2
             @printf("Converged in %.4f seconds\n", time_ops)

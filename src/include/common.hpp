@@ -39,74 +39,6 @@ FORCE_INLINE T math_conj(const T &x)
     }
 }
 
-template <typename Tv>
-FORCE_INLINE Tv fast_diag_exp(const Tv &vt, double theta)
-{
-    if constexpr (std::is_arithmetic_v<Tv>)
-    {
-        // 实数域（分子体系）：对角线严格为 0，exp(0) == 1.0
-        // 为了极致性能，编译器遇到 type=double 会直接把整个内层循环优化为 1.0！
-        return static_cast<Tv>(1.0);
-    }
-    else
-    {
-        // 复数域（周期性体系）：对角线必定是纯虚数，直接提取虚部
-        double val = vt.imag() * theta;
-
-        // 使用实数的 cos 和 sin，彻底避开昂贵的 __cexp 库函数调用
-        return Tv(std::cos(val), std::sin(val));
-    }
-}
-
-template <typename Tv>
-FORCE_INLINE Tv fast_diag_grad(const Tv &vt, double theta)
-{
-    if constexpr (std::is_arithmetic_v<Tv>)
-    {
-        // 实数域下导数也必定为 0
-        return static_cast<Tv>(0.0);
-    }
-    else
-    {
-        // 导数公式: dU = v_t * exp(v_t * theta)
-        double val = vt.imag() * theta;
-        Tv u(std::cos(val), std::sin(val));
-        return vt * u;
-    }
-}
-
-template <typename Tv>
-FORCE_INLINE void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, double co)
-{
-    const Tv vd = 1.0 + cd * (vt * math_conj(vt));
-    const Tv vo_fwd = co * vt;
-    const Tv vo_rev = co * math_conj(vt);
-
-    const Tv vi = *sp;
-    const Tv vj = *dp;
-
-    *sp = vi * vd - vj * vo_rev;
-    *dp = vj * vd + vi * vo_fwd;
-}
-
-template <typename Tv>
-FORCE_INLINE void grad_update(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt, double cd, double co)
-{
-    const Tv vd = cd * (vt * math_conj(vt));
-    const Tv vo_fwd = co * vt;
-    const Tv vo_rev = co * math_conj(vt);
-
-    res += math_conj(*ls) * (*rs * vd + *rd * vo_rev) +
-           math_conj(*ld) * (*rd * vd - *rs * vo_fwd);
-}
-
-template <typename Tv>
-FORCE_INLINE void tvec_update(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
-{
-    *ds = *sd * (-math_conj(vt));
-    *dd = *ss * vt;
-}
-
 template <typename T>
 FORCE_INLINE int phase(T x)
 {
@@ -162,44 +94,67 @@ struct BlockDesc
 template <typename T>
 struct BasisManager
 {
-    T *all_astrs;
-    T *all_bstrs;
+    T *all_astrs = nullptr;
+    T *all_bstrs = nullptr;
 
-    T **astrs_vec;
-    T **bstrs_vec;
+    T **astrs_vec = nullptr;
+    T **bstrs_vec = nullptr;
 
-    int64 *num_astrs;
-    int64 *num_bstrs;
+    int64 *num_astrs = nullptr;
+    int64 *num_bstrs = nullptr;
 
-    BlockDesc<T> *blocks;
-    int64 num_blocks;
+    BlockDesc<T> *blocks = nullptr;
+    int64 num_blocks = {};
 
-    int64 *orbsym;
-    int64 *block_map;
-    int64 num_irreps;
+    int64 *orbsym = nullptr;
+    int64 *block_map = nullptr;
+    int64 num_irreps = {};
 
-    int64 dim;
+    int64 dim = {};
+    int64 norb = {};
+    int64 max_a_count = {};
+    int64 max_b_count = {};
+
+    int *a_idx_map = nullptr;
+    int *b_idx_map = nullptr;
+
+    void clear()
+    {
+        delete[] all_astrs;
+        all_astrs = nullptr;
+        delete[] all_bstrs;
+        all_bstrs = nullptr;
+        delete[] astrs_vec;
+        astrs_vec = nullptr;
+        delete[] bstrs_vec;
+        bstrs_vec = nullptr;
+        delete[] num_astrs;
+        num_astrs = nullptr;
+        delete[] num_bstrs;
+        num_bstrs = nullptr;
+        delete[] blocks;
+        blocks = nullptr;
+        delete[] orbsym;
+        orbsym = nullptr;
+        delete[] block_map;
+        block_map = nullptr;
+        delete[] a_idx_map;
+        a_idx_map = nullptr;
+        delete[] b_idx_map;
+        b_idx_map = nullptr;
+        num_blocks = 0;
+        num_irreps = 0;
+        dim = 0;
+        norb = 0;
+        max_a_count = 0;
+        max_b_count = 0;
+    }
 };
 
 template <typename Ti>
 int64 get_subspace_dim_tmpl(const BasisManager<Ti> *basis)
 {
     return basis->dim;
-}
-
-template <typename Ti>
-void destroy_basis_manager_tmpl(BasisManager<Ti> *basis)
-{
-    delete[] basis->all_astrs;
-    delete[] basis->all_bstrs;
-    delete[] basis->astrs_vec;
-    delete[] basis->bstrs_vec;
-    delete[] basis->num_astrs;
-    delete[] basis->num_bstrs;
-    delete[] basis->blocks;
-    delete[] basis->orbsym;
-    delete[] basis->block_map;
-    delete basis;
 }
 
 template <typename Ti>
@@ -213,19 +168,10 @@ void *create_basis_manager_tmpl(
 {
     BasisManager<Ti> *basis = new BasisManager<Ti>();
 
-    basis->all_astrs = nullptr;
-    basis->all_bstrs = nullptr;
-    basis->astrs_vec = nullptr;
-    basis->bstrs_vec = nullptr;
-    basis->num_astrs = nullptr;
-    basis->num_bstrs = nullptr;
-    basis->blocks = nullptr;
-    basis->orbsym = nullptr;
-    basis->block_map = nullptr;
-
     try
     {
         basis->num_irreps = num_irreps;
+        basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
 
@@ -351,10 +297,37 @@ void *create_basis_manager_tmpl(
                 basis->dim += block.num_a * block.num_b;
             }
         }
+
+        basis->max_a_count = 0;
+        basis->max_b_count = 0;
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            if (basis->blocks[i].num_a > basis->max_a_count)
+                basis->max_a_count = basis->blocks[i].num_a;
+            if (basis->blocks[i].num_b > basis->max_b_count)
+                basis->max_b_count = basis->blocks[i].num_b;
+        }
+
+        int32 map_size = 1 << norb;
+        int32 *a_map = new int32[map_size];
+        int32 *b_map = new int32[map_size];
+        std::fill(a_map, a_map + map_size, -1);
+        std::fill(b_map, b_map + map_size, -1);
+
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            for (int32 a = 0; a < basis->blocks[i].num_a; ++a)
+                a_map[basis->blocks[i].astrs[a]] = a;
+            for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
+                b_map[basis->blocks[i].bstrs[b]] = b;
+        }
+        basis->a_idx_map = a_map;
+        basis->b_idx_map = b_map;
     }
     catch (...)
     {
-        destroy_basis_manager_tmpl<Ti>(basis);
+        basis->clear();
+        delete basis;
         throw;
     }
 
@@ -395,68 +368,6 @@ void set_det_coeff(
     *(vec + gid) += coeff;
 }
 
-template <typename Ti, typename Tv>
-void compute_diagonal_elements_raw(
-    const BasisManager<Ti> *__restrict__ basis,
-    const Ti *__restrict__ azs,
-    const Ti *__restrict__ bzs,
-    const Tv *__restrict__ cs,
-    const int64 nterms,
-    Tv *__restrict__ diags)
-{
-    if (nterms == 0)
-        return;
-
-#pragma omp parallel
-    {
-        bool *parity_a = new bool[nterms];
-
-        for (int64 i = 0; i < basis->num_blocks; ++i)
-        {
-            const BlockDesc<Ti> &block = basis->blocks[i];
-            const int64 num_a = block.num_a;
-            const int64 num_b = block.num_b;
-#pragma omp for schedule(guided) nowait
-            for (int64 a = 0; a < num_a; ++a)
-            {
-                const Ti astr = block.astrs[a];
-                const int64 row_ptr = block.offset + a * num_b;
-
-                for (int64 k = 0; k < nterms; ++k)
-                {
-                    parity_a[k] = std::popcount(azs[k] & astr) & 1;
-                }
-
-                for (int64 b = 0; b < num_b; ++b)
-                {
-                    const Ti bstr = block.bstrs[b];
-
-                    Tv vt = {};
-                    for (int64 k = 0; k < nterms; ++k)
-                    {
-                        const bool parity_b = std::popcount(bzs[k] & bstr) & 1;
-                        const bool parity = parity_a[k] ^ parity_b;
-
-                        if constexpr (std::is_arithmetic_v<Tv>)
-                        {
-                            vt += parity ? -cs[k] : cs[k];
-                        }
-                        else
-                        {
-                            Tv val = parity ? -cs[k] : cs[k];
-                            vt += Tv(val.real(), 0.0);
-                        }
-                    }
-
-                    diags[row_ptr + b] += vt;
-                }
-            }
-        }
-
-        delete[] parity_a;
-    }
-}
-
 template <typename Ti>
 void *create_custom_basis_manager_tmpl(
     int64 norb,
@@ -466,19 +377,10 @@ void *create_custom_basis_manager_tmpl(
 {
     BasisManager<Ti> *basis = new BasisManager<Ti>();
 
-    basis->all_astrs = nullptr;
-    basis->all_bstrs = nullptr;
-    basis->astrs_vec = nullptr;
-    basis->bstrs_vec = nullptr;
-    basis->num_astrs = nullptr;
-    basis->num_bstrs = nullptr;
-    basis->blocks = nullptr;
-    basis->orbsym = nullptr;
-    basis->block_map = nullptr;
-
     try
     {
         basis->num_irreps = num_irreps;
+        basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
 
@@ -595,10 +497,37 @@ void *create_custom_basis_manager_tmpl(
                 basis->dim += block.num_a * block.num_b;
             }
         }
+
+        basis->max_a_count = 0;
+        basis->max_b_count = 0;
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            if (basis->blocks[i].num_a > basis->max_a_count)
+                basis->max_a_count = basis->blocks[i].num_a;
+            if (basis->blocks[i].num_b > basis->max_b_count)
+                basis->max_b_count = basis->blocks[i].num_b;
+        }
+
+        int32 map_size = 1 << norb;
+        int32 *a_map = new int32[map_size];
+        int32 *b_map = new int32[map_size];
+        std::fill(a_map, a_map + map_size, -1);
+        std::fill(b_map, b_map + map_size, -1);
+
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            for (int32 a = 0; a < basis->blocks[i].num_a; ++a)
+                a_map[basis->blocks[i].astrs[a]] = a;
+            for (int32 b = 0; b < basis->blocks[i].num_b; ++b)
+                b_map[basis->blocks[i].bstrs[b]] = b;
+        }
+        basis->a_idx_map = a_map;
+        basis->b_idx_map = b_map;
     }
     catch (...)
     {
-        destroy_basis_manager_tmpl<Ti>(basis);
+        basis->clear();
+        delete basis;
         throw;
     }
 

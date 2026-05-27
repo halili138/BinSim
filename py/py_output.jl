@@ -674,7 +674,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     #     end
     # end
 
-    for i::Float64 in 0:10:120
+    for i::Float64 in 130:10:180
         init_scf(i)
     end
 end

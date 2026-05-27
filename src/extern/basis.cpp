@@ -11,7 +11,8 @@ extern "C"
     void destroy_basis_manager(void *basis_ptr)
     {
         BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-        destroy_basis_manager_tmpl<uint32>(basis);
+        basis->clear();
+        delete basis;
     }
 
     void *create_basis_manager(
@@ -45,34 +46,6 @@ extern "C"
     {
         const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
         set_det_coeff<uint32, complexf64>(basis, target_astr, target_bstr, coeff, vec);
-    }
-
-    void compute_diagonal_elements_raw_f64(
-        void *__restrict__ basis_ptr,
-        const uint32 *__restrict__ azs,
-        const uint32 *__restrict__ bzs,
-        const double *__restrict__ cs,
-        const int64 nterms,
-        double *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-
-        compute_diagonal_elements_raw<uint32, double>(
-            basis, azs, bzs, cs, nterms, diags);
-    }
-
-    void compute_diagonal_elements_raw_c64(
-        void *__restrict__ basis_ptr,
-        const uint32 *__restrict__ azs,
-        const uint32 *__restrict__ bzs,
-        const complexf64 *__restrict__ cs,
-        const int64 nterms,
-        complexf64 *__restrict__ diags)
-    {
-        const BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
-
-        compute_diagonal_elements_raw<uint32, complexf64>(
-            basis, azs, bzs, cs, nterms, diags);
     }
 
     void *create_custom_basis_manager(

@@ -4,7 +4,6 @@
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void tvec_contract_diag_otf_impl(
     const BasisManager<Ti> *basis,
-    const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec,
     Tv *dst_vec)
@@ -19,15 +18,8 @@ static FORCE_INLINE void tvec_contract_diag_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
 
-    int64 max_a_count = 0;
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
-        if (blocks[i].num_a > max_a_count)
-            max_a_count = blocks[i].num_a;
-        if (blocks[i].num_b > max_b_count)
-            max_b_count = blocks[i].num_b;
-    }
+    int max_a_count = (int)basis->max_a_count;
+    int max_b_count = (int)basis->max_b_count;
 
 #pragma omp parallel
     {
@@ -68,7 +60,6 @@ static FORCE_INLINE void tvec_contract_diag_otf_impl(
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
     const BasisManager<Ti> *basis,
-    const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec,
     Tv *dst_vec)
@@ -83,18 +74,10 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
-    const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
-    int64 max_a_count = 0;
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
-        if (blocks[i].num_a > max_a_count)
-            max_a_count = blocks[i].num_a;
-        if (blocks[i].num_b > max_b_count)
-            max_b_count = blocks[i].num_b;
-    }
+    int max_a_count = (int)basis->max_a_count;
+    int max_b_count = (int)basis->max_b_count;
 
 #pragma omp parallel
     {
@@ -106,7 +89,7 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 axsym = get_string_sym(group.ax, orbsym);
+            const int64 axsym = group.asym;
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + dst_block.bsym;
             const int64 src_block_idx = block_map[bid];
 
@@ -120,7 +103,7 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
             int valid_na = compute_phases_symm<Rank, 0, Ti, Tv>(
-                group.ax, idx_map.a_idx_map,
+                group.ax, basis->a_idx_map,
                 dst_block.astrs, dst_block.num_a, zas, num_za,
                 wa0, phase_a.data(), max_a_count, rank,
                 src_a.data(), dst_a.data(), is_same_block, true);
@@ -153,7 +136,6 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
     const BasisManager<Ti> *basis,
-    const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec,
     Tv *dst_vec)
@@ -168,18 +150,10 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
-    const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
-    int64 max_a_count = 0;
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
-        if (blocks[i].num_a > max_a_count)
-            max_a_count = blocks[i].num_a;
-        if (blocks[i].num_b > max_b_count)
-            max_b_count = blocks[i].num_b;
-    }
+    int max_a_count = (int)basis->max_a_count;
+    int max_b_count = (int)basis->max_b_count;
 
 #pragma omp parallel
     {
@@ -191,7 +165,7 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 bxsym = get_string_sym(group.bx, orbsym);
+            const int64 bxsym = group.bsym;
             const int64 bid = dst_block.asym * num_irreps + (dst_block.bsym ^ bxsym);
             const int64 src_block_idx = block_map[bid];
 
@@ -205,7 +179,7 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
             int valid_nb = compute_phases_symm<Rank, 0, Ti, Tv>(
-                group.bx, idx_map.b_idx_map,
+                group.bx, basis->b_idx_map,
                 dst_block.bstrs, dst_block.num_b, zbs, num_zb,
                 wb0, phase_b.data(), max_b_count, rank,
                 src_b.data(), dst_b.data(), is_same_block, true);
@@ -238,7 +212,6 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
 template <int Rank, typename Ti, typename Tv>
 static FORCE_INLINE void tvec_contract_mixed_otf_impl(
     const BasisManager<Ti> *basis,
-    const IndexMap &idx_map,
     const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec,
     Tv *dst_vec)
@@ -253,18 +226,10 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int64 *block_map = basis->block_map;
-    const int64 *orbsym = basis->orbsym;
     const int64 num_irreps = basis->num_irreps;
 
-    int64 max_a_count = 0;
-    int64 max_b_count = 0;
-    for (int64 i = 0; i < num_blocks; ++i)
-    {
-        if (blocks[i].num_a > max_a_count)
-            max_a_count = blocks[i].num_a;
-        if (blocks[i].num_b > max_b_count)
-            max_b_count = blocks[i].num_b;
-    }
+    int max_a_count = (int)basis->max_a_count;
+    int max_b_count = (int)basis->max_b_count;
 
 #pragma omp parallel
     {
@@ -278,8 +243,8 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 axsym = get_string_sym(group.ax, orbsym);
-            const int64 bxsym = get_string_sym(group.bx, orbsym);
+            const int64 axsym = group.asym;
+            const int64 bxsym = group.bsym;
             const int64 bid = (dst_block.asym ^ axsym) * num_irreps + (dst_block.bsym ^ bxsym);
             const int64 src_block_idx = block_map[bid];
 
@@ -293,7 +258,7 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
             const bool is_same_block = (src_block_idx == dst_block_idx);
 
             int valid_na = compute_phases_symm<Rank, 0, Ti, Tv>(
-                group.ax, idx_map.a_idx_map,
+                group.ax, basis->a_idx_map,
                 dst_block.astrs, dst_block.num_a, zas, num_za,
                 wa0, phase_a.data(), max_a_count, rank,
                 src_a.data(), dst_a.data(), is_same_block, true);
@@ -302,7 +267,7 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
                 continue;
 
             int valid_nb = compute_phases_symm<Rank, 0, Ti, Tv>(
-                group.bx, idx_map.b_idx_map,
+                group.bx, basis->b_idx_map,
                 dst_block.bstrs, dst_block.num_b, zbs, num_zb,
                 wb0, phase_b.data(), max_b_count, rank,
                 src_b.data(), dst_b.data(), is_same_block, false);
@@ -338,7 +303,20 @@ void tvec_svd_network_otf(
     Tv *__restrict__ dst_vec)
 {
     const uint8 type = net->excit_types[idx];
-    const SVDGroup_OTF<Ti, Tv> &group = net->flat_groups[idx];
+    const int64 pos = net->sorted_idxs[idx];
+
+    const SVDGroup_OTF<Ti, Tv> *group_ptr;
+    switch (type)
+    {
+    case 0: group_ptr = &net->diag_groups[pos]; break;
+    case 1: group_ptr = &net->pure_a_groups[pos]; break;
+    case 2: group_ptr = &net->pure_b_groups[pos]; break;
+    case 3: group_ptr = &net->mixed_groups[pos]; break;
+    default:
+        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in tvec_svd" << std::endl;
+        return;
+    }
+    const SVDGroup_OTF<Ti, Tv> &group = *group_ptr;
     const int rank = group.rank;
 
 #pragma omp parallel for schedule(static)
@@ -349,40 +327,37 @@ void tvec_svd_network_otf(
 
     switch (type)
     {
-    case 0: // Diag
+    case 0:
         if (rank == 1)
-            tvec_contract_diag_otf_impl<1>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_diag_otf_impl<1>(basis, group, src_vec, dst_vec);
         else if (rank == 2)
-            tvec_contract_diag_otf_impl<2>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_diag_otf_impl<2>(basis, group, src_vec, dst_vec);
         else
-            tvec_contract_diag_otf_impl<0>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_diag_otf_impl<0>(basis, group, src_vec, dst_vec);
         break;
-    case 1: // Pure A
+    case 1:
         if (rank == 1)
-            tvec_contract_pure_a_otf_impl<1>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_a_otf_impl<1>(basis, group, src_vec, dst_vec);
         else if (rank == 2)
-            tvec_contract_pure_a_otf_impl<2>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_a_otf_impl<2>(basis, group, src_vec, dst_vec);
         else
-            tvec_contract_pure_a_otf_impl<0>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_a_otf_impl<0>(basis, group, src_vec, dst_vec);
         break;
-    case 2: // Pure B
+    case 2:
         if (rank == 1)
-            tvec_contract_pure_b_otf_impl<1>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_b_otf_impl<1>(basis, group, src_vec, dst_vec);
         else if (rank == 2)
-            tvec_contract_pure_b_otf_impl<2>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_b_otf_impl<2>(basis, group, src_vec, dst_vec);
         else
-            tvec_contract_pure_b_otf_impl<0>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_pure_b_otf_impl<0>(basis, group, src_vec, dst_vec);
         break;
-    case 3: // Mixed
+    case 3:
         if (rank == 1)
-            tvec_contract_mixed_otf_impl<1>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_mixed_otf_impl<1>(basis, group, src_vec, dst_vec);
         else if (rank == 2)
-            tvec_contract_mixed_otf_impl<2>(basis, net->map, group, src_vec, dst_vec);
+            tvec_contract_mixed_otf_impl<2>(basis, group, src_vec, dst_vec);
         else
-            tvec_contract_mixed_otf_impl<0>(basis, net->map, group, src_vec, dst_vec);
-        break;
-    default:
-        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in expm_svd" << std::endl;
+            tvec_contract_mixed_otf_impl<0>(basis, group, src_vec, dst_vec);
         break;
     }
 }
