@@ -4,18 +4,18 @@
 
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_contract_diag_batched_impl(
-    const BasisManager<Ti> *basis,
+    const BasisView<Ti> &view,
     const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
     const Tv *src_vec, Tv *dst_vec)
 {
     constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
 
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
+    const int max_a_count = view.max_a_count;
+    const int max_b_count = view.max_b_count;
     const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
+    const BlockDesc<Ti> *blocks = view.blocks;
+    const int64 num_blocks = view.num_blocks;
 
     std::vector<Tv> phase_b(BATCH_SIZE * shift);
 
@@ -69,21 +69,21 @@ static inline void gather_contract_diag_batched_impl(
 
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_contract_pure_a_batched_impl(
-    const BasisManager<Ti> *basis,
+    const BasisView<Ti> &view,
     const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
     const Tv *src_vec, Tv *dst_vec)
 {
     constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
 
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
+    const int max_a_count = view.max_a_count;
+    const int max_b_count = view.max_b_count;
     const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int64 *block_map = basis->block_map;
-    const int64 num_irreps = basis->num_irreps;
-    const int *a_idx_map = basis->a_idx_map;
+    const BlockDesc<Ti> *blocks = view.blocks;
+    const int64 num_blocks = view.num_blocks;
+    const int64 *block_map = view.block_map;
+    const int64 num_irreps = view.num_irreps;
+    const int *a_idx_map = view.a_idx_map;
 
     std::vector<Tv> phase_b(BATCH_SIZE * shift);
     std::vector<int> src_block_idxs(BATCH_SIZE);
@@ -157,21 +157,21 @@ static inline void gather_contract_pure_a_batched_impl(
 
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_contract_pure_b_batched_impl(
-    const BasisManager<Ti> *basis,
+    const BasisView<Ti> &view,
     const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
     const Tv *src_vec, Tv *dst_vec)
 {
     constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
 
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
+    const int max_a_count = view.max_a_count;
+    const int max_b_count = view.max_b_count;
     const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int64 *block_map = basis->block_map;
-    const int64 num_irreps = basis->num_irreps;
-    const int *b_idx_map = basis->b_idx_map;
+    const BlockDesc<Ti> *blocks = view.blocks;
+    const int64 num_blocks = view.num_blocks;
+    const int64 *block_map = view.block_map;
+    const int64 num_irreps = view.num_irreps;
+    const int *b_idx_map = view.b_idx_map;
 
     std::vector<int> src_b_idxs(BATCH_SIZE * max_b_count);
     std::vector<int> dst_b_idxs(BATCH_SIZE * max_b_count);
@@ -247,10 +247,10 @@ static inline void gather_contract_pure_b_batched_impl(
                         const int src_block_idx = src_block_idxs[batch_idx];
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const int rank = group.rank;
-                        const Tv *sa = src_vec + src_block.offset + a * src_block.num_b;
                         const Tv *pb = batch_phase.data() + batch_idx * shift;
                         const int *si = src_b_idxs.data() + batch_idx * max_b_count;
                         const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
+                        const Tv *sa = src_vec + src_block.offset + a * src_block.num_b;
 
 #pragma omp simd
                         for (int b = 0; b < valid_b_count; ++b)
@@ -267,22 +267,22 @@ static inline void gather_contract_pure_b_batched_impl(
 
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_contract_mixed_batched_impl(
-    const BasisManager<Ti> *basis,
+    const BasisView<Ti> &view,
     const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
     const Tv *src_vec, Tv *dst_vec)
 {
     constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
 
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
+    const int max_a_count = view.max_a_count;
+    const int max_b_count = view.max_b_count;
     const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int64 *block_map = basis->block_map;
-    const int64 num_irreps = basis->num_irreps;
-    const int *a_idx_map = basis->a_idx_map;
-    const int *b_idx_map = basis->b_idx_map;
+    const BlockDesc<Ti> *blocks = view.blocks;
+    const int64 num_blocks = view.num_blocks;
+    const int64 *block_map = view.block_map;
+    const int64 num_irreps = view.num_irreps;
+    const int *a_idx_map = view.a_idx_map;
+    const int *b_idx_map = view.b_idx_map;
 
     std::vector<int> src_b_idxs(BATCH_SIZE * max_b_count);
     std::vector<int> dst_b_idxs(BATCH_SIZE * max_b_count);
@@ -383,7 +383,7 @@ static inline void gather_contract_mixed_batched_impl(
 
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_chunks_by_rank(
-    const BasisManager<Ti> *basis,
+    const BasisView<Ti> &view,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
     const Tv *src_vec, Tv *dst_vec)
 {
@@ -417,13 +417,13 @@ static inline void dispatch_chunks_by_rank(
             switch (dispatch_rank)
             {
             case 1:
-                gather_contract_diag_batched_impl<1>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_diag_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             case 2:
-                gather_contract_diag_batched_impl<2>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_diag_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             default:
-                gather_contract_diag_batched_impl<0>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_diag_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             }
         }
@@ -432,13 +432,13 @@ static inline void dispatch_chunks_by_rank(
             switch (dispatch_rank)
             {
             case 1:
-                gather_contract_pure_a_batched_impl<1>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_a_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             case 2:
-                gather_contract_pure_a_batched_impl<2>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_a_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             default:
-                gather_contract_pure_a_batched_impl<0>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_a_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             }
         }
@@ -447,13 +447,13 @@ static inline void dispatch_chunks_by_rank(
             switch (dispatch_rank)
             {
             case 1:
-                gather_contract_pure_b_batched_impl<1>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_b_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             case 2:
-                gather_contract_pure_b_batched_impl<2>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_b_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             default:
-                gather_contract_pure_b_batched_impl<0>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_pure_b_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             }
         }
@@ -462,13 +462,13 @@ static inline void dispatch_chunks_by_rank(
             switch (dispatch_rank)
             {
             case 1:
-                gather_contract_mixed_batched_impl<1>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_mixed_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             case 2:
-                gather_contract_mixed_batched_impl<2>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_mixed_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             default:
-                gather_contract_mixed_batched_impl<0>(basis, chunk_ptr, chunk_size, src_vec, dst_vec);
+                gather_contract_mixed_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
                 break;
             }
         }
@@ -479,16 +479,18 @@ static inline void dispatch_chunks_by_rank(
 template <typename Ti, typename Tv>
 void contract_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, const Tv *src_vec, Tv *dst_vec)
 {
+    const BasisView<Ti> &view = basis->view;
+
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
         dst_vec[i] = {};
     }
 
-    dispatch_chunks_by_rank<0>(basis, net->diag_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank<1>(basis, net->pure_a_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank<2>(basis, net->pure_b_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank<3>(basis, net->mixed_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<0>(view, net->diag_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<1>(view, net->pure_a_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<2>(view, net->pure_b_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank<3>(view, net->mixed_groups, src_vec, dst_vec);
 }
 
 template <typename Ti, typename Tv>

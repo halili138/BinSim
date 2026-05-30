@@ -1423,7 +1423,86 @@ function run_exact_vqe_adaptive(
 end
 
 
-function run_vqte_tfim_pure(
+# V_vec = zeros(Float64, M_params)
+# M_mat = zeros(Float64, M_params, M_params)
+# for i in 1:basis.dim
+#     # 获取第 i 个分量对所有参数的偏导数 (长度为 M_params 的向量)
+#     g_alpha = compute_gradient_for_basis_state(i)
+
+#     # 获取 Hpsi_im 的第 i 个分量 (标量)
+#     h_alpha = Hpsi_im[i]
+
+#     # 累加 V_vec
+#     V_vec .+= real.(conj.(g_alpha) .* h_alpha)
+
+#     # 累加 M_mat (向量的外积 g * g')
+#     # M_mat .+= Re(g_alpha * g_alpha')
+#     BLAS.ger!(1.0, real.(g_alpha), real.(g_alpha), M_mat)
+#     BLAS.ger!(1.0, imag.(g_alpha), imag.(g_alpha), M_mat)
+# end
+
+# v = v0
+# for k in 1:M_params
+#     v = expm(pool[k], theta[k], v)
+# end
+
+# M_mat = zeros(Float64, M_params, M_params)
+# gi = zeros(ComplexF64, M_params)
+# for ϕi in 1:dim
+#     for k in 1:M_params
+#         j, phase_j = apply_operator(pool[k], ϕi)
+#         ϕj = v[j] 
+#         gi[k] = phase_j  * ϕj
+#     end
+#     # 累加 M_mat (向量的外积 g * g')
+#     # M_mat .+= Re(g_alpha * g_alpha')
+#     BLAS.ger!(1.0, real.(gi), real.(gi), M_mat)
+#     BLAS.ger!(1.0, imag.(gi), imag.(gi), M_mat)
+# end
+
+M_mat = zeros(Float64, M_params, M_params)
+# 只需要两个工作向量，内存占用永远停留在 O(dim)
+v_work = zeros(ComplexF64, dim) 
+v_branch = zeros(ComplexF64, dim) 
+
+# 外层循环：确定我们要计算 M 矩阵的哪一行 (第 i 行)
+for i in 1:M_params
+    # 1. 传播到第 i 个门：拿到真实的中间态 |φ_i>
+    v_work .= psi_0
+    for step in 1:(i-1)
+        f_expm(step, theta[step], v_work)
+    end
+    
+    # 2. 踢一脚：作用生成元 τ_i
+    f_tvec(i, v_work, v_branch)
+    @. v_branch = -im * v_branch # 这就是 τ_i |φ_i>
+    
+    # ==========================================
+    # 核心：根据传播的进行，依次求出 M 的第 i 行的每一个元素
+    # ==========================================
+    
+    # 对角线元素 M_ii
+    M_mat[i, i] = real(dot(v_branch, v_branch))
+    
+    # 向后传播，依次求 M_ij (j > i)
+    for j in (i+1):M_params
+        # 此时 v_branch 和 v_work 同步向后演化一个门
+        f_expm(j, theta[j], v_branch)
+        f_expm(j, theta[j], v_work) 
+        
+        # 临时算出 τ_j 作用在当前演化状态上的结果
+        v_temp = zeros(ComplexF64, dim)
+        f_tvec(j, v_work, v_temp)
+        @. v_temp = -im * v_temp
+        
+        # 直接求内积，得到 M_ij！(酉算符对消的体现)
+        val = real(dot(v_branch, v_temp))
+        M_mat[i, j] = val
+        M_mat[j, i] = val # 利用对称性
+    end
+end
+
+function run_vqte_tfim_fast(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
     pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
@@ -1445,7 +1524,7 @@ function run_vqte_tfim_pure(
 
     v  = zeros(Float64, basis.dim)
     Hv = zeros(Float64, basis.dim)
-
+    
     vs  = [zeros(Float64, basis.dim) for _ in 1:N]
     dvs = [zeros(Float64, basis.dim) for _ in 1:N]
 
@@ -1474,15 +1553,15 @@ function run_vqte_tfim_pure(
         D = reduce(hcat, dvs) 
         V = zeros(Float64, N)
         M = zeros(Float64, N, N)
-
+        
         V .= D' * Hv
         M .= D' * D
 
         x_dot = (M + epsilon * I) \ V
-
+        
         # 修复1：加上负号，实现真正的虚时演化/梯度下降
         @. x -= dt * x_dot
-
+        
         push!(x_hist, copy(x))
 
         if step % 10 == 0 || step == 1
@@ -1497,606 +1576,59 @@ function run_vqte_tfim_pure(
 end
 
 
-function run_vqite_tfim(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-    v0::Vector{Float64},
-    e_scale::Float64;
-    dt::Float64=0.01,
-    max_step::Int=500,
-    epsilon::Float64=1e-4
-) where {Ti,Tv,TK,TV}
-    println("============================================================================")
-    println("--- Fast VQTE for TFIM via OTF Network (With Strict Trajectory Tracking) ---")
 
-    f_hvec = get_hvec(basis, ham, is_time=false)
-    f_expm, f_tvec, f_grad, f_backgrad, f_batchgrad, f_tran = get_tvec(basis, pool, expm=true, tvec=true)
 
-    N = length(pool)
-    x = zeros(Float64, N)
+# ======================================================================
+# 全伴随反向传播框架 (Full Adjoint Backward Engine)
+# 时间复杂度: O(N^2) 门演化
+# 空间复杂度: 严格 O(dim) —— 无论 N 多大，永远只占用 4 个向量！
+# ======================================================================
 
-    # === 历史记录追踪器 ===
-    x_hist = [copy(x)]
-    e_hist = Float64[]
-    fid_hist = Float64[]  # 严格的瞬时轨迹保真度：|<ψ_exact(t)|ψ_VQTE(t)>|²
-    cond_hist = Float64[] # M 矩阵条件数
+# 1. 预分配 4 个工作向量 (压榨内存的极限)
+v    = zeros(ComplexF64, basis.dim) # 主状态，从尾部向头部回退
+Hv   = zeros(ComplexF64, basis.dim) # 伴随状态，用于求梯度 V
+bv   = zeros(ComplexF64, basis.dim) # 记录第 j 步的分支态 τ_j |ϕ_{j-1}> 
+vt   = zeros(ComplexF64, basis.dim) # 内层循环用：临时主状态
+M    = zeros(Float64, N, N)
+V    = zeros(Float64, N)
 
-    # === VQTE 空间 ===
-    v = zeros(Float64, basis.dim)
-    Hv = zeros(Float64, basis.dim)
-    vs = [zeros(Float64, basis.dim) for _ in 1:N]
-    dvs = [zeros(Float64, basis.dim) for _ in 1:N]
-
-    # === 精确演化空间 (与循环同步推进) ===
-    v_exact = copy(v0)
-    normalize!(v_exact)
-    # 分配 RK4 所需的 4 个斜率向量空间和一个临时态空间
-    ws_rk4 = [zeros(Float64, basis.dim) for _ in 1:4]
-    vt_rk4 = zeros(Float64, basis.dim)
-
-    @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|     Time\n")
-
-    time_ops = @elapsed for step in 1:max_step
-        # ------------------------------------------------------------------
-        # 1. 变分引擎向前演化一个 dt
-        # ------------------------------------------------------------------
-        v .= v0
-        for k in 1:N
-            vs[k] .= v
-            f_expm(k, x[k], v)
-        end
-        vnorm = norm(v)^2
-
-        f_hvec(v, Hv)
-        e_curr = dot(v, Hv) / vnorm
-        push!(e_hist, e_curr)
-
-        # ------------------------------------------------------------------
-        # 2. 精确引擎同步向前演化一个 dt (严格对应你 method.jl 中的 rk4 逻辑)
-        #    方程: dψ/dτ = -H|ψ>
-        # ------------------------------------------------------------------
-        # k1 = -H * v_exact
-        f_hvec(v_exact, ws_rk4[1])
-        ws_rk4[1] .*= -1.0
-
-        # k2 = -H * (v_exact + dt/2 * k1)
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[1]
-        f_hvec(vt_rk4, ws_rk4[2])
-        ws_rk4[2] .*= -1.0
-
-        # k3 = -H * (v_exact + dt/2 * k2)
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[2]
-        f_hvec(vt_rk4, ws_rk4[3])
-        ws_rk4[3] .*= -1.0
-
-        # k4 = -H * (v_exact + dt * k3)
-        @. vt_rk4 = v_exact + dt * ws_rk4[3]
-        f_hvec(vt_rk4, ws_rk4[4])
-        ws_rk4[4] .*= -1.0
-
-        # ψ(t + dt) = ψ(t) + dt/6 * (k1 + 2k2 + 2k3 + k4)
-        @. v_exact += dt / 6 * (ws_rk4[1] + 2 * ws_rk4[2] + 2 * ws_rk4[3] + ws_rk4[4])
-        normalize!(v_exact) # 虚时演化必须每一步重新归一化
-
-        # ------------------------------------------------------------------
-        # 3. 计算严格的瞬时保真度
-        # ------------------------------------------------------------------
-        # 此时 v 和 v_exact 都严格处于相同的演化时间 τ = step * dt
-        fid = abs2(dot(v, v_exact)) / vnorm # v_exact 已经归一化
-        push!(fid_hist, fid)
-
-        # ------------------------------------------------------------------
-        # 4. 计算雅可比矩阵并更新变分参数
-        # ------------------------------------------------------------------
-        for k in 1:N
-            f_tvec(k, vs[k], dvs[k])
-            for j in k:N
-                f_expm(j, x[j], dvs[k])
-            end
-        end
-
-        D = reduce(hcat, dvs)
-        V = zeros(Float64, N)
-        M = zeros(Float64, N, N)
-
-        V .= D' * Hv
-        M .= D' * D
-
-        cond_M = cond(M)
-        push!(cond_hist, cond_M)
-
-        x_dot = (M + epsilon * I) \ V
-        @. x -= dt * x_dot
-        push!(x_hist, copy(x))
-
-        if step % 10 == 0 || step == 1
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, cond_M, norm(x_dot), step * dt)
-        end
-    end
-
-    @printf("\nFast VQTE completed in %.4f seconds.\n", time_ops)
-    println("============================================================================\n")
-
-    return (x=x_hist, e=e_hist, fid=fid_hist, cond=cond_hist)
+v .= v0
+for k in 1:N
+    f_expm(k, x[k], v)
 end
+vnorm = norm(v) ^ 2
+f_hvec(v, Hv)
+e_curr = real(dot(v, Hv)) / vnorm
+@. Hv = -im * (Hv - e_curr * v) # 初始化终点伴随态 |L_N> = -i(H - E)|ψ_N> 
 
+# ==========================================
+# (O(N^2) 反向传播)
+# ==========================================
+for j in N:-1:1
+    # [A] 状态往回退一步 (穿过 U_j)
+    f_expm(j, -x[j], v)    # 变成 |ϕ{j-1}>
+    f_expm(j, -x[j], Hv)   # 变成 |L_{j-1}>
 
-function run_vqrte_tfim(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-    v0::Vector{Tv},
-    e_scale::Float64;
-    dt::Float64=0.01,
-    max_step::Int=500,
-    epsilon::Float64=1e-4,
-) where {Ti,Tv,TK,TV}
-    println("============================================================================")
-    println("--- Quantum Real-Time Evolution (VQRTE) with Strict Trajectory Tracking ---")
-    @assert Tv <: Complex
-
-    f_hvec = get_hvec(basis, ham, is_time=false)
-    f_expm, f_tvec, f_grad, f_backgrad, f_batchgrad, f_tran = get_tvec(basis, pool, expm=true, tvec=true)
-
-    N = length(pool)
-    x = zeros(Float64, N)
-
-    x_hist = [copy(x)]
-    e_hist = Float64[]
-    fid_hist = Float64[]
-    cond_hist = Float64[]
-
-    v = zeros(ComplexF64, basis.dim)
-    Hv = zeros(ComplexF64, basis.dim)
-    vs = [zeros(ComplexF64, basis.dim) for _ in 1:N]
-    dvs = [zeros(ComplexF64, basis.dim) for _ in 1:N]
-
-    v_exact = complex.(v0)
-    normalize!(v_exact)
-    ws_rk4 = [zeros(ComplexF64, basis.dim) for _ in 1:4]
-    vt_rk4 = zeros(ComplexF64, basis.dim)
-
-    @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|     Time\n")
-
-    time_ops = @elapsed for step in 1:max_step
-        v .= v0
-        for k in 1:N
-            vs[k] .= v
-            f_expm(k, x[k], v)
-        end
-        vnorm = norm(v)^2
-
-        f_hvec(v, Hv)
-        e_curr = real(dot(v, Hv)) / vnorm # 实时演化中能量应该守恒！
-        push!(e_hist, e_curr)
-
-        # ==========================================
-        # 核心修改 2：RK4 解真正的薛定谔方程 (带 -im)
-        # ==========================================
-        # k1 = -i * H * v_exact
-        f_hvec(v_exact, ws_rk4[1])
-        ws_rk4[1] .*= -im
-
-        # k2 = -i * H * (v_exact + dt/2 * k1)
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[1]
-        f_hvec(vt_rk4, ws_rk4[2])
-        ws_rk4[2] .*= -im
-
-        # k3 = -i * H * (v_exact + dt/2 * k2)
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[2]
-        f_hvec(vt_rk4, ws_rk4[3])
-        ws_rk4[3] .*= -im
-
-        # k4 = -i * H * (v_exact + dt * k3)
-        @. vt_rk4 = v_exact + dt * ws_rk4[3]
-        f_hvec(vt_rk4, ws_rk4[4])
-        ws_rk4[4] .*= -im
-
-        # ψ(t + dt) = ψ(t) + dt/6 * (k1 + 2k2 + 2k3 + k4)
-        @. v_exact += dt / 6 * (ws_rk4[1] + 2 * ws_rk4[2] + 2 * ws_rk4[3] + ws_rk4[4])
-        normalize!(v_exact)
-
-        # 计算保真度
-        fid = abs2(dot(v, v_exact)) / vnorm
-        push!(fid_hist, fid)
-
-        for k in 1:N
-            f_tvec(k, vs[k], dvs[k])
-            for j in k:N
-                f_expm(j, x[j], dvs[k])
-            end
-        end
-
-        D = reduce(hcat, dvs) # 现在 D 是复数矩阵了
-        V = zeros(Float64, N)
-        M = zeros(Float64, N, N)
-
-        # ==========================================
-        # 核心修改 3：V 和 M 的实时 TDVP 物理定义
-        # ==========================================
-        iHv = -im .* (Hv .- e_curr .* v)  
+    # [B] 在第 j 步制造物理分支
+    f_tvec(j, v, bv) # bv = τ_j |ϕ{j-1}>
+    
+    # [C] 顺手免费收割！
+    M[j, j] = real(dot(bv, bv))
+    V[j]    = real(dot(bv, Hv))   
+    
+    # [D] 内层循环：继续带着分支往回退，求 M 的交叉项
+    vt .= v
+    
+    for i in (j-1):-1:1
+        # [D.1] 两个态同时向后退穿过 U_i
+        f_expm(i, -x[i], vt)    # 变成 |ϕ_{i-1}>
+        f_expm(i, -x[i], bv)    # 变成了 U_i^\dagger ... U_{j-1}^\dagger τ_j |ϕ_{j-1}>
         
-        V .= real.(D' * iHv) # 这就是 Im(<∂k | (H-E) | ψ>)
-        M .= real.(D' * D)   
-
-        cond_M = cond(M)
-        push!(cond_hist, cond_M)
-
-        # ==========================================
-        # 核心修改 4：SVD 截断伪逆 (你写得非常完美，直接保留)
-        # ==========================================
-        F = svd(M)
-        sv_tol = 1e-4  # 截断阈值，对于完全池可以适当调大到 1e-3
-        inv_S = [s > sv_tol ? 1.0 / s : 0.0 for s in F.S]
-        M_pinv = F.V * Diagonal(inv_S) * F.U'
+        # [D.2] 绝妙的接口复用与物理对消 (注意反埃尔米特负号！)
+        # val = <τ_i ϕ_{i-1} | bv> = - <ϕ_{i-1} | τ_i | bv>
+        val = -real(f_tran(i, vt, bv)) 
         
-        x_dot = M_pinv * V
-
-        # 更新参数
-        @. x += dt * x_dot   
-        push!(x_hist, copy(x))
-        
-        if step % 10 == 0 || step == 1
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, cond_M, norm(x_dot), step * dt)
-        end
+        M[i, j] = val
+        M[j, i] = val
     end
-
-    @printf("\nReal-Time VQRTE completed in %.4f seconds.\n", time_ops)
-    println("============================================================================\n")
-
-    return (x=x_hist, e=e_hist, fid=fid_hist, cond=cond_hist)
-end
-
-
-# function run_vqrte_tfim_native(
-#     basis::BasisManager,
-#     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
-#     pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-#     v0::Vector{Tv},
-#     e_scale::Float64; 
-#     dt::Float64=0.01,
-#     max_step::Int=500,
-#     sv_tol::Float64=1e-4,  # SVD 截断阈值，池子严重过完备(如GSD)时可调大至 1e-3
-#     per_print::Int=10,
-# ) where {Ti,Tv,TK,TV}
-#     # 强制要求底层以复数编译，以支撑动力学的相位流转
-#     @assert Tv == ComplexF64 "VQRTE requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
-
-#     println("============================================================================")
-#     println("--- Native Complex VQRTE with Strict Trajectory Tracking (RK4 Engine) ---")
-
-#     f_hvec = get_hvec(basis, ham, is_time=false)
-#     f_expm, f_tvec, f_grad, f_backgrad, f_batchgrad, f_tran = get_tvec(basis, pool, expm=true, tvec=true)
-
-#     N = length(pool)
-#     x = zeros(Float64, N)
-
-#     x_hist = [copy(x)]
-#     e_hist = Float64[]
-#     fid_hist = Float64[]
-#     cond_hist = Float64[]
-
-#     # ==========================================
-#     # 内存预分配 1：变分波函数与向后传播缓存
-#     # ==========================================
-#     v = zeros(ComplexF64, basis.dim)
-#     Hv = zeros(ComplexF64, basis.dim)
-#     vs = [zeros(ComplexF64, basis.dim) for _ in 1:N]
-#     dvs = [zeros(ComplexF64, basis.dim) for _ in 1:N]
-
-#     # ==========================================
-#     # 内存预分配 2：变分参数 x 的 RK4 缓存
-#     # ==========================================
-#     k1 = zeros(Float64, N)
-#     k2 = zeros(Float64, N)
-#     k3 = zeros(Float64, N)
-#     k4 = zeros(Float64, N)
-#     x_temp = zeros(Float64, N)
-
-#     # ==========================================
-#     # 内存预分配 3：精确态 v_exact 的 RK4 缓存
-#     # ==========================================
-#     v_exact = copy(v0)
-#     normalize!(v_exact)
-#     ws_rk4 = [zeros(ComplexF64, basis.dim) for _ in 1:4]
-#     vt_rk4 = zeros(ComplexF64, basis.dim)
-
-#     # ==========================================
-#     # 核心闭包：给定任意参数 x_val，计算参数导数 dx_out 和 当前能量 E_val
-#     # ==========================================
-#     function compute_xdot_and_energy!(dx_out, x_val)
-#         # 1. 重新从 v0 演化出当前参数下的波函数
-#         v .= v0
-#         for k in 1:N
-#             vs[k] .= v
-#             f_expm(k, x_val[k], v)
-#         end
-#         vnorm = norm(v)^2
-
-#         # 2. 计算能量与 Hv
-#         f_hvec(v, Hv)
-#         E_val = real(dot(v, Hv)) / vnorm
-
-#         # 3. 计算向后传播的雅可比偏导数列
-#         for k in 1:N
-#             f_tvec(k, vs[k], dvs[k])
-#             for j in k:N
-#                 f_expm(j, x_val[j], dvs[k])
-#             end
-#         end
-
-#         # 4. 组装 M 和 V (附带能量平移，剔除全局相位陷阱)
-#         D_mat = reduce(hcat, dvs)
-#         iHv_shifted = -im .* (Hv .- E_val .* v)
-        
-#         V_vec = real.(D_mat' * iHv_shifted)
-#         M_mat = real.(D_mat' * D_mat)
-
-#         # 记录每步初始状态的 M 矩阵条件数（仅 k1 时记录）
-#         if dx_out === k1
-#             push!(cond_hist, cond(M_mat))
-#         end
-
-#         # 5. SVD 截断伪逆求解
-#         F = svd(M_mat)
-#         inv_S = [s > sv_tol ? 1.0 / s : 0.0 for s in F.S]
-#         M_pinv = F.V * Diagonal(inv_S) * F.U'
-        
-#         dx_out .= M_pinv * V_vec
-#         return E_val
-#     end
-
-#     @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|      Time\n")
-
-#     time_ops = @elapsed for step in 1:max_step
-        
-#         # ==========================================
-#         # 1. 变分参数 x 的 RK4 演化
-#         # ==========================================
-#         # 第 1 步 (计算 k1 并顺便获取当前真实演化能量)
-#         e_curr = compute_xdot_and_energy!(k1, x)
-#         push!(e_hist, e_curr)
-        
-#         # 第 2 步
-#         @. x_temp = x + 0.5 * dt * k1
-#         compute_xdot_and_energy!(k2, x_temp)
-        
-#         # 第 3 步
-#         @. x_temp = x + 0.5 * dt * k2
-#         compute_xdot_and_energy!(k3, x_temp)
-        
-#         # 第 4 步
-#         @. x_temp = x + dt * k3
-#         compute_xdot_and_energy!(k4, x_temp)
-        
-#         # 综合更新 x
-#         @. x += dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-#         push!(x_hist, copy(x))
-
-#         # ==========================================
-#         # 2. 精确态 v_exact 的 RK4 演化 (严格参照 dψ/dt = -iHψ)
-#         # ==========================================
-#         f_hvec(v_exact, ws_rk4[1])
-#         ws_rk4[1] .*= -im
-        
-#         @. vt_rk4 = v_exact + dt / 2 * ws_rk4[1]
-#         f_hvec(vt_rk4, ws_rk4[2])
-#         ws_rk4[2] .*= -im
-        
-#         @. vt_rk4 = v_exact + dt / 2 * ws_rk4[2]
-#         f_hvec(vt_rk4, ws_rk4[3])
-#         ws_rk4[3] .*= -im
-        
-#         @. vt_rk4 = v_exact + dt * ws_rk4[3]
-#         f_hvec(vt_rk4, ws_rk4[4])
-#         ws_rk4[4] .*= -im
-        
-#         @. v_exact += dt / 6 * (ws_rk4[1] + 2 * ws_rk4[2] + 2 * ws_rk4[3] + ws_rk4[4])
-#         normalize!(v_exact)
-
-#         # ==========================================
-#         # 3. 轨迹保真度追踪
-#         # ==========================================
-#         # 必须用更新后真实的 x 重新生成一遍波函数，以比对同步后的 v_exact
-#         v .= v0
-#         for k in 1:N
-#             f_expm(k, x[k], v)
-#         end
-#         vnorm = norm(v)^2
-#         fid = abs2(dot(v, v_exact)) / vnorm
-#         push!(fid_hist, fid)
-
-#         # 打印日志
-#         if step % per_print == 0 || step == 1
-#             cond_M = isempty(cond_hist) ? NaN : cond_hist[end]
-#             @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.3e    %.4g\n",
-#                 step, e_curr, abs(e_curr - e_scale), fid, cond_M, norm(k1), step * dt)
-#         end
-#     end
-
-#     @printf("\nNative Complex VQRTE (RK4) completed in %.4f seconds.\n", time_ops)
-#     println("============================================================================\n")
-
-#     return (x=x_hist, e=e_hist, fid=fid_hist, cond=cond_hist)
-# end
-
-function run_vqrte_tfim_native(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-    v0::Vector{Tv},
-    e_scale::Float64; 
-    dt::Float64=0.01,
-    max_step::Int=500,
-    sv_tol::Float64=1e-4,  # SVD 截断阈值，池子严重过完备(如GSD)时可调大至 1e-3
-    per_print::Int=10,
-) where {Ti,Tv,TK,TV}
-    # 强制要求底层以复数编译，以支撑动力学的相位流转
-    @assert Tv == ComplexF64 "VQRTE requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
-
-    println("============================================================================")
-    println("--- Native Complex VQRTE with Strict Trajectory Tracking (RK4 Engine) ---")
-
-    f_hvec = get_hvec(basis, ham, is_time=false)
-
-    print("Pre-compiling Pool OTF ... ")
-    time_ops = @elapsed pool_otf = OTF(basis, pool)
-    @printf("Done in %.4f seconds\n", time_ops)
-
-    f_expm = (idx, θ, vec) -> expm_svd!(basis, pool_otf, idx, θ, vec)
-    f_tvec = (idx, vec, Tvec) -> tvec_svd!(basis, pool_otf, idx, vec, Tvec)
-    f_backtran = (idx, θ, lvec, rvec, bvec) -> return backtran_svd!(basis, pool_otf, idx, θ, lvec, rvec, bvec)
-
-    N = length(pool)
-    x = zeros(Float64, N)
-
-    x_hist = [copy(x)]
-    e_hist = Float64[]
-    fid_hist = Float64[]
-    cond_hist = Float64[]
-
-    # ==========================================
-    # 内存预分配 1：变分波函数与向后传播缓存
-    # ==========================================
-    v    = zeros(ComplexF64, basis.dim) # 主状态，从尾部向头部回退
-    Hv   = zeros(ComplexF64, basis.dim) # 伴随状态，用于求梯度 V
-    bv   = zeros(ComplexF64, basis.dim) # 记录第 j 步的分支态 τ_j |ϕ_{j-1}> 
-    vt   = zeros(ComplexF64, basis.dim) # 内层循环用：临时主状态
-    temp_tau = zeros(ComplexF64, basis.dim)
-    M    = zeros(Float64, N, N)
-    V    = zeros(Float64, N)
-    # ==========================================
-    # 内存预分配 2：变分参数 x 的 RK4 缓存
-    # ==========================================
-    k1 = zeros(Float64, N)
-    k2 = zeros(Float64, N)
-    k3 = zeros(Float64, N)
-    k4 = zeros(Float64, N)
-    x_temp = zeros(Float64, N)
-
-    # ==========================================
-    # 内存预分配 3：精确态 v_exact 的 RK4 缓存
-    # ==========================================
-    v_exact = copy(v0)
-    normalize!(v_exact)
-    ws_rk4 = [zeros(ComplexF64, basis.dim) for _ in 1:4]
-    vt_rk4 = zeros(ComplexF64, basis.dim)
-
-    function compute_xdot_and_energy!(dx_out, x_val)
-        v .= v0
-        for k in 1:N
-            f_expm(k, x_val[k], v)
-        end
-        vnorm = norm(v) ^ 2
-        f_hvec(v, Hv)
-        E_val = real(dot(v, Hv)) / vnorm
-        @. Hv = -im * (Hv - E_val * v)
-
-        for j in N:-1:1
-            # f_expm(j, -x_val[j], v) 
-            # f_expm(j, -x_val[j], Hv) 
-            # f_tvec(j, v, bv)
-            f_backtran(j, -x_val[j], v, Hv, bv)
-
-            M[j, j] = real(dot(bv, bv))
-            V[j]    = real(dot(bv, Hv))   
-            
-            vt .= v
-            for i in (j-1):-1:1
-                # f_expm(i, -x_val[i], vt)
-                # f_expm(i, -x_val[i], bv) 
-                # f_tvec(i, vt, temp_tau)
-                f_backtran(i, -x_val[i], vt, bv, temp_tau)
-
-                val = real(dot(temp_tau, bv)) 
-                M[i, j] = val
-                M[j, i] = val
-            end
-        end
-
-        # 记录每步初始状态的 M 矩阵条件数（仅 k1 时记录）
-        if dx_out === k1
-            push!(cond_hist, cond(M))
-        end
-
-        # 5. SVD 截断伪逆求解
-        F = svd(M)
-        inv_S = [s > sv_tol ? 1.0 / s : 0.0 for s in F.S]
-        M_pinv = F.V * Diagonal(inv_S) * F.U'
-        
-        dx_out .= M_pinv * V
-
-        return E_val
-    end
-
-    @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|      Time\n")
-
-    time_ops = @elapsed for step in 1:max_step
-        e_curr = compute_xdot_and_energy!(k1, x)
-        push!(e_hist, e_curr)
-        
-        # 第 2 步
-        @. x_temp = x + 0.5 * dt * k1
-        compute_xdot_and_energy!(k2, x_temp)
-        
-        # 第 3 步
-        @. x_temp = x + 0.5 * dt * k2
-        compute_xdot_and_energy!(k3, x_temp)
-        
-        # 第 4 步
-        @. x_temp = x + dt * k3
-        compute_xdot_and_energy!(k4, x_temp)
-        
-        # 综合更新 x
-        @. x += dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-        push!(x_hist, copy(x))
-
-        # ==========================================
-        # 2. 精确态 v_exact 的 RK4 演化 (严格参照 dψ/dt = -iHψ)
-        # ==========================================
-        f_hvec(v_exact, ws_rk4[1])
-        ws_rk4[1] .*= -im
-        
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[1]
-        f_hvec(vt_rk4, ws_rk4[2])
-        ws_rk4[2] .*= -im
-        
-        @. vt_rk4 = v_exact + dt / 2 * ws_rk4[2]
-        f_hvec(vt_rk4, ws_rk4[3])
-        ws_rk4[3] .*= -im
-        
-        @. vt_rk4 = v_exact + dt * ws_rk4[3]
-        f_hvec(vt_rk4, ws_rk4[4])
-        ws_rk4[4] .*= -im
-        
-        @. v_exact += dt / 6 * (ws_rk4[1] + 2 * ws_rk4[2] + 2 * ws_rk4[3] + ws_rk4[4])
-        normalize!(v_exact)
-
-        # ==========================================
-        # 3. 轨迹保真度追踪
-        # ==========================================
-        # 必须用更新后真实的 x 重新生成一遍波函数，以比对同步后的 v_exact
-        v .= v0
-        for k in 1:N
-            f_expm(k, x[k], v)
-        end
-        vnorm = norm(v)^2
-        fid = abs2(dot(v, v_exact)) / vnorm
-        push!(fid_hist, fid)
-
-        # 打印日志
-        if step % per_print == 0 || step == 1
-            cond_M = isempty(cond_hist) ? NaN : cond_hist[end]
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, cond_M, norm(k1), step * dt)
-        end
-    end
-
-    @printf("\nNative Complex VQRTE (RK4) completed in %.4f seconds.\n", time_ops)
-    println("============================================================================\n")
-
-    return (x=x_hist, e=e_hist, fid=fid_hist, cond=cond_hist)
 end

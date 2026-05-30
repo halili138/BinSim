@@ -1,5 +1,5 @@
 #pragma once
-#include "common.hpp"
+#include "basis.hpp"
 
 inline constexpr int BATCH_SIZE1 = 256;
 inline constexpr int BATCH_SIZE2 = 128;

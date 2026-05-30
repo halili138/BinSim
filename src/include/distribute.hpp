@@ -1,7 +1,7 @@
 #pragma once
 #include <mpi.h>
 #include "otf.hpp"
-#include "utils.hpp"
+#include "hvec.hpp"
 
 // ─── MPI type mapping ───────────────────────────────────────────────────────
 template <typename Tv>
@@ -64,6 +64,9 @@ struct DistributedBasisManager
     int max_b_count = 0;
     int global_max_a_count = 0;
     int global_max_b_count = 0;
+
+    std::vector<int64> _src_offsets;
+    BasisView<Ti> view;
 
     Tv *local_src_vec;
     MPI_Win win_src_vec;
@@ -179,6 +182,20 @@ struct DistributedBasisManager
                            MPI_INFO_NULL, this->comm, &win_src_vec);
         else
             win_src_vec = MPI_WIN_NULL;
+
+        _init_view();
+    }
+
+    void _init_view()
+    {
+        int64 total = num_irreps * num_irreps;
+        _src_offsets.resize(total);
+        for (int64 i = 0; i < total; ++i)
+            _src_offsets[i] = routing_table[i].local_offset;
+        view = BasisView<Ti>{local_blocks, global_blocks, num_local_blocks,
+                             global_max_a_count, global_max_b_count,
+                             global_block_map, num_irreps,
+                             a_idx_map, b_idx_map, _src_offsets.data()};
     }
 
     ~DistributedBasisManager()
@@ -257,20 +274,32 @@ struct DistributedNetwork_OTF
     std::vector<AxGroup<Ti, Tv>> pure_a_ax;
     std::vector<AxGroup<Ti, Tv>> mixed_ax;
     int64 num_groups = 0;
+
+    // Stored groups share SVD heap data with the original Network_OTF.
+    // Null out pointers before destruction to avoid double-free.
+    ~DistributedNetwork_OTF()
+    {
+        auto clear_ptrs = [](SVDGroup_OTF<Ti, Tv> &g)
+        {
+            g.unique_zas = nullptr; g.unique_zbs = nullptr;
+            g.wa = nullptr; g.wb = nullptr;
+        };
+        for (auto &g : diag_groups)   clear_ptrs(g);
+        for (auto &g : pure_b_groups) clear_ptrs(g);
+        for (auto &ag : pure_a_ax) for (auto &g : ag.groups) clear_ptrs(g);
+        for (auto &ag : mixed_ax)  for (auto &g : ag.groups) clear_ptrs(g);
+    }
 };
 
 template <typename Ti, typename Tv>
-DistributedNetwork_OTF<Ti, Tv> *build_distributed_network(
-    const Network_OTF<Ti, Tv> *net, const int64 *orbsym)
+DistributedNetwork_OTF<Ti, Tv> *build_distributed_network(const Network_OTF<Ti, Tv> *net, const int64 *orbsym)
 {
     auto *dnet = new DistributedNetwork_OTF<Ti, Tv>();
     dnet->diag_groups = net->diag_groups;
     dnet->pure_b_groups = net->pure_b_groups;
     dnet->num_groups = dnet->diag_groups.size() + dnet->pure_b_groups.size();
 
-    auto group_by_ax = [](const std::vector<SVDGroup_OTF<Ti, Tv>> &src,
-                          std::vector<AxGroup<Ti, Tv>> &dst,
-                          bool is_mixed)
+    auto group_by_ax = [](const std::vector<SVDGroup_OTF<Ti, Tv>> &src, std::vector<AxGroup<Ti, Tv>> &dst, bool is_mixed)
     {
         std::map<uint64_t, AxGroup<Ti, Tv>> ag_map;
         for (const auto &g : src)
@@ -307,191 +336,6 @@ DistributedNetwork_OTF<Ti, Tv> *build_distributed_network(
         dnet->num_groups += ag.groups.size();
 
     return dnet;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Distributed contraction kernels
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// ── diag: zero communication ─────────────────────────────────────────────────
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_diag_distributed_impl(
-    const DistributedBasisManager<Ti, Tv> *__restrict__ dbasis,
-    const SVDGroup_OTF<Ti, Tv> *__restrict__ groups, int64 num_groups,
-    const Tv *__restrict__ local_src,
-    Tv *__restrict__ local_dst)
-{
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    const int max_a = dbasis->max_a_count;
-    const int max_b = dbasis->max_b_count;
-    const int shift = max_b * MAX_RANK;
-    const BlockDesc<Ti> *blocks = dbasis->local_blocks;
-    const int64 num_blocks = dbasis->num_local_blocks;
-
-    std::vector<Tv> phase_b(BATCH_SIZE * shift);
-
-#pragma omp parallel
-    {
-        for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
-        {
-            const BlockDesc<Ti> &block = blocks[block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
-            {
-                const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
-
-#pragma omp for schedule(dynamic)
-                for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                {
-                    const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    Tv *pb0 = phase_b.data() + batch_idx * shift;
-                    for (int i = 0; i < block.num_b; ++i)
-                    {
-                        precompute_phase<Rank, Ti, Tv>(block.bstrs[i], group.unique_zbs, group.num_zb, group.wb, pb0 + i, max_b, group.rank);
-                    }
-                }
-
-#pragma omp for schedule(dynamic)
-                for (int a = 0; a < block.num_a; ++a)
-                {
-                    const Ti str_a = block.astrs[a];
-                    const Tv *src = local_src + block.offset + a * block.num_b;
-                    Tv *dst = local_dst + block.offset + a * block.num_b;
-                    for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                    {
-                        const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                        const int rank = group.rank;
-                        const Tv *pb = phase_b.data() + batch_idx * shift;
-
-                        Tv pa[MAX_RANK] = {};
-                        precompute_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, pa, 1, rank);
-
-#pragma omp simd
-                        for (int b = 0; b < block.num_b; ++b)
-                        {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b, rank);
-                            hvec_update<Tv>(src + b, dst + b, vt);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ── pure_b: zero communication (asym-safe partition) ─────────────────────────
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_pure_b_distributed_impl(
-    const DistributedBasisManager<Ti, Tv> *__restrict__ dbasis,
-    const SVDGroup_OTF<Ti, Tv> *__restrict__ groups, int64 num_groups,
-    const Tv *__restrict__ local_src, Tv *__restrict__ local_dst)
-{
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    const BlockDesc<Ti> *blocks = dbasis->local_blocks;
-    const int64 num_blocks = dbasis->num_local_blocks;
-    const int max_a = dbasis->global_max_a_count;
-    const int max_b = dbasis->global_max_b_count;
-    const int shift = max_b * MAX_RANK;
-    const int64 nirp = dbasis->num_irreps;
-    const int *b_idx_map = dbasis->b_idx_map;
-    const BlockDesc<Ti> *all_blocks = dbasis->global_blocks;
-
-    std::vector<int> src_b_idxs(BATCH_SIZE * max_b);
-    std::vector<int> dst_b_idxs(BATCH_SIZE * max_b);
-    std::vector<Tv> batch_phase(BATCH_SIZE * shift);
-    std::vector<int> valid_b_counts(BATCH_SIZE);
-    std::vector<int> src_block_idxs(BATCH_SIZE);
-
-#pragma omp parallel
-    {
-        for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
-        {
-            const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
-            {
-                const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
-
-#pragma omp for schedule(dynamic)
-                for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                {
-                    const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    const int64 h = dst_block.asym * nirp + (dst_block.bsym ^ group.bsym);
-                    const int64 src_block_idx = dbasis->global_block_map[h];
-                    src_block_idxs[batch_idx] = src_block_idx;
-
-                    if (src_block_idx == -1)
-                    {
-                        valid_b_counts[batch_idx] = 0;
-                        continue;
-                    }
-
-                    Tv *pb0 = batch_phase.data() + batch_idx * shift;
-                    int *sb_ptr = src_b_idxs.data() + batch_idx * max_b;
-                    int *db_ptr = dst_b_idxs.data() + batch_idx * max_b;
-
-                    int count = 0;
-                    for (int i = 0; i < dst_block.num_b; ++i)
-                    {
-                        const Ti dst_str = dst_block.bstrs[i];
-                        const Ti src_str = dst_str ^ group.bx;
-                        const int src_idx = b_idx_map[src_str];
-
-                        if (src_idx == -1)
-                            continue;
-
-                        sb_ptr[count] = src_idx;
-                        db_ptr[count] = i;
-
-                        precompute_phase<Rank, Ti, Tv>(src_str, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b, group.rank);
-
-                        count++;
-                    }
-
-                    valid_b_counts[batch_idx] = count;
-                }
-
-#pragma omp for schedule(dynamic)
-                for (int a = 0; a < dst_block.num_a; ++a)
-                {
-                    const Ti str_a = dst_block.astrs[a];
-                    Tv *dst = local_dst + dst_block.offset + a * dst_block.num_b;
-                    for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                    {
-                        const int valid_b_count = valid_b_counts[batch_idx];
-
-                        if (valid_b_count == 0)
-                            continue;
-
-                        const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-
-                        Tv pa[MAX_RANK] = {};
-                        precompute_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
-
-                        const int src_block_idx = src_block_idxs[batch_idx];
-                        const BlockDesc<Ti> &src_block = all_blocks[src_block_idx];
-                        const int rank = group.rank;
-                        const Tv *pb = batch_phase.data() + batch_idx * shift;
-                        const int *si = src_b_idxs.data() + batch_idx * max_b;
-                        const int *di = dst_b_idxs.data() + batch_idx * max_b;
-
-                        const int64 bid = dst_block.asym * nirp + (dst_block.bsym ^ group.bsym);
-                        const BlockLocation &src_loc = dbasis->routing_table[bid];
-                        const Tv *src = local_src + src_loc.local_offset + a * src_block.num_b;
-
-#pragma omp simd
-                        for (int b = 0; b < valid_b_count; ++b)
-                        {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b, rank);
-                            hvec_update<Tv>(src + si[b], dst + di[b], vt);
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ── ax-driven kernel (pure_a + mixed): fetch once per ax-group, then OpenMP ──
@@ -652,69 +496,14 @@ static inline void gather_contract_ax_distributed_impl(
 // Dispatch functions ── zero allocation hot path
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── Flat dispatch (diag / pure_b): chunk by rank ────────────────────────────
+// ── Flat dispatch (diag / pure_b): delegate to hvec.hpp shared kernels ──────
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_dist_flat(
-    const DistributedBasisManager<Ti, Tv> *dbasis,
+    const BasisView<Ti> &view,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
     const Tv *local_src, Tv *local_dst)
 {
-    int64 total = groups.size();
-    if (total == 0)
-        return;
-
-    const SVDGroup_OTF<Ti, Tv> *gptr = groups.data();
-    int64 start = 0;
-    while (start < total)
-    {
-        int cr = gptr[start].rank;
-        int dr = (cr == 1 || cr == 2) ? cr : 0;
-
-        int64 end = start + 1;
-        while (end < total)
-        {
-            int nr = gptr[end].rank;
-            int ndr = (nr == 1 || nr == 2) ? nr : 0;
-            if (ndr != dr)
-                break;
-            end++;
-        }
-
-        const SVDGroup_OTF<Ti, Tv> *cp = gptr + start;
-        int64 sz = end - start;
-
-        if constexpr (TypeCode == 0)
-        {
-            switch (dr)
-            {
-            case 1:
-                gather_contract_diag_distributed_impl<1>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            case 2:
-                gather_contract_diag_distributed_impl<2>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            default:
-                gather_contract_diag_distributed_impl<0>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            }
-        }
-        else
-        {
-            switch (dr)
-            {
-            case 1:
-                gather_contract_pure_b_distributed_impl<1>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            case 2:
-                gather_contract_pure_b_distributed_impl<2>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            default:
-                gather_contract_pure_b_distributed_impl<0>(dbasis, cp, sz, local_src, local_dst);
-                break;
-            }
-        }
-        start = end;
-    }
+    dispatch_chunks_by_rank<TypeCode>(view, groups, local_src, local_dst);
 }
 
 // ── Ax-driven dispatch: iterate pre-built AxGroup vector ─────────────────────
@@ -765,8 +554,10 @@ void contract_network_otf_distributed(
 
     GhostBuffer<Tv> ghost_buf;
 
-    dispatch_dist_flat<0>(dbasis, dnet->diag_groups, local_src, local_dst);
-    dispatch_dist_flat<2>(dbasis, dnet->pure_b_groups, local_src, local_dst);
+    const BasisView<Ti> &view = dbasis->view;
+
+    dispatch_dist_flat<0>(view, dnet->diag_groups, local_src, local_dst);
+    dispatch_dist_flat<2>(view, dnet->pure_b_groups, local_src, local_dst);
     dispatch_dist_ax(dbasis, dnet->pure_a_ax, local_src, local_dst, ghost_buf, false);
     dispatch_dist_ax(dbasis, dnet->mixed_ax, local_src, local_dst, ghost_buf, true);
 }

@@ -165,6 +165,16 @@ FORCE_INLINE void tvec_update(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
 }
 
 template <typename Tv>
+FORCE_INLINE void tvec_update(Tv *sp, Tv *dp, Tv vt)
+{
+    const Tv vi = *sp;
+    const Tv vj = *dp;
+
+    *sp = vj * (-math_conj(vt));
+    *dp = vi * vt;
+}
+
+template <typename Tv>
 FORCE_INLINE void tran_update(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt)
 {
     res += math_conj(*ls * vt) * *rd - math_conj(*ld) * vt * *rs;
@@ -198,4 +208,14 @@ FORCE_INLINE void backgrad_update(Tv &res, Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv vt
     *ld = eld;
     *rs = rvi * evd - rvj * evo_rev;
     *rd = rvj * evd + rvi * evo_fwd;
+}
+
+template <typename Tv>
+FORCE_INLINE void backtran_update(
+    Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv *bs, Tv *bd,
+    Tv vt, double ecd, double eco)
+{
+    expm_update(ls, ld, vt, ecd, eco);
+    expm_update(rs, rd, vt, ecd, eco);
+    tvec_update(ls, ld, bs, bd, vt);
 }

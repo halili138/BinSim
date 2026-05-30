@@ -260,6 +260,8 @@ function _adapt_vqe(
             println("============================================================================")
         end
     end
+
+    return amplitudes, selec_idxs 
 end
 
 

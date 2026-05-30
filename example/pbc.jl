@@ -17,36 +17,20 @@ if abspath(PROGRAM_FILE) == @__FILE__
     basis = BasisManager(pbc.norb, pbc.nelec, pbc.orbsym)
     ham = JW_hamiltonian(pbc)
     ham = apply_constraint(ham, pbc.norb, pbc.nelec, (0.5, 0.5, 0.5))
-    v0 = get_hf(basis, pbc.nelec, Tv=ComplexF64)
 
-    pbc.e_scale, _ = run_fci(basis, ham, v0, net="otf")
+    pbc.e_scale, v_fci = run_fci(basis, ham, get_hf(basis, pbc.nelec, Tv=ComplexF64))
+    println(eltype(v_fci))
 
-    v0 = get_hf(basis, pbc.nelec, Tv=ComplexF64)
     orbs = Orbitals()
-    kernel(pbc, orbs, generalize=true)
+    kernel(pbc, orbs, generalize=false)
     pool = FEB(orbs, Tv=ComplexF64, complete=true)
 
-    # run_vqe(basis, ham, pool, v0, pbc.e_scale, net="otf",
-    #     options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-6,
-    #         maxiter=100000,
-    #         verbose=1),
-    # )
-
-    run_adapt_vqe(basis, ham, pool, v0, pbc.e_scale, net="agg",
-        adapt_options=ADAPT_OPTIONS(
-            Gtol=1e-3,
-            gtol=1e-4,
-            htol=1e-3,
-            Δtol=1e-8,
-        ),
-        vqe_options=VQE_OPTIONS(
+    run_vqe(basis, ham, pool, get_hf(basis, pbc.nelec, Tv=ComplexF64), pbc.e_scale,
+        options=VQE_OPTIONS(
             ftol=1e-10,
             gtol=1e-6,
-            maxiter=1000,
-            verbose=1,
-        ),
+            maxiter=100000,
+            verbose=2),
     )
 end
 

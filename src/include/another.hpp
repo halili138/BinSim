@@ -3,9 +3,9 @@
 #include "utils.hpp"
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_diag_otf_impl(
+static FORCE_INLINE Tv backgrad_contract2_diag_otf_impl(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec, Tv *dst_vec)
+    double theta, Tv *lp, Tv *rp)
 {
     const int rank = group.rank;
     const int num_za = group.num_za;
@@ -19,7 +19,9 @@ static FORCE_INLINE void tvec_contract_diag_otf_impl(
     const int max_a_count = (int)basis->max_a_count;
     const int max_b_count = (int)basis->max_b_count;
 
-#pragma omp parallel
+    Tv res = {};
+
+#pragma omp parallel reduction(+ : res)
     {
         std::vector<Tv> local_a_phase(max_a_count * rank);
         std::vector<Tv> local_b_phase(max_b_count * rank);
@@ -48,25 +50,35 @@ static FORCE_INLINE void tvec_contract_diag_otf_impl(
             const Tv *pb = local_b_phase.data();
             const int64 offset = block.offset;
 
-#pragma omp for collapse(2) schedule(static) nowait
+#pragma omp for schedule(dynamic) nowait
             for (int a = 0; a < a_count; ++a)
             {
                 for (int b = 0; b < b_count; ++b)
                 {
                     const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                    const Tv u = fast_diag_exp<Tv>(vt, -theta);
+                    const Tv du = fast_diag_grad<Tv>(vt, theta);
                     const int64 i = offset + (int64)a * b_count + b;
-                    dst_vec[i] = src_vec[i] * vt;
+                    lp[i] *= u;
+                    res += math_conj(lp[i] * du) * rp[i];
+                    rp[i] *= u;
                 }
             }
         }
     }
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
+static FORCE_INLINE Tv backgrad_contract2_pure_a_otf_impl(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec, Tv *dst_vec)
+    double theta, Tv *lp, Tv *rp)
 {
+    const double ecd = std::cos(theta) - 1.0;
+    const double eco = -std::sin(theta);
+    const double gcd = -std::sin(theta);
+    const double gco = std::cos(theta);
     const int rank = group.rank;
     const int num_za = group.num_za;
     const int num_zb = group.num_zb;
@@ -82,7 +94,9 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
     const int max_b_count = (int)basis->max_b_count;
     const int *a_idx_map = basis->a_idx_map;
 
-#pragma omp parallel
+    Tv res = {};
+
+#pragma omp parallel reduction(+ : res)
     {
         std::vector<int> src_a(max_a_count);
         std::vector<int> dst_a(max_a_count);
@@ -150,18 +164,24 @@ static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
                     const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const int64 si = src_offset + src_a[a] * src_num_b + b;
                     const int64 di = dst_offset + dst_a[a] * dst_num_b + b;
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    backgrad_update2<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, ecd, eco, gcd, gco);
                 }
             }
         }
     }
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
+static FORCE_INLINE Tv backgrad_contract2_pure_b_otf_impl(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec, Tv *dst_vec)
+    double theta, Tv *lp, Tv *rp)
 {
+    const double ecd = std::cos(theta) - 1.0;
+    const double eco = -std::sin(theta);
+    const double gcd = -std::sin(theta);
+    const double gco = std::cos(theta);
     const int rank = group.rank;
     const int num_za = group.num_za;
     const int num_zb = group.num_zb;
@@ -177,7 +197,9 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
     const int max_b_count = (int)basis->max_b_count;
     const int *b_idx_map = basis->b_idx_map;
 
-#pragma omp parallel
+    Tv res = {};
+
+#pragma omp parallel reduction(+ : res)
     {
         std::vector<Tv> phase_a(max_a_count * rank);
         std::vector<int> src_b(max_b_count);
@@ -187,8 +209,9 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 h = dst_block.asym * num_irreps + (dst_block.bsym ^ group.bsym);
-            const int64 src_block_idx = block_map[h];
+            const int64 bxsym = group.bsym;
+            const int64 bid = dst_block.asym * num_irreps + (dst_block.bsym ^ bxsym);
+            const int64 src_block_idx = block_map[bid];
 
             if (src_block_idx == -1)
                 continue;
@@ -245,20 +268,24 @@ static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
                     const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const int64 si = src_offset + a * src_num_b + src_b[b];
                     const int64 di = dst_offset + a * dst_num_b + dst_b[b];
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    backgrad_update2<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, ecd, eco, gcd, gco);
                 }
             }
         }
     }
+
+    return res;
 }
 
 template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_mixed_otf_impl(
-    const BasisManager<Ti> *basis,
-    const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec,
-    Tv *dst_vec)
+static FORCE_INLINE Tv backgrad_contract2_mixed_otf_impl(
+    const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
+    double theta, Tv *lp, Tv *rp)
 {
+    const double ecd = std::cos(theta) - 1.0;
+    const double eco = -std::sin(theta);
+    const double gcd = -std::sin(theta);
+    const double gco = std::cos(theta);
     const int rank = group.rank;
     const int num_za = group.num_za;
     const int num_zb = group.num_zb;
@@ -275,7 +302,9 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
     const int *a_idx_map = basis->a_idx_map;
     const int *b_idx_map = basis->b_idx_map;
 
-#pragma omp parallel
+    Tv res = {};
+
+#pragma omp parallel reduction(+ : res)
     {
         std::vector<int> src_a(max_a_count);
         std::vector<int> dst_a(max_a_count);
@@ -287,8 +316,10 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 h = (dst_block.asym ^ group.asym) * num_irreps + (dst_block.bsym ^ group.bsym);
-            const int64 src_block_idx = block_map[h];
+            const int64 axsym = group.asym;
+            const int64 bxsym = group.bsym;
+            const int64 bid = (dst_block.asym ^ axsym) * num_irreps + (dst_block.bsym ^ bxsym);
+            const int64 src_block_idx = block_map[bid];
 
             if (src_block_idx == -1)
                 continue;
@@ -361,17 +392,17 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
                     const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
                     const int64 si = src_offset + src_a[a] * src_num_b + src_b[b];
                     const int64 di = dst_offset + dst_a[a] * dst_num_b + dst_b[b];
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    backgrad_update2<Tv>(res, lp + si, lp + di, rp + si, rp + di, vt, ecd, eco, gcd, gco);
                 }
             }
         }
     }
+
+    return res;
 }
 
-template <typename Ti,
-          typename Tv>
-void tvec_svd_network_otf(
-    const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, const Tv *src_vec, Tv *dst_vec)
+template <typename Ti, typename Tv>
+Tv backgrad_svd2_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *lp, Tv *rp)
 {
     const uint8 type = net->excit_types[idx];
     const int64 pos = net->sorted_idxs[idx];
@@ -392,52 +423,50 @@ void tvec_svd_network_otf(
         group_ptr = &net->mixed_groups[pos];
         break;
     default:
-        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in tvec_svd" << std::endl;
-        return;
+        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in grad_svd" << std::endl;
+        return {};
     }
 
     const SVDGroup_OTF<Ti, Tv> &group = *group_ptr;
     const int rank = group.rank;
 
-#pragma omp parallel for schedule(static)
-    for (int64 i = 0; i < basis->dim; ++i)
-    {
-        dst_vec[i] = {};
-    }
+    Tv res = {};
 
     switch (type)
     {
     case 0:
         if (rank == 1)
-            tvec_contract_diag_otf_impl<1>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_diag_otf_impl<1>(basis, group, theta, lp, rp);
         else if (rank == 2)
-            tvec_contract_diag_otf_impl<2>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_diag_otf_impl<2>(basis, group, theta, lp, rp);
         else
-            tvec_contract_diag_otf_impl<0>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_diag_otf_impl<0>(basis, group, theta, lp, rp);
         break;
     case 1:
         if (rank == 1)
-            tvec_contract_pure_a_otf_impl<1>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_a_otf_impl<1>(basis, group, theta, lp, rp);
         else if (rank == 2)
-            tvec_contract_pure_a_otf_impl<2>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_a_otf_impl<2>(basis, group, theta, lp, rp);
         else
-            tvec_contract_pure_a_otf_impl<0>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_a_otf_impl<0>(basis, group, theta, lp, rp);
         break;
     case 2:
         if (rank == 1)
-            tvec_contract_pure_b_otf_impl<1>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_b_otf_impl<1>(basis, group, theta, lp, rp);
         else if (rank == 2)
-            tvec_contract_pure_b_otf_impl<2>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_b_otf_impl<2>(basis, group, theta, lp, rp);
         else
-            tvec_contract_pure_b_otf_impl<0>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_pure_b_otf_impl<0>(basis, group, theta, lp, rp);
         break;
     case 3:
         if (rank == 1)
-            tvec_contract_mixed_otf_impl<1>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_mixed_otf_impl<1>(basis, group, theta, lp, rp);
         else if (rank == 2)
-            tvec_contract_mixed_otf_impl<2>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_mixed_otf_impl<2>(basis, group, theta, lp, rp);
         else
-            tvec_contract_mixed_otf_impl<0>(basis, group, src_vec, dst_vec);
+            res = backgrad_contract2_mixed_otf_impl<0>(basis, group, theta, lp, rp);
         break;
     }
+
+    return res;
 }
