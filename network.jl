@@ -736,3 +736,4 @@ function extract_local_vec!(
         local_vec::Ptr{ComplexF64},
     )::Cvoid
 end
+
