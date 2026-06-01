@@ -7,12 +7,31 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.basis = ARGS[3]
 
     build(mole)
-    # blocks, block_map = get_sym_blocks(mole.norb, mole.nelec, mole.orbsym, 0, UInt32)
-    # for b in blocks
-    #     println(b.num_a * b.num_b)
-    # end
-    # basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
-    # ham = JW_hamiltonian(mole)
+    blocks, block_map = get_sym_blocks(mole.norb, mole.nelec, mole.orbsym, 0, UInt32)
+    for b in blocks
+        println(b.num_a * b.num_b)
+    end
+    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    ham = JW_hamiltonian(mole)
+
+    gs = get_bounds_0based(ham.axs, ham.bxs)
+    ngs = length(gs) - 1
+    for g in 1:ngs
+        lb = gs[g] + 1
+        rb = gs[g+1]
+
+        axs = ham.axs[lb:rb]
+        bxs = ham.bxs[lb:rb]
+        azs = ham.azs[lb:rb]
+        bzs = ham.bzs[lb:rb]
+        cs  = ham.cs[lb:rb]
+        op  = BinaryQubitAABB(axs, bxs, azs, bzs, cs)
+        if op^3 != op
+            println(g, "\t",length(cs))
+        else
+            println("\t",length(cs))
+        end
+    end
 
     # mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
 

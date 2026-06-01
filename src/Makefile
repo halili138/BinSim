@@ -1,12 +1,16 @@
 CXX := g++
-CXXARCH_FLAGS := -march=znver4 -mtune=znver4 -O3
-CXXFLAGS := -std=c++20 $(CXXARCH_FLAGS) \
+CXXARCH_FLAGS := -march=znver4 -mtune=znver4
+# CXXARCH_FLAGS := -march=skylake-avx512 -mtune=skylake-avx512
+# CXXARCH_FLAGS := -march=icelake-server -mtune=sapphirerapids # dcu节点
+# CXXARCH_FLAGS := -march=icelake-server -mtune=icelake-server # a100_80g节点
+CXXFLAGS := -std=c++20 $(CXXARCH_FLAGS) -O3\
             -fopenmp -fPIC -shared \
             -fomit-frame-pointer -mpopcnt -mbmi2 \
             -fopenmp-simd -funsafe-math-optimizations -fassociative-math \
             -ffast-math
 
 CUXX := /usr/local/cuda-12.9/bin/nvcc
+# CUXX := nvcc
 CUXXARCH_FLAGS := -arch=sm_120
 CUXXFLAGS := -std=c++20 $(CUXXARCH_FLAGS) -O3 --extended-lambda --expt-relaxed-constexpr \
 			 -Xcompiler -fPIC -shared
@@ -24,7 +28,8 @@ MPI_JL_INC  := -I$(MPI_JL_HOME)/include
 MPI_JL_LIBS := -L$(MPI_JL_HOME)/lib -Wl,-rpath=$(MPI_JL_HOME)/lib -lmpi
 
 TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
-		   lib/libcuotf.so lib/libdist.so
+		   lib/libcuotf.so \
+		   lib/libdist.so
 
 .PHONY: all clean
 

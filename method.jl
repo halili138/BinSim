@@ -322,7 +322,7 @@ function run_euler_ite(
     psi_new = psi - dtau * H * psi
     """
 
-    hvec! = get_hvec(basis, ham, is_time=false)
+    hvec! = get_hvec(basis, ham, is_time=true)
 
     if iszero(dτ)
         dτ = estimate_max_step(hvec!, basis.dim, e_scale)

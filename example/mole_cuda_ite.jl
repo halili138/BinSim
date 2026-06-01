@@ -115,13 +115,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
-    v0 = get_hf(basis, mole.nelec)
 
-    # # -- CPU FCI 参考 --
-    # println("=== FCI (CPU) reference energy ===")
-    # e_scale, _ = run_fci(basis, ham, v0)
-    # println("  FCI energy: $e_scale")
-    e_scale = -7.16887965859788
-    run_euler_ite_cuda(basis, ham, v0, e_scale,
+    run_euler_ite_cuda(basis, ham, get_hf(basis, mole.nelec), 0.0,
         dτ=0.1, max_step=20, tol=1e-3)
 end

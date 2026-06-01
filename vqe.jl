@@ -1,3 +1,26 @@
+function energy_objective(f_hvec::Function, f_expm::Function, f_backgrad::Function, idxs::Vector{Int64}, x::Vector{Float64}, lv::T, rv::T) where {Tv,T<:AbstractArray{Tv,1}}
+    nparas = length(x)
+
+    for i in 1:nparas
+        f_expm(idxs[i], x[i], lv)
+    end
+
+    f_hvec(lv, rv)
+
+    lnorm = norm(lv)^2
+    rnorm = norm(rv)^2
+    energy = real(dot(lv, rv)) / lnorm
+    δ²H = max(0.0, rnorm / lnorm - energy^2)
+    grad = Vector{Float64}(undef, nparas)
+
+    for i in nparas:-1:1
+        grad[i] = real(f_backgrad(idxs[i], x[i], lv, rv)) * 2 / lnorm
+    end
+
+    return energy, grad, δ²H
+end
+
+
 function show_optimze(
     energy::Float64, 
     norm_g::Float64, 
