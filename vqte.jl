@@ -27,208 +27,368 @@ function rk4_step!(
     normalize!(v)
 end
 
-function _run_vqite_tfim_adjoint_diag(
-    f_hvec::Function, f_expm::Function, f_backgrad::Function,
-    ws::Vector{Vector{Tv}}, v0::Vector{Tv}, ve::Vector{Tv},
-    v::Vector{Tv}, Hv::Vector{Tv}, τv::Vector{Tv}, bv::Vector{Tv}, vt::Vector{Tv},
-    active_idxs::Vector{Int64}, x::Vector{Float64}, e_scale::Float64,
-    dt::Float64=0.01, max_step::Int=500, xtol::Float64=1e-6, epsilon::Float64=1e-4, per_print::Int=10, verbose::Int=1,
+struct TimeEvolBuffer{Tv}
+    vs::Vector{Vector{Tv}}
+    dvs::Vector{Vector{Tv}}
+    ws::Vector{Vector{Tv}}
+    dx::Vector{Float64}
+    xs::Vector{Vector{Float64}}
+    M::Array{Float64,2}
+    Md::Array{Float64,1}
+    V::Array{Float64,1}
+end
+
+function TimeEvolBuffer(dim::Int, N::Int;
+    method::String="ite", mode::String="adjoint", is_diag::Bool=false, Tv::DataType=Float64,
+)
+    @assert method in ["ite", "rte"]
+    @assert mode in ["adjoint", "forward"]
+
+    vs  = mode == "forward" ? [zeros(Tv, dim) for _ in 1:N] : Vector{Vector{Tv}}()
+    dvs = mode == "forward" ? [zeros(Tv, dim) for _ in 1:N] : Vector{Vector{Tv}}()
+    ws  = [zeros(Tv, dim) for _ in 1:5]
+
+    dx  = zeros(Float64, N)
+    xs  = method == "rte" ? [zeros(Float64, N) for _ in 1:5] : Vector{Vector{Float64}}()
+
+    M   = is_diag ? zeros(Float64, 0, 0) : zeros(Float64, N, N)
+    Md  = is_diag ? zeros(Float64, N) : Vector{Float64}()
+    V   = zeros(Float64, N)
+
+    return TimeEvolBuffer(vs, dvs, ws, dx, xs, M, Md, V)
+end
+
+struct OTF_Functions
+    hvec::Function
+    expm::Function
+    tvec::Function
+    grad::Function
+    backgrad::Function
+    backtran::Function
+    batchgrad::Function 
+    batchtran::Function
+end
+
+function OTF_Functions(
+    basis::BasisManager, 
+    ham::Union{Nothing,BinaryQubitAABB}, 
+    pool::Union{Nothing,Vector{<:BinaryQubitAABB}};
+    time_print::Bool=false,
+)
+    f_hvec      = (v, Hv)               -> nothing
+    f_expm      = (idx, θ, v)           -> nothing
+    f_tvec      = (idx, lv, rv)         -> nothing
+    f_grad      = (idx, θ, lv, rv)      -> nothing
+    f_backgrad  = (idx, θ, lv, rv)      -> nothing
+    f_backtran  = (idx, θ, lv, rv, tlv) -> nothing
+    f_batchgrad = (lv, rv, grads, x)    -> nothing 
+    f_batchtran = (lv, rv, trans)       -> nothing
+
+    if !isnothing(ham)
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed ham_otf = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+        if time_print
+            f_hvec = (v, Hv) -> @printf(
+                "hvec time %.6f seconds", @elapsed hvec_otf!(basis, ham_otf, v, Hv))
+        else
+            f_hvec = (v, Hv) -> hvec_otf!(basis, ham_otf, v, Hv)
+        end
+    end
+    if !isnothing(pool)
+        print("Pre-compiling Pool OTF ... ")
+        time_ops = @elapsed pool_otf = OTF(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_expm = (idx, θ, v) -> expm_svd!(basis, pool_otf, idx, θ, v)
+        f_tvec = (idx, lv, rv) -> tvec_svd!(basis, pool_otf, idx, lv, rv)
+        f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_otf, idx, θ, lv, rv)
+        f_backgrad = (idx, θ, lv, rv) -> return backgrad_svd!(basis, pool_otf, idx, θ, lv, rv)
+        f_backtran = (idx, θ, lv, rv, tlv) -> return backtran_svd!(basis, pool_otf, idx, θ, lv, rv, tlv)
+        f_batchgrad = (lv, rv, grads, x) -> return batch_grad_svd(basis, pool_otf, x, lv, rv, grads)
+        f_batchtran = (lv, rv, trans) -> return tran_svd(basis, pool_otf, lv, rv, trans)
+    end
+
+    return OTF_Functions(f_hvec, f_expm, f_tvec, f_grad, f_backgrad, f_backtran, f_batchgrad, f_batchtran)
+end
+
+struct TimeEvolOptions
+    dt::Float64
+    maxiter::Int64
+    xtol::Float64
+    mtol::Float64
+    per_print::Int64
+    verbose::Int64
+    run_rk4::Bool
+    method::String
+    mode::String
+    M_order::String
+end
+
+function TimeEvolOptions(;
+    dt::Float64      = 1e-2,
+    maxiter::Int64   = 9999,
+    xtol::Float64    = 1e-6,
+    mtol::Float64    = 1e-4,
+    per_print::Int64 = 100,
+    verbose::Int64   = 1,
+    run_rk4::Bool    = true,
+    method::String   = "ite",
+    mode::String     = "forward",  
+    M_order::String  = "exact",
+)
+    TimeEvolOptions(dt, maxiter, xtol, mtol, per_print, verbose, run_rk4, method, mode, M_order)
+end
+
+function process_1order_adjoint(f_backgrad, idxs, x, v, Hv, V, Md, N)
+    for i in N:-1:1
+        V[i]  = real(f_backgrad(idxs[i], x[i], v, Hv)) * 2
+        Md[i] = real(dot(v, v))
+    end
+
+    return 0.0
+end
+
+function process_2order_adjoint(f_backtran, idxs, x, v, Hv, bv, τv, vt, V, M, N)
+    for i in N:-1:1
+        f_backtran(idxs[i], -x[i], v, Hv, bv)
+        M[i, i] = real(dot(bv, bv))
+        V[i]    = real(dot(bv, Hv))
+
+        vt .= v
+        for j in (i-1):-1:1
+            f_backtran(idxs[j], -x[j], vt, bv, τv)
+            val = real(dot(τv, bv))
+            M[i, j] = val
+            M[j, i] = val
+        end
+    end
+
+    return cond(M)
+end
+
+function process_2order_forward(f_expm, f_tvec, idxs, x, vs, dvs, Hv, V, M, N)
+    for i in 1:N
+        f_tvec(idxs[i], vs[i], dvs[i])
+        for j in i:N
+            f_expm(idxs[j], x[j], dvs[i])
+        end
+    end
+
+    D  = reduce(hcat, dvs)
+    V .= real.(D' * Hv)
+    M .= real.(D' * D)
+
+    return cond(M)
+end
+
+function _run_vqte(
+    idxs::Vector{Int64}, x::Vector{Float64}, e_scale::Float64,
+    v0::Vector{Tv}, ve::Vector{Tv}, 
+    otf_funcs::OTF_Functions, buffer::TimeEvolBuffer{Tv}, options::TimeEvolOptions,
 ) where {Tv}
-    N = length(active_idxs)
+    N  = length(idxs)
 
-    # 【核心修改 1】：M 矩阵退化为长度为 N 的一维数组（只存对角线）
-    M_diag = zeros(Float64, N)
-    V = zeros(Float64, N)
-    x_dot = zeros(Float64, N)
+    @views M  = options.M_order == "diag" ? buffer.M[1:0, 1:0] : buffer.M[1:N, 1:N]
+    @views Md = options.M_order == "diag" ? buffer.Md[1:N] : buffer.Md[1:0]
+    @views V  = buffer.V[1:N]
+    @views dx = buffer.dx[1:N]
 
-    ve .= v0
-    fid = 0.0
-    dt_sum = 0.0
+    vs  = options.mode == "forward" ? buffer.vs[1:N] : buffer.vs[1:0]
+    dvs = options.mode == "forward" ? buffer.dvs[1:N] : buffer.vs[1:0]
+    ws  = buffer.ws
+    v   = ws[1]
+    Hv  = ws[2]
+    τv  = ws[3]
+    bv  = ws[4]
+    vt  = ws[5]
 
-    verbose > 0 && @printf("  Step          Energy         Error      Trj Fid      |θ_dot|     Time\n")
+    f_hvec = otf_funcs.hvec
+    f_expm = otf_funcs.expm
+    f_tvec = otf_funcs.tvec
+    f_backgrad = otf_funcs.backgrad
+    f_backtran = otf_funcs.backtran
 
-    time_ops = @elapsed for step in 1:max_step
-        rk4_step!(f_hvec, ve, vt, ws, -1.0, dt)
+    ve   .= v0
+    fid   = 0.0
+    t     = 0.0
+    condM = 0.0
+
+    method  = options.method
+    mode    = options.mode  
+    M_order = options.M_order
+    dt      = options.dt
+    mtol    = options.mtol
+
+    options.verbose > 0 && @printf(
+        "  Step          Energy         Error      Trj Fid      cond(M)       |dx|       Time\n")
+
+    time_ops = @elapsed for step in 1:options.maxiter
+        if method == "ite"
+            shift = -1.0
+        elseif method == "rte" 
+            shift = -im
+        else
+            error("Unsupported method $(method)")
+        end
+
+        options.run_rk4 && rk4_step!(f_hvec, ve, vt, ws, shift, dt)
 
         v .= v0
-        for k in 1:N
-            f_expm(active_idxs[k], x[k], v)
+        if mode == "adjoint"
+            for k in 1:N
+                f_expm(idxs[k], x[k], v)
+            end
+        elseif mode == "forward"
+            for k in 1:N
+                vs[k] .= v
+                f_expm(idxs[k], x[k], v)
+            end
+        else
+            error("Unsupported mode $(mode)")
         end
 
-        vnorm = norm(v)^2
+        vnorm = norm(v) ^ 2
         f_hvec(v, Hv)
-        e_curr = dot(v, Hv) / vnorm
-        fid = abs2(dot(v, ve)) / vnorm
+        e = real(dot(v, Hv)) / vnorm
+        fid = options.run_rk4 ? abs2(dot(v, ve)) / vnorm : 0.0
 
-        @. Hv = Hv - e_curr * v
-        for j in N:-1:1
-            V[j] = real(f_backgrad(active_idxs[j], x[j], v, Hv)) * 2 / vnorm
-            M_diag[j] = real(dot(v, v))
+        if method == "ite"
+            @. Hv = Hv - e * v
+        elseif method == "rte" 
+            @. Hv = -im * (Hv - e * v)
         end
 
-        @. x_dot = V / (M_diag + epsilon)
-        @. x -= dt * x_dot
-
-        θ_dot = norm(x_dot)
-        dt_sum += dt
-        if verbose > 0 && (step % per_print == 0 || step == 1)
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, θ_dot, dt_sum)
+        if (method, mode, M_order) == ("ite", "forward", "exact")
+            condM = process_2order_forward(f_expm, f_tvec, idxs, x, vs, dvs, Hv, V, M, N)
+            dx .= (M + mtol * I) \ V
+        elseif (method, mode, M_order) == ("ite", "adjoint", "exact")
+            condM = process_2order_adjoint(f_backtran, idxs, x, v, Hv, bv, τv, vt, V, M, N)
+            dx .= (M + mtol * I) \ V
+        elseif (method, mode, M_order) == ("ite", "adjoint", "diag")
+            condM = process_1order_adjoint(f_backgrad, idxs, x, v, Hv, V, Md, N)
+            @. dx = V / (Md + mtol)
+        elseif (method, mode, M_order) == ("rte", "forward", "exact")
+            condM = process_2order_forward(f_expm, f_tvec, idxs, x, vs, dvs, Hv, V, M, N)
+            F      = svd(M)
+            inv_S  = [s > mtol ? 1.0 / s : 0.0 for s in F.S]
+            M_pinv = F.V * Diagonal(inv_S) * F.U'
+            dx    .= M_pinv * V
+        elseif (method, mode, M_order) == ("rte", "adjoint", "exact")
+            condM = process_2order_adjoint(f_backtran, idxs, x, v, Hv, bv, τv, vt, V, M, N)
+            F      = svd(M)
+            inv_S  = [s > mtol ? 1.0 / s : 0.0 for s in F.S]
+            M_pinv = F.V * Diagonal(inv_S) * F.U'
+            dx    .= M_pinv * V
+        else
+            error("Unsupported combination when soler Mθ = V: $(method) $(mode) $(M_order)")
         end
 
-        if θ_dot < xtol
-            if verbose > 0
-                @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.4g\n",
-                    step, e_curr, abs(e_curr - e_scale), fid, θ_dot, dt_sum)
+        @. x -= dt * dx
+        dx_norm = norm(dx)
+        t += dt
+        err = abs(e - e_scale)
+
+        if options.verbose > 0 && (step % options.per_print == 0 || step == 1)
+            @printf("  %04d    % 15.10f    %.3e    %.6f    %9.3e    %9.3e    %.4g\n",
+                    step, e, err, fid, condM, dx_norm, t)
+        end
+
+        if dx_norm < options.xtol
+            if options.verbose > 0
+                @printf("  %04d    % 15.10f    %.3e    %.6f    %9.3e    %9.3e    %.4g\n",
+                    step, e, err, fid, condM, dx_norm, t)
             end
             break
         end
     end
 
-    if verbose > 0
-        @printf("\nApproximate VQTE (Diagonal QNG) completed in %.4f seconds.\n", time_ops)
+    if options.verbose > 0
+        @printf("\nVQTE completed in %.4f seconds.\n", time_ops)
         println("============================================================================\n")
     end
 
-    return fid, dt_sum
+    return fid, t
 end
 
-
-function _run_vqite_tfim_adjoint(
-    f_hvec::Function, f_expm::Function, f_backtran::Function,
-    ws::Vector{Vector{Tv}}, v0::Vector{Tv}, ve::Vector{Tv},
-    v::Vector{Tv}, Hv::Vector{Tv}, τv::Vector{Tv}, bv::Vector{Tv}, vt::Vector{Tv},
-    active_idxs::Vector{Int64}, x::Vector{Float64}, e_scale::Float64,
-    dt::Float64=0.01, max_step::Int=500, xtol::Float64=1e-6, epsilon::Float64=1e-4, per_print::Int=10, verbose::Int=1,
-) where {Tv}
-    N = length(active_idxs)
-    M = zeros(Float64, N, N)
-    V = zeros(Float64, N)
-    ve .= v0
-
-    fid = 0.0
-    dt_sum = 0.0
-
-    println("")
-    verbose > 0 && @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|     Time\n")
-
-    time_ops = @elapsed for step in 1:max_step
-        rk4_step!(f_hvec, ve, vt, ws, -1.0, dt)
-
-        v .= v0
-        for k in 1:N
-            f_expm(active_idxs[k], x[k], v)
-        end
-
-        vnorm = norm(v)^2
-
-        f_hvec(v, Hv)
-        e_curr = dot(v, Hv) / vnorm
-        fid = abs2(dot(v, ve)) / vnorm
-
-        @. Hv = Hv - e_curr * v
-        for j in N:-1:1
-            f_backtran(active_idxs[j], -x[j], v, Hv, bv)
-            M[j, j] = real(dot(bv, bv))
-            V[j] = real(dot(bv, Hv))
-
-            vt .= v
-            for i in (j-1):-1:1
-                f_backtran(active_idxs[i], -x[i], vt, bv, τv)
-                val = real(dot(τv, bv))
-                M[i, j] = val
-                M[j, i] = val
-            end
-        end
-
-        x_dot = (M + epsilon * I) \ V
-        @. x -= dt * x_dot
-
-        θ_dot = norm(x_dot)
-        dt_sum += dt
-        if verbose > 0 && (step % per_print == 0 || step == 1)
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %9.3e    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, cond(M), θ_dot, dt_sum)
-        end
-
-        if θ_dot < xtol
-            if verbose > 0
-                @printf("  %04d    % 15.10f    %.3e    %.6f    %9.3e    %.3e    %.4g\n",
-                    step, e_curr, abs(e_curr - e_scale), fid, cond(M), θ_dot, dt_sum)
-            end
-            break
-        end
+function run_vqte(
+    basis::BasisManager, 
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
+    v0::Vector{Tv},
+    e_scale::Float64;
+    options::TimeEvolOptions=TimeEvolOptions(),
+) where {Ti,Tv,TK,TV}
+    if options.method == "rte"
+        @assert Tv <: Complex "RTE requires Tv <: Complex for Ham, Pool, and v0!"
     end
 
-    if verbose > 0
-        @printf("\nVQITE completed in %.4f seconds.\n", time_ops)
-    end
-
-    return fid, dt_sum
+    dim    = basis.dim
+    N      = length(pool)
+    funcs  = OTF_Functions(basis, ham, pool)
+    buffer = TimeEvolBuffer(
+        dim, N, 
+        method  = options.method,
+        mode    = options.mode,
+        is_diag = options.M_order == "diag" ? true : false, 
+        Tv      = eltype(v0),
+    )
+    idxs = [i for i in 1:N]
+    x    = zeros(Float64, N)
+    ve   = options.run_rk4 ? copy(v0) : Tv[]
+    _run_vqte(idxs, x, e_scale, v0, ve, funcs, buffer, options)
 end
 
-
-function run_adapt_vqite_tfim_adjoint(
+function run_adapt_vqte(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
     pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-    v0::Vector{Float64},
+    v0::Vector{Tv},
     e_scale::Float64;
-    dt::Float64=0.01,
-    max_adapt_step::Int=50,
-    max_inner_step::Int=1000,
-    Gtol::Float64=1e-3,
-    xtol::Float64=1e-6,
-    Δtol::Float64=1e-8,
-    verbose::Int=1,
-    M_trunc::Float64=1e-4,
-    inner_per_print::Int=10,
+    adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(),
+    vqte_options::TimeEvolOptions=TimeEvolOptions(),
 ) where {Ti,Tv,TK,TV}
-    println("============================================================================")
-    println("--- Macro-Micro Adaptive VQITE (Outer: ADAPT Select | Inner: VQITE Relax) ---")
+    dim    = basis.dim
+    N      = length(pool)
+    funcs  = OTF_Functions(basis, ham, pool)
 
-    f_hvec = get_hvec(basis, ham, is_time=false)
+    adapt_maxiter = adapt_options.maxiter
+    if vqte_options.mode == "forward"
+        adapt_maxiter = min(adapt_maxiter, (10 << 30) ÷ (dim * sizeof(Tv)))
+        println("Using forward mode, adapt maxiter is limited to $(adapt_maxiter)")
+    end
 
-    print("Pre-compiling Full Candidate Pool OTF ... ")
-    time_ops = @elapsed pool_otf = OTF(basis, pool)
-    @printf("Done in %.4f seconds\n", time_ops)
+    buffer = TimeEvolBuffer(
+        dim, adapt_maxiter, 
+        method  = vqte_options.method,
+        mode    = vqte_options.mode,
+        is_diag = vqte_options.M_order == "diag" ? true : false, 
+        Tv      = eltype(v0),
+    )
 
-    f_expm = (idx, θ, vec) -> expm_svd!(basis, pool_otf, idx, θ, vec)
-    f_batchgrad = (lv, rv, g, x) -> batch_grad_svd(basis, pool_otf, x, lv, rv, g)
-    f_backtran = (idx, θ, lvec, rvec, bvec) -> return backtran_svd!(basis, pool_otf, idx, θ, lvec, rvec, bvec)
-    f_backgrad = (idx, θ, lvec, rvec) -> return backgrad_svd!(basis, pool_otf, idx, θ, lvec, rvec)
-
-    ws = [zeros(Float64, basis.dim) for _ in 1:5]
-    ve = zeros(Float64, basis.dim)
-    ve .= v0
-
-    v = ws[1]
-    v .= v0
-
-    Hv = ws[2]
-    f_hvec(v, Hv)
-    e_curr = dot(v, Hv)
-
-    τv = ws[3]
-    bv = ws[4]
-    vt = ws[5]
-
-    zero_amp = zeros(Float64, length(pool))
-    zero_grads = zeros(Float64, length(pool))
-    converged = false
-    iter = 0
+    zero_x     = zeros(Float64, N)
+    zero_g     = zeros(Tv, N)
+    converged  = false
     amplitudes = Float64[]
     selec_idxs = Int64[]
-    e_hist = Float64[]
-    dt_tol = 0.0
+    e_hist     = Float64[]
 
+    ve   = options.run_rk4 ? copy(v0) : Tv[] 
+    v    = buffer.ws[1]
+    Hv   = buffer.ws[2]
+    v   .= v0
+    funcs.hvec(v, Hv)
+    e    = real(dot(v, Hv))
+    t    = 0.0
+    iter = 0
+    
     @time while !converged
         iter += 1
-        @. Hv = -(Hv - e_curr * v)
-        f_batchgrad(v, Hv, zero_grads, zero_amp)
-        @. zero_grads = real(zero_grads) * 2
-        sorted_idxs = sortperm(abs.(zero_grads), rev=true)
-        Gnorm = norm(zero_grads)
+        @. Hv = -(Hv - e * v)
+        funcs.batchgrad(v, Hv, zero_g, zero_x)
+        @. zero_g = real(zero_g) * 2
+        sorted_idxs = sortperm(abs.(zero_g), rev=true)
+        gnorm   = norm(zero_g)
         max_idx = sorted_idxs[1]
         for i in 1:length(pool)
             if isempty(selec_idxs) || sorted_idxs[i] != selec_idxs[end]
@@ -237,7 +397,7 @@ function run_adapt_vqite_tfim_adjoint(
             end
         end
 
-        gi_max = abs(zero_grads[max_idx])
+        gmax = abs(zero_g[max_idx])
 
         if length(selec_idxs) > 0 && max_idx == selec_idxs[end]
             println("Have selected same operator, ADAPT loop finished!")
@@ -247,180 +407,44 @@ function run_adapt_vqite_tfim_adjoint(
         push!(selec_idxs, max_idx)
         push!(amplitudes, 0.0)
 
-        # fid_opt, t_opt = _run_vqite_tfim_adjoint_diag(
-        #     f_hvec, f_expm,
-        #     # f_backtran, 
-        #     f_backgrad,
-        #     ws, v0, ve, v, Hv, τv, bv, vt, selec_idxs, amplitudes, e_scale,
-        #     dt, max_inner_step, xtol, M_trunc, inner_per_print, verbose - 1)
-        fid_opt, t_opt = _run_vqite_tfim_adjoint(
-            f_hvec, f_expm,
-            f_backtran, 
-            # f_backgrad,
-            ws, v0, ve, v, Hv, τv, bv, vt, selec_idxs, amplitudes, e_scale,
-            dt, max_inner_step, xtol, M_trunc, inner_per_print, verbose - 1)
+        fid_opt, t_opt = _run_vqte(selec_idxs, amplitudes, e_scale, v0, ve, funcs, buffer, vqte_options)
 
         v .= v0
         for i in eachindex(selec_idxs)
-            f_expm(selec_idxs[i], amplitudes[i], v)
+            funcs.expm(selec_idxs[i], amplitudes[i], v)
         end
 
-        f_hvec(v, Hv)
-        e_opt = dot(v, Hv)
+        funcs.hvec(v, Hv)
+        e   = real(dot(v, Hv))
+        err = abs(e - e_scale)
+        push!(e_hist, e)
+        t += t_opt
 
-        push!(e_hist, e_opt)
-        dt_tol += t_opt
-
-        cond1::Bool = iter > max_adapt_step
-        cond2::Bool = Gnorm < Gtol
+        cond1::Bool = iter > adapt_maxiter
+        cond2::Bool = (gnorm < adapt_options.Gtol && gmax < adapt_options.gtol)
         cond3::Bool = false
 
         if length(e_hist) > 5
-            Δe_max = maximum(abs.(diff(e_hist[end-4:end])))
-            if Δe_max < Δtol
-                @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", Δe_max, Δtol)
+            de = maximum(abs.(diff(e_hist[end-4:end])))
+            if de < adapt_options.Δtol
+                @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", de, adapt_options.Δtol)
                 cond3 = true
             end
         end
 
         converged = cond1 || cond2 || cond3
 
-        if verbose > 0
+        if adapt_options.verbose > 0
             @printf("\nIteration: %d\n", iter)
-            @printf("   E0: %.14f\n", e_opt)
-            @printf("  err: %9.3e\n", e_opt - e_scale)
+            @printf("   E0: %.14f\n",    e)
+            @printf("  err: %9.3e\n",    err)
             @printf("  |G|: %9.3e    gmax: %9.3e     fid: %9.3e     Time: %.4f\n",
-                Gnorm, gi_max, fid_opt, dt_tol)
+                gnorm, gmax, fid_opt, t)
             println("============================================================================")
         end
 
     end
 
     return amplitudes, selec_idxs
-end
-
-
-function run_vqrte_tfim_adjoint(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
-    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
-    v0::Vector{Tv},
-    e_scale::Float64;
-    dt::Float64=0.01,
-    max_step::Int=500,
-    sv_tol::Float64=1e-4,
-    per_print::Int=10,
-) where {Ti,Tv,TK,TV}
-    @assert Tv == ComplexF64 "VQRTE requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
-
-    println("============================================================================")
-    println("--- VQRTE with Strict Trajectory Tracking (RK4 Engine + adjoint method) ---")
-
-    f_hvec = get_hvec(basis, ham, is_time=false)
-
-    print("Pre-compiling Pool OTF ... ")
-    time_ops = @elapsed pool_otf = OTF(basis, pool)
-    @printf("Done in %.4f seconds\n", time_ops)
-
-    f_expm = (idx, θ, vec) -> expm_svd!(basis, pool_otf, idx, θ, vec)
-    f_backtran = (idx, θ, lvec, rvec, bvec) -> return backtran_svd!(basis, pool_otf, idx, θ, lvec, rvec, bvec)
-
-    N = length(pool)
-    e_hist = Float64[]
-    fid_hist = Float64[]
-    cond_hist = Float64[]
-
-    M = zeros(Float64, N, N)
-    V = zeros(Float64, N)
-
-    x = zeros(Float64, N)
-    x_hist = [copy(x)]
-    xs = [zeros(Float64, N) for _ in 1:5]
-    xt = xs[5]
-
-    ws = [zeros(ComplexF64, basis.dim) for _ in 1:5]
-    v_exact = copy(v0)
-    v = ws[1]
-    Hv = ws[2]
-    τv = ws[3]
-    bv = ws[4]
-    vt = ws[5]
-
-    function compute_xdot_and_energy!(x_in, dx_out)
-        v .= v0
-        for k in 1:N
-            f_expm(k, x_in[k], v)
-        end
-
-        f_hvec(v, Hv)
-        E_val = real(dot(v, Hv)) / norm(v)^2
-
-        @. Hv = -im * (Hv - E_val * v)
-        for j in N:-1:1
-            f_backtran(j, -x_in[j], v, Hv, bv)
-            M[j, j] = real(dot(bv, bv))
-            V[j] = real(dot(bv, Hv))
-
-            vt .= v
-            for i in (j-1):-1:1
-                f_backtran(i, -x_in[i], vt, bv, τv)
-                val = real(dot(τv, bv))
-                M[i, j] = val
-                M[j, i] = val
-            end
-        end
-
-        if dx_out === xs[1]
-            push!(cond_hist, cond(M))
-        end
-
-        F = svd(M)
-        inv_S = [s > sv_tol ? 1.0 / s : 0.0 for s in F.S]
-        M_pinv = F.V * Diagonal(inv_S) * F.U'
-
-        dx_out .= M_pinv * V
-
-        return E_val
-    end
-
-    @printf("  Step          Energy         Error      Trj Fid      cond(M)      |θ_dot|      Time\n")
-
-    time_ops = @elapsed for step in 1:max_step
-        e_curr = compute_xdot_and_energy!(x, xs[1])
-        push!(e_hist, e_curr)
-
-        @. xt = x + 0.5 * dt * xs[1]
-        compute_xdot_and_energy!(xt, xs[2])
-
-        @. xt = x + 0.5 * dt * xs[2]
-        compute_xdot_and_energy!(xt, xs[3])
-
-        @. xt = x + dt * xs[3]
-        compute_xdot_and_energy!(xt, xs[4])
-
-        @. x += dt / 6 * (xs[1] + 2 * xs[2] + 2 * xs[3] + xs[4])
-        push!(x_hist, copy(x))
-
-        rk4_step!(f_hvec, v_exact, vt, ws, -im, dt)
-
-        v .= v0
-        for k in 1:N
-            f_expm(k, x[k], v)
-        end
-
-        fid = abs2(dot(v, v_exact)) / norm(v)^2
-        push!(fid_hist, fid)
-
-        if step % per_print == 0 || step == 1
-            cond_M = isempty(cond_hist) ? NaN : cond_hist[end]
-            @printf("  %04d    % 15.10f    %.3e    %.6f    %.3e    %.3e    %.4g\n",
-                step, e_curr, abs(e_curr - e_scale), fid, cond_M, norm(xs[1]), step * dt)
-        end
-    end
-
-    @printf("\nNative Complex VQRTE (RK4) completed in %.4f seconds.\n", time_ops)
-    println("============================================================================\n")
-
-    return (x=x_hist, e=e_hist, fid=fid_hist, cond=cond_hist)
 end
 
