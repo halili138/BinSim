@@ -8,7 +8,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     build(mole)
 
-    Tv::DataType = ComplexF64
+    Tv::DataType = Float64
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
@@ -20,7 +20,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     pool = FEB(orbs, Tv=Tv, complete = Tv <: Complex ? true : false)
 
     run_vqte(basis, ham, pool, get_hf(basis, mole.nelec, Tv=Tv), mole.e_scale,
-        options=TimeEvolOptions(
+        options = TimeEvolOptions(
             dt          = 1e-2, 
             maxiter     = 9999, 
             xtol        = 1e-6, 
@@ -34,24 +34,27 @@ if abspath(PROGRAM_FILE) == @__FILE__
         )
     )
 
-    # run_adapt_vqite_tfim_adjoint(
-    #     basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
-    #     dt=0.01, max_adapt_step=100, max_inner_step=99999, Gtol=1e-3, xtol=1e-6, verbose=2, inner_per_print=10000,
-    #     is_diag=true, run_rk4=true)
-
-    # run_adapt_vqe(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
-    #     adapt_options=ADAPT_OPTIONS(
-    #         Gtol=1e-3,
-    #         gtol=1e-4,
-    #         htol=1e-3,
-    #         Δtol=1e-8,
-    #         verbose=1,
-    #     ),
-    #     vqe_options=VQE_OPTIONS(
-    #         ftol=1e-10,
-    #         gtol=1e-6,
-    #         maxiter=10000,
-    #         verbose=1,
-    #     )
-    # )
+    run_adapt_vqte(basis, ham, pool, get_hf(basis, mole.nelec), mole.e_scale,
+        adapt_options = ADAPT_OPTIONS(
+            maxiter     = 100, 
+            Gtol        = 1e-3, 
+            gtol        = 1e-4, 
+            htol        = 1e-2, 
+            Δtol        = 1e-8, 
+            verbose     = 2, 
+            save_path   = "",
+        ),
+        vqte_options = TimeEvolOptions(
+            dt          = 1e-2, 
+            maxiter     = 9999, 
+            xtol        = 1e-6, 
+            mtol        = 1e-4, 
+            per_print   = 1000, 
+            verbose     = 2, 
+            run_rk4     = false, 
+            method      = "ite", 
+            mode        = "adjoint", 
+            M_order     = "diag",
+        ),
+    )
 end

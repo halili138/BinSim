@@ -209,7 +209,7 @@ function _run_vqte(
     f_backgrad = otf_funcs.backgrad
     f_backtran = otf_funcs.backtran
 
-    ve   .= v0
+    options.run_rk4 && (ve .= v0)
     fid   = 0.0
     t     = 0.0
     condM = 0.0
@@ -373,7 +373,7 @@ function run_adapt_vqte(
     selec_idxs = Int64[]
     e_hist     = Float64[]
 
-    ve   = options.run_rk4 ? copy(v0) : Tv[] 
+    ve   = vqte_options.run_rk4 ? copy(v0) : Tv[] 
     v    = buffer.ws[1]
     Hv   = buffer.ws[2]
     v   .= v0
