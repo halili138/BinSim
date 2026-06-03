@@ -5,6 +5,7 @@
 #include "grad.hpp"
 #include "backgrad.hpp"
 #include "backtran.hpp"
+#include "expm_batch.hpp"
 #include "grad_batch.hpp"
 #include "tran_batch.hpp"
 
@@ -122,6 +123,19 @@ extern "C"
         const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
 
         tvec_svd_network_otf<uint32, double>(basis, net, idx, src, dst);
+    }
+
+    void batch_expm_contract_otf_f64(
+        void *basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        double *__restrict__ matrix, int ld, int num_vecs)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, double> *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+
+        expm_svd_batched_network_otf<uint32, double>(basis, net, idx, theta, matrix, ld, num_vecs);
     }
 
     void batch_grad_contract_otf_f64(
@@ -274,6 +288,19 @@ extern "C"
         const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
 
         tvec_svd_network_otf<uint32, complexf64>(basis, net, idx, src, dst);
+    }
+
+    void batch_expm_contract_otf_c64(
+        void *basis_ptr,
+        void *net_ptr,
+        const int64 idx,
+        const double theta,
+        complexf64 *__restrict__ matrix, int ld, int num_vecs)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const Network_OTF<uint32, complexf64> *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
+
+        expm_svd_batched_network_otf<uint32, complexf64>(basis, net, idx, theta, matrix, ld, num_vecs);
     }
 
     void batch_grad_contract_otf_c64(

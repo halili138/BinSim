@@ -355,3 +355,123 @@ function ising_module(nq::Int64, J::Float64=1.0, h::Float64=0.5;
     return linearcombine(ops, cs, 0.0, 1e-12)
 end
 
+
+function heisenberg_module(nq::Int, jx::Float64=1.0, jy::Float64=1.0, jz::Float64=1.0;
+    Ti::DataType=UInt32, Tv::DataType=Float64, is_pbc::Bool=false)
+
+    ops = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
+    cs  = Tv[]
+
+    for i in 0:nq-2
+        push!(ops, QubitOperatorAABB([(i, "X"), (i+1, "X")], jx, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "Y"), (i+1, "Y")], jy, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], jz, Ti, Tv))
+        append!(cs, Tv[1, 1, 1])
+    end
+
+    if is_pbc
+        push!(ops, QubitOperatorAABB([(nq-1, "X"), (0, "X")], jx, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq-1, "Y"), (0, "Y")], jy, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], jz, Ti, Tv))
+        append!(cs, Tv[1, 1, 1])
+    end
+
+    return linearcombine(ops, cs, 0.0, 1e-12)
+end
+
+
+function ising_pool(nq::Int64; 
+    Ti::DataType=UInt32, Tv::DataType=Float64, 
+    is_pbc::Bool=false, pool_type::String="local")
+    
+    # 算符池是一个由单一 Pauli 字符串构成的数组，不需要 linearcombine
+    pool = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
+    
+    # ==========================================
+    # 1. 单体算符 (Weight-1)
+    # 必须包含 1 个 Y。由 [ZZ, X] 原始对易子产生。
+    # ==========================================
+    for i in 0:nq-1
+        push!(pool, QubitOperatorAABB([(i, "Y")], 1.0, Ti, Tv))
+    end
+
+    # ==========================================
+    # 2. 双体算符 (Weight-2)
+    # 必须包含 1 个 Y 和 1 个非 Y (Z 或 X)，保证总 Y 数量为奇数
+    # ==========================================
+    
+    # 根据用户选择，决定是只用近邻(local)还是全连接(all2all)
+    pairs = Tuple{Int, Int}[]
+    if pool_type == "local"
+        for i in 0:nq-2
+            push!(pairs, (i, i+1))
+        end
+        if is_pbc
+            push!(pairs, (nq-1, 0))
+        end
+    elseif pool_type == "all2all"
+        for i in 0:nq-1
+            for j in i+1:nq-1
+                push!(pairs, (i, j))
+            end
+        end
+    end
+
+    for (i, j) in pairs
+        # ZY 和 YZ 组合：通常在 TFIM 中贡献最大的双体梯度
+        push!(pool, QubitOperatorAABB([(i, "Z"), (j, "Y")], 1.0, Ti, Tv))
+        push!(pool, QubitOperatorAABB([(i, "Y"), (j, "Z")], 1.0, Ti, Tv))
+        
+        # XY 和 YX 组合：为了进一步增加算符池的表达能力 (过完备性补充)
+        push!(pool, QubitOperatorAABB([(i, "X"), (j, "Y")], 1.0, Ti, Tv))
+        push!(pool, QubitOperatorAABB([(i, "Y"), (j, "X")], 1.0, Ti, Tv))
+    end
+
+    println("Size of $(pool_type) operator pool: $(length(pool))")
+
+    return pool
+end
+
+
+function heisenberg_pool(nq::Int64; 
+    Ti::DataType=UInt32, Tv::DataType=Float64, 
+    is_pbc::Bool=false, pool_type::String="local")
+    
+    pool = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
+
+    if pool_type == "local"
+        for i in 0:nq-1
+            push!(pool, QubitOperatorAABB([(i, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Z")], -im, Ti, Tv))
+        end
+        for i in 0:nq-2 
+            push!(pool, QubitOperatorAABB([(i, "X"), (i+1, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Y"), (i+1, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], -im, Ti, Tv))
+        end
+        if is_pbc
+            push!(pool, QubitOperatorAABB([(nq-1, "X"), (0, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(nq-1, "Y"), (0, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], -im, Ti, Tv))
+        end
+    else
+        for i in 0:nq-1
+            push!(pool, QubitOperatorAABB([(i, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Z")], -im, Ti, Tv))
+        end
+        for i in 0:nq-2 
+            for j in i+1:nq-1
+                push!(pool, QubitOperatorAABB([(i, "X"), (j, "X")], -im, Ti, Tv))
+                push!(pool, QubitOperatorAABB([(i, "Y"), (j, "Y")], -im, Ti, Tv))
+                push!(pool, QubitOperatorAABB([(i, "Z"), (j, "Z")], -im, Ti, Tv))
+            end
+        end
+    end
+
+    println("Size of $(pool_type) operator pool: $(length(pool))")
+    
+    return pool
+end
+

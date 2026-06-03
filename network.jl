@@ -113,7 +113,7 @@ function get_reference_state(basis::BasisManager, astrs::Vector{UInt32}, bstrs::
                 astr::UInt32,
                 bstr::UInt32,
                 val::Cdouble,
-                hf::Ptr{ComplexF64},
+                v0::Ptr{ComplexF64},
             )::Cvoid
         end
     else
@@ -123,7 +123,7 @@ function get_reference_state(basis::BasisManager, astrs::Vector{UInt32}, bstrs::
                 astr::UInt32,
                 bstr::UInt32,
                 val::Cdouble,
-                hf::Ptr{Cdouble},
+                v0::Ptr{Cdouble},
             )::Cvoid
         end
     end
@@ -525,6 +525,22 @@ function backtran_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, l
     )
 end
 
+function batch_expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, mat::T, ncols::Int64, valid_ncols::Int64) where {Tv,T<:AbstractArray{Tv,2}}
+    Tv <: Complex ? (
+        @ccall LIB_OTF.batch_expm_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64, θ::Cdouble, mat::Ptr{Tv},
+        ncols::Int64, valid_ncols::Int64
+    )::Cvoid
+    ) : (
+        @ccall LIB_OTF.batch_expm_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64, θ::Cdouble, mat::Ptr{Tv},
+        ncols::Int64, valid_ncols::Int64
+    )::Cvoid
+    )
+end
+
 function batch_grad_svd(basis::BasisManager, otf::OTF, x::Vector{Float64}, lv::T, rv::T, grads::T) where {Tv,T<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         @ccall LIB_OTF.batch_grad_contract_otf_c64(
@@ -539,7 +555,7 @@ function batch_grad_svd(basis::BasisManager, otf::OTF, x::Vector{Float64}, lv::T
     )
 end
 
-function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, src::T, dst::T) where {Tv,T<:AbstractArray{Tv,1}}
+function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1}, T2<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         @ccall LIB_OTF.tvec_contract_otf_c64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},

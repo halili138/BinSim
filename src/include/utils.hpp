@@ -219,3 +219,47 @@ FORCE_INLINE void backtran_update(
     expm_update(rs, rd, vt, ecd, eco);
     tvec_update(ls, ld, bs, bd, vt);
 }
+
+template <typename Tv>
+FORCE_INLINE void expm_batch_update_matrix(
+    Tv *__restrict__ matrix, // 矩阵的平铺指针
+    int ld,                  // 矩阵的 Leading Dimension (在 Julia 列主序中就是 N)
+    int num_vecs,            // 当前激活的波函数数量 (即你说的有效行数范围)
+    int64 si, int64 di,      // 基底索引 i 和 j
+    Tv vt, double cd, double co)
+{
+    const Tv vt_c = math_conj(vt);
+    const Tv vd = 1.0 + cd * (vt * vt_c);
+    const Tv vo_fwd = co * vt;
+    const Tv vo_rev = co * vt_c;
+
+    Tv *__restrict__ sp_base = matrix + si * ld;
+    Tv *__restrict__ dp_base = matrix + di * ld;
+
+#pragma omp simd
+    for (int k = 0; k < num_vecs; ++k)
+    {
+        const Tv vi = sp_base[k];
+        const Tv vj = dp_base[k];
+
+        sp_base[k] = vi * vd - vj * vo_rev;
+        dp_base[k] = vj * vd + vi * vo_fwd;
+    }
+}
+
+template <typename Tv>
+FORCE_INLINE void expm_batch_update_diag(
+    Tv *__restrict__ matrix, // 矩阵的平铺指针
+    int ld,                  // 矩阵 Leading Dimension (即 N)
+    int num_vecs,            // 当前激活的波函数数量
+    int64 i,                 // 基底索引
+    Tv u)                    // 标量系数 (相移或缩放)
+{
+    Tv *__restrict__ p_base = matrix + i * ld;
+
+#pragma omp simd
+    for (int k = 0; k < num_vecs; ++k)
+    {
+        p_base[k] *= u;
+    }
+}

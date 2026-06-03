@@ -1422,3 +1422,33 @@ function run_exact_vqe_adaptive(
     return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
 end
 
+
+function rk4_step!(
+    f_hvec::Function, v::T, vt::T, ws::Vector{T},
+    shift::Number, dt::Float64,
+) where {Tv,T<:AbstractArray{Tv,1}}
+    # k1 = -i * H * v_exact
+    f_hvec(v, ws[1])
+    ws[1] .*= shift
+
+    # k2 = -i * H * (v + dt/2 * k1)
+    @. vt = v + ws[1] * dt / 2
+    f_hvec(vt, ws[2])
+    ws[2] .*= shift
+
+    # k3 = -i * H * (v + dt/2 * k2)
+    @. vt = v + ws[2] * dt / 2
+    f_hvec(vt, ws[3])
+    ws[3] .*= shift
+
+    # k4 = -i * H * (v + dt * k3)
+    @. vt = v + ws[3] * dt
+    f_hvec(vt, ws[4])
+    ws[4] .*= shift
+
+    # ψ(t + dt) = ψ(t) + dt/6 * (k1 + 2k2 + 2k3 + k4)
+    @. v += (ws[1] + 2 * ws[2] + 2 * ws[3] + ws[4]) * dt / 6
+
+    normalize!(v)
+end
+

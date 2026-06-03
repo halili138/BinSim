@@ -11,14 +11,23 @@ if abspath(PROGRAM_FILE) == @__FILE__
     bstrs = [UInt32(i) for i in 0:N]
     basis = BasisManager(norb, astrs, bstrs, zeros(Int64, norb))
 
-    v0 = ones(Float64, basis.dim)
-    normalize!(v0)
+    # v0 = ones(Float64, basis.dim)
+    # normalize!(v0)
+    # ham = ising_module(nq, J, h, is_pbc=true)
 
-    ham = ising_module(nq, J, h, is_pbc=true)
+    v0 = get_reference_state(basis, UInt32[UInt32(1) << norb - 1], UInt32[0], Float64[1])
+    normalize!(v0)
+    ham = heisenberg_module(nq, J, h, is_pbc=true)
 
     e_scale, v_fci = run_fci(basis, ham, v0)
 
-    println(length(findall(x->abs(x)>1e-12, v_fci)))
+    idxs = findall(x->abs(x) > 1e-12, v_fci)
+    idxs_0b = UInt64.(idxs) .- 1
+    println(length(unique(zip_even_bit.(idxs_0b))))
+    println(length(unique(zip_odd_bit.(idxs_0b))))
+
+    # println(length(findall(x->abs(x)>1e-12, v_fci)))
+
     # @time run_euler_ite(basis, ham, v0, e_scale,
     #     max_step=10000, tol=1e-10, net="otf")
     # dτ = parse(Float64, ARGS[2])
