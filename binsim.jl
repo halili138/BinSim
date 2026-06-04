@@ -19,7 +19,6 @@ using Arpack
 using LinearMaps
 using DifferentialEquations
 using RecursiveArrayTools
-using MPI
 
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
 omp_threads     = get(ENV, "OMP_NUM_THREADS", "Not Set")
