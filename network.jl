@@ -620,10 +620,10 @@ end
 
 function OTF_Functions(
     basis::BasisManager, 
-    ham::Union{Nothing,BinaryQubitAABB}, 
-    pool::Union{Nothing,Vector{<:BinaryQubitAABB}};
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}};
     time_print::Bool=false,
-)
+) where {Ti,Tv,TK,TV}
     f_hvec      = (v, Hv)               -> nothing
     f_expm      = (idx, θ, v)           -> nothing
     f_tvec      = (idx, lv, rv)         -> nothing
@@ -634,7 +634,7 @@ function OTF_Functions(
     f_batchgrad = (lv, rv, grads, x)    -> nothing 
     f_batchtran = (lv, rv, trans)       -> nothing
 
-    if !isnothing(ham)
+    if !isempty(ham)
         print("Pre-compiling Ham OTF ... ")
         time_ops = @elapsed ham_otf = OTF(basis, ham)
         @printf("Done in %.4f seconds\n", time_ops)
@@ -645,7 +645,7 @@ function OTF_Functions(
             f_hvec = (v, Hv) -> hvec_svd!(basis, ham_otf, v, Hv)
         end
     end
-    if !isnothing(pool)
+    if !isempty(pool)
         print("Pre-compiling Pool OTF ... ")
         time_ops = @elapsed pool_otf = OTF(basis, pool)
         @printf("Done in %.4f seconds\n", time_ops)
