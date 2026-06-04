@@ -202,7 +202,7 @@ function compress_by_svd(A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) wher
                     U_col .*= exp(im * phase_angle)
                     Vt_row .*= exp(-im * phase_angle)
 
-                    # 消除机器精度误差带来的微小虚部，并保持数据类型为 Tv (ComplexF64)
+                    # 消除机器精度误差带来的微小虚部, 并保持数据类型为 Tv (ComplexF64)
                     Vt_row = Tv.(real.(Vt_row))
 
                 elseif ax == 0 && bx != 0
@@ -213,7 +213,7 @@ function compress_by_svd(A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) wher
                     U_col .*= exp(-im * phase_angle)
                     Vt_row .*= exp(im * phase_angle)
 
-                    # 消除机器精度误差带来的微小虚部，并保持数据类型为 Tv (ComplexF64)
+                    # 消除机器精度误差带来的微小虚部, 并保持数据类型为 Tv (ComplexF64)
                     U_col = Tv.(real.(U_col))
                 end
             end
@@ -451,7 +451,7 @@ function get_diags(basis::BasisManager, otf::OTF, Tv::DataType)
     return diags
 end
 
-function hvec_otf!(basis::BasisManager, otf::OTF, src::T, dst::T) where {Tv,T<:AbstractArray{Tv,1}}
+function hvec_svd!(basis::BasisManager, otf::OTF, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         @ccall LIB_OTF.hvec_gather_contract_otf_c64(
         basis.ptr::Ptr{Cvoid},
@@ -483,7 +483,21 @@ function expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, vec::
     )
 end
 
-function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T, rv::T) where {Tv,T<:AbstractArray{Tv,1}}
+function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1}, T2<:AbstractArray{Tv,1}}
+    Tv <: Complex ? (
+        @ccall LIB_OTF.tvec_contract_otf_c64(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64, src::Ptr{Tv}, dst::Ptr{Tv},
+    )::Cvoid
+    ) : (
+        @ccall LIB_OTF.tvec_contract_otf_f64(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx - 1)::Int64, src::Ptr{Tv}, dst::Ptr{Tv},
+    )::Cvoid
+    )
+end
+
+function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         return @ccall LIB_OTF.grad_contract_otf_c64(
             basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -497,7 +511,7 @@ function grad_svd(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T,
     )
 end
 
-function backgrad_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T, rv::T) where {Tv,T<:AbstractArray{Tv,1}}
+function back_grad_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         return @ccall LIB_OTF.backgrad_contract_otf_c64(
             basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -511,7 +525,7 @@ function backgrad_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, l
     )
 end
 
-function backtran_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T, rv::T, bv::T) where {Tv,T<:AbstractArray{Tv,1}}
+function back_tran_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64, lv::T1, rv::T2, bv::T3) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         return @ccall LIB_OTF.backtran_contract_otf_c64(
             basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -541,7 +555,7 @@ function batch_expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64,
     )
 end
 
-function batch_grad_svd(basis::BasisManager, otf::OTF, x::Vector{Float64}, lv::T, rv::T, grads::T) where {Tv,T<:AbstractArray{Tv,1}}
+function batch_grad_svd(basis::BasisManager, otf::OTF, x::Vector{Float64}, lv::T1, rv::T2, grads::T3) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         @ccall LIB_OTF.batch_grad_contract_otf_c64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -555,21 +569,7 @@ function batch_grad_svd(basis::BasisManager, otf::OTF, x::Vector{Float64}, lv::T
     )
 end
 
-function tvec_svd!(basis::BasisManager, otf::OTF, idx::Int64, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1}, T2<:AbstractArray{Tv,1}}
-    Tv <: Complex ? (
-        @ccall LIB_OTF.tvec_contract_otf_c64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx - 1)::Int64, src::Ptr{Tv}, dst::Ptr{Tv},
-    )::Cvoid
-    ) : (
-        @ccall LIB_OTF.tvec_contract_otf_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx - 1)::Int64, src::Ptr{Tv}, dst::Ptr{Tv},
-    )::Cvoid
-    )
-end
-
-function tran_svd(basis::BasisManager, otf::OTF, lv::T, rv::T, trans::T) where {Tv,T<:AbstractArray{Tv,1}}
+function batch_tran_svd(basis::BasisManager, otf::OTF, lv::T1, rv::T2, trans::T3) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1}}
     Tv <: Complex ? (
         @ccall LIB_OTF.batch_tran_contract_otf_c64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -584,151 +584,82 @@ function tran_svd(basis::BasisManager, otf::OTF, lv::T, rv::T, trans::T) where {
 end
 
 
-# ══════════════════════════════════════════════════════════════════════
-# Distributed OTF (MPI-based)
-# ══════════════════════════════════════════════════════════════════════
+"""
+OTF_Functions 结构体包含以下操作函数：
+# 基本操作
+- hvec(v, Hv)::Function             |Hv⟩ = H|v⟩             : 哈密顿量作用
+- expm(idx, θ, v)::Function         |v⟩ = exp(θT)|v⟩        : 原地演化 T 的指数算子, T 在 operator pool 中的索引为 idx
+- tvec(idx, lv, rv)::Function       |rv⟩ = T|lv⟩            : 算子 T 作用
+# 梯度计算
+- grad(idx, θ, lv, rv)::Function    g = ⟨lv|Texp(θT)|rv⟩    : 计算单个梯度并返回
+# 反向传播相关
+- backgrad::Function : 按顺序组合操作：
+  1. |lv⟩ = exp(-θT)|lv⟩    : 原地演化, 注意是-θ
+  2. g = ⟨lv|T exp(θT)|rv⟩  : 返回 g
+  3. |rv⟩ = exp(-θT)|rv⟩    : 原地演化
+- backtran(idx, θ, lv, rv, tlv)::Function : 按顺序组合操作：
+  1. |lv⟩ = exp(θT)|lv⟩     : 原地演化, 注意是θ
+  2. |tlv⟩ = T|lv⟩
+  3. |rv⟩ = exp(θT)|rv⟩     : 原地演化
+# 批量操作
+- batchexpm(idx, θ, mat, N, j)::Function    : 批量原地演化 expm, 作用于 (N × dim) 矩阵 mat 的前 j 列
+- batchgrad(lv, rv, grads, x)::Function     : 批量计算算子池的梯度(输入 |lv⟩ 和 |rv⟩), 结果保存到 grads
+- batchtran(lv, rv, trans)::Function        : 批量计算算子池的 ⟨lv|T|rv⟩, 结果保存到 trans
+"""
+struct OTF_Functions
+    hvec::Function
+    expm::Function
+    tvec::Function
+    grad::Function
+    backgrad::Function
+    backtran::Function
+    batchexpm::Function
+    batchgrad::Function 
+    batchtran::Function
+end
 
-const LIB_OTF_DIST = joinpath(@__DIR__, "src/lib/libdist.so")
+function OTF_Functions(
+    basis::BasisManager, 
+    ham::Union{Nothing,BinaryQubitAABB}, 
+    pool::Union{Nothing,Vector{<:BinaryQubitAABB}};
+    time_print::Bool=false,
+)
+    f_hvec      = (v, Hv)               -> nothing
+    f_expm      = (idx, θ, v)           -> nothing
+    f_tvec      = (idx, lv, rv)         -> nothing
+    f_grad      = (idx, θ, lv, rv)      -> nothing
+    f_backgrad  = (idx, θ, lv, rv)      -> nothing
+    f_backtran  = (idx, θ, lv, rv, tlv) -> nothing
+    f_batchexpm = (idx, θ, mat, N, j)   -> nothing
+    f_batchgrad = (lv, rv, grads, x)    -> nothing 
+    f_batchtran = (lv, rv, trans)       -> nothing
 
-mutable struct DistributedBasisManager
-    ptr::Ptr{Cvoid}
-    local_dim::Int64
-    my_rank::Int64
-    num_ranks::Int64
-
-    function DistributedBasisManager(comm::MPI.Comm, basis::BasisManager)
-        ptr = @ccall LIB_OTF_DIST.create_distributed_basis_f64(
-            comm.val::Int32, basis.ptr::Ptr{Cvoid}, basis.norb::Int64,
-        )::Ptr{Cvoid}
-        ptr == C_NULL && error("Failed to create C++ DistributedBasisManager.")
-        obj = new(ptr,
-            @ccall(LIB_OTF_DIST.distributed_basis_local_dim_f64(ptr::Ptr{Cvoid})::Int64),
-            @ccall(LIB_OTF_DIST.distributed_basis_my_rank_f64(ptr::Ptr{Cvoid})::Int64),
-            @ccall(LIB_OTF_DIST.distributed_basis_num_ranks_f64(ptr::Ptr{Cvoid})::Int64))
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_OTF_DIST.destroy_distributed_basis_f64(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
+    if !isnothing(ham)
+        print("Pre-compiling Ham OTF ... ")
+        time_ops = @elapsed ham_otf = OTF(basis, ham)
+        @printf("Done in %.4f seconds\n", time_ops)
+        if time_print
+            f_hvec = (v, Hv) -> @printf(
+                "hvec time %.6f seconds", @elapsed hvec_svd!(basis, ham_otf, v, Hv))
+        else
+            f_hvec = (v, Hv) -> hvec_svd!(basis, ham_otf, v, Hv)
         end
-        return obj
+    end
+    if !isnothing(pool)
+        print("Pre-compiling Pool OTF ... ")
+        time_ops = @elapsed pool_otf = OTF(basis, pool)
+        @printf("Done in %.4f seconds\n", time_ops)
+
+        f_expm = (idx, θ, v) -> expm_svd!(basis, pool_otf, idx, θ, v)
+        f_tvec = (idx, lv, rv) -> tvec_svd!(basis, pool_otf, idx, lv, rv)
+        f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_otf, idx, θ, lv, rv)
+        f_backgrad = (idx, θ, lv, rv) -> return back_grad_svd!(basis, pool_otf, idx, θ, lv, rv)
+        f_backtran = (idx, θ, lv, rv, tlv) -> return back_tran_svd!(basis, pool_otf, idx, θ, lv, rv, tlv)
+        f_batchexpm = (idx, θ, mat, N, j) -> batch_expm_svd!(basis, pool_otf, idx, θ, mat, N, j)
+        f_batchgrad = (lv, rv, grads, x) -> return batch_grad_svd(basis, pool_otf, x, lv, rv, grads)
+        f_batchtran = (lv, rv, trans) -> return batch_tran_svd(basis, pool_otf, lv, rv, trans)
     end
 
-    function DistributedBasisManager(comm::MPI.Comm, basis::BasisManager, ::Type{ComplexF64})
-        ptr = @ccall LIB_OTF_DIST.create_distributed_basis_c64(
-            comm.val::Int32, basis.ptr::Ptr{Cvoid}, basis.norb::Int64,
-        )::Ptr{Cvoid}
-        ptr == C_NULL && error("Failed to create C++ DistributedBasisManager (c64).")
-        obj = new(ptr,
-            @ccall(LIB_OTF_DIST.distributed_basis_local_dim_c64(ptr::Ptr{Cvoid})::Int64),
-            @ccall(LIB_OTF_DIST.distributed_basis_my_rank_c64(ptr::Ptr{Cvoid})::Int64),
-            @ccall(LIB_OTF_DIST.distributed_basis_num_ranks_c64(ptr::Ptr{Cvoid})::Int64))
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_OTF_DIST.destroy_distributed_basis_c64(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
-        end
-        return obj
-    end
-end
-
-mutable struct DistributedOTF
-    ptr::Ptr{Cvoid}
-    ngs::Int64
-
-    function DistributedOTF(otf::OTF, orbsym::Vector{Int64})
-        ptr = @ccall LIB_OTF_DIST.build_distributed_net_f64(
-            otf.ptr::Ptr{Cvoid}, orbsym::Ptr{Int64})::Ptr{Cvoid}
-        ptr == C_NULL && error("Failed to create C++ DistributedNetwork_OTF.")
-        obj = new(ptr,
-            @ccall(LIB_OTF_DIST.distributed_net_num_groups_f64(ptr::Ptr{Cvoid})::Int64))
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_OTF_DIST.destroy_distributed_net_f64(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
-        end
-        return obj
-    end
-
-    function DistributedOTF(otf::OTF, orbsym::Vector{Int64}, ::Type{ComplexF64})
-        ptr = @ccall LIB_OTF_DIST.build_distributed_net_c64(
-            otf.ptr::Ptr{Cvoid}, orbsym::Ptr{Int64})::Ptr{Cvoid}
-        ptr == C_NULL && error("Failed to create C++ DistributedNetwork_OTF (c64).")
-        obj = new(ptr,
-            @ccall(LIB_OTF_DIST.distributed_net_num_groups_c64(ptr::Ptr{Cvoid})::Int64))
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_OTF_DIST.destroy_distributed_net_c64(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
-        end
-        return obj
-    end
-end
-
-function hvec_otf_distributed!(dbasis::DistributedBasisManager, dnet::DistributedOTF,
-                                src::T, dst::T) where {T<:AbstractArray{Float64,1}}
-    @ccall LIB_OTF_DIST.hvec_gather_contract_otf_distributed_f64(
-        dbasis.ptr::Ptr{Cvoid},
-        dnet.ptr::Ptr{Cvoid},
-        src::Ptr{Cdouble},
-        dst::Ptr{Cdouble},
-    )::Cvoid
-end
-
-function hvec_otf_distributed!(dbasis::DistributedBasisManager, dnet::DistributedOTF,
-                                src::T, dst::T) where {T<:AbstractArray{ComplexF64,1}}
-    @ccall LIB_OTF_DIST.hvec_gather_contract_otf_distributed_c64(
-        dbasis.ptr::Ptr{Cvoid},
-        dnet.ptr::Ptr{Cvoid},
-        src::Ptr{ComplexF64},
-        dst::Ptr{ComplexF64},
-    )::Cvoid
-end
-
-function compute_local_diags!(
-    dbasis::DistributedBasisManager,
-    azs::Vector{UInt32}, bzs::Vector{UInt32},
-    cs::Vector{Float64}, out::Vector{Float64})
-    @ccall LIB_OTF_DIST.distributed_compute_local_diags_f64(
-        dbasis.ptr::Ptr{Cvoid},
-        azs::Ptr{UInt32}, bzs::Ptr{UInt32},
-        cs::Ptr{Cdouble}, length(cs)::Int64,
-        out::Ptr{Cdouble},
-    )::Cvoid
-end
-
-function compute_local_diags!(
-    dbasis::DistributedBasisManager,
-    azs::Vector{UInt32}, bzs::Vector{UInt32},
-    cs::Vector{ComplexF64}, out::Vector{ComplexF64})
-    @ccall LIB_OTF_DIST.distributed_compute_local_diags_c64(
-        dbasis.ptr::Ptr{Cvoid},
-        azs::Ptr{UInt32}, bzs::Ptr{UInt32},
-        cs::Ptr{ComplexF64}, length(cs)::Int64,
-        out::Ptr{ComplexF64},
-    )::Cvoid
-end
-
-function extract_local_vec!(
-    dbasis::DistributedBasisManager,
-    global_vec::Vector{Float64}, local_vec::Vector{Float64})
-    @ccall LIB_OTF_DIST.distributed_extract_local_vec_f64(
-        dbasis.ptr::Ptr{Cvoid},
-        global_vec::Ptr{Cdouble},
-        local_vec::Ptr{Cdouble},
-    )::Cvoid
-end
-
-function extract_local_vec!(
-    dbasis::DistributedBasisManager,
-    global_vec::Vector{ComplexF64}, local_vec::Vector{ComplexF64})
-    @ccall LIB_OTF_DIST.distributed_extract_local_vec_c64(
-        dbasis.ptr::Ptr{Cvoid},
-        global_vec::Ptr{ComplexF64},
-        local_vec::Ptr{ComplexF64},
-    )::Cvoid
+    return OTF_Functions(f_hvec, f_expm, f_tvec, f_grad, f_backgrad, f_backtran, f_batchexpm, f_batchgrad, f_batchtran)
 end
 

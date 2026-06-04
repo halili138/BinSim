@@ -383,7 +383,7 @@ function run_adapt_vqrte_tfim_forward(
         fid = abs2(dot(v, v_exact))
         
         if step % per_print == 0 || step == 1
-            @printf("  %04d    %03d  % 15.10f    %.6f    %.3e    %.4g    \t % .4f    % .4f    % .4f    % .4f\n",
+            @printf("  %04d    %03d  % 15.10f    %.6f    %.3e    %4.4g    \t % .4f    % .4f    % .4f    % .4f\n",
                     step, N_act, E_curr, fid, L2_error, step * dt, z0exp, z0exp_e, z0z1exp, z0z1exp_e)
         end
     end
