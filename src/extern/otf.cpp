@@ -5,9 +5,9 @@
 #include "grad.hpp"
 #include "backgrad.hpp"
 #include "backtran.hpp"
-#include "expm_batch.hpp"
-#include "grad_batch.hpp"
-#include "tran_batch.hpp"
+#include "batchexpm.hpp"
+#include "batchgrad.hpp"
+#include "batchtran.hpp"
 
 extern "C"
 {
