@@ -13,10 +13,15 @@ __global__ void hvec_gather_diag_kernel(
     const int bid = blockIdx.x;
     const int total_groups = groups.num_groups;
 
-    constexpr int SHARED_MEM_SIZE = Rank == 1 ? BATCH_SIZE_SH1 * TILE_B : Rank == 2 ? BATCH_SIZE_SH2 * TILE_B * 2
-                                                                                    : BATCH_SIZE_SH3 * TILE_B * KERNEL_MAX_RANK;
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE_SH1 : Rank == 2 ? BATCH_SIZE_SH2
-                                                                      : BATCH_SIZE_SH3;
+    constexpr int SHARED_MEM_SIZE =
+        Rank == 1   ? BATCH_SIZE_SH1 * TILE_B
+        : Rank == 2 ? BATCH_SIZE_SH2 * TILE_B * 2
+                    : BATCH_SIZE_SH3 * TILE_B * KERNEL_MAX_RANK;
+
+    constexpr int BATCH_SIZE =
+        Rank == 1   ? BATCH_SIZE_SH1
+        : Rank == 2 ? BATCH_SIZE_SH2
+                    : BATCH_SIZE_SH3;
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
 
