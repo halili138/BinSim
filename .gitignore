@@ -15,5 +15,3 @@ third_party/
 temp/
 __pycache__/
 benchmark
-batch
-callback
