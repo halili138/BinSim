@@ -22,3 +22,15 @@ basis=${3:-"sto-3g"}
 MAX_CORE=$((SLURM_CPUS_PER_TASK - 1))
 
 julia mole_cuda_ite.jl ${name} ${ratio} ${basis} |tee hvec_test_${name}_${ratio}_${basis}_$SLURM_CPUS_PER_TASK.txt
+
+
+
+
+for i in $(seq 0.5 0.1 2.5); do
+    sbatch -c 96 sub.sh c2 "$i" cc-pvdz
+done
+
+
+for i in $(seq 0.5 0.1 2.5); do
+    sbatch -c 64 4sub.sh h2o "$i" cc-pvdz
+done

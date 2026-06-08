@@ -7,13 +7,14 @@ CXXFLAGS := -std=c++20 $(CXXARCH_FLAGS) -O3\
             -fopenmp -fPIC -shared \
             -fomit-frame-pointer -mpopcnt -mbmi2 \
             -fopenmp-simd -funsafe-math-optimizations -fassociative-math \
-            -ffast-math
 
 CUXX := /usr/local/cuda-12.9/bin/nvcc
 # CUXX := nvcc
 CUXXARCH_FLAGS := -arch=sm_120
 CUXXFLAGS := -std=c++20 $(CUXXARCH_FLAGS) -O3 --extended-lambda --expt-relaxed-constexpr \
-			 -Xcompiler -fPIC -shared
+			 -Xcompiler -fPIC -shared \
+			 --use_fast_math \
+
 
 INC_FLAGS := -I./include
 THIRD_PARTY_INC := -I ../../third_party/ankerl/unordered_dense/include

@@ -674,9 +674,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
     #     end
     # end
 
-    for i::Float64 in 130:10:180
-        init_scf(i)
-    end
+    # e_scfs = []
+    # for r::Float64 in 0.5:0.1:2.5
+    #     e_scale, e_scf, e_cisd, e_mp2, e_ccsd, e_fci = init_scf(ARGS[1], r, basis=ARGS[2], run_mp2=false, run_ccsd=false, run_fci=false, is_save=false)
+    #     push!(e_scfs, e_scf)
+    # end
+    # for e in e_scfs
+    #     println(e)
+    # end
+    init_scf("c2h4", 1.0, basis="sto-3g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=false)
 end
 
  

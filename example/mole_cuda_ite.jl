@@ -115,7 +115,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
-
-    run_euler_ite_cuda(basis, ham, get_hf(basis, mole.nelec), 0.0,
-        dτ=0.1, max_step=20, tol=1e-3)
+    e_fci, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
+    run_euler_ite_cuda(basis, ham, get_hf(basis, mole.nelec), e_fci,
+        dτ=0.1, max_step=1000, tol=1e-8)
 end

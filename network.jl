@@ -7,62 +7,66 @@ mutable struct BasisManager
     norb::Int64
     nelec::Tuple{Int64,Int64}
     orbsym::Vector{Int64}
+end
 
-    function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int64})
-        total_sym = 0
-        num_irreps = 16
-        na, nb = nelec
+function BasisManager()
+    return BasisManager(C_NULL, 0, 0, (0, 0), Int64[])
+end
 
-        ptr = @ccall LIB_BASIS.create_basis_manager(
-            norb::Int64, na::Int64, nb::Int64, total_sym::Int64, orbsym::Ptr{Int64}, num_irreps::Int64,
-        )::Ptr{Cvoid}
+function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int64})
+    total_sym = 0
+    num_irreps = 16
+    na, nb = nelec
 
-        ptr == C_NULL && error("Failed to create C++ BasisManager.")
+    ptr = @ccall LIB_BASIS.create_basis_manager(
+        norb::Int64, na::Int64, nb::Int64, total_sym::Int64, orbsym::Ptr{Int64}, num_irreps::Int64,
+    )::Ptr{Cvoid}
 
-        dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
-        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
-        obj = new(ptr, dim, norb, nelec, orbsym)
+    dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
 
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
+    obj = BasisManager(ptr, dim, norb, nelec, orbsym)
+
+    finalizer(obj) do o
+        if o.ptr != C_NULL
+            @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
+            o.ptr = C_NULL
         end
-
-        return obj
     end
 
-    function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32}, orbsym::Vector{Int64})
-        total_sym = 0
-        num_irreps = 16
-        num_astrs = length(astrs)
-        num_bstrs = length(bstrs)
+    return obj
+end
 
-        ptr = @ccall LIB_BASIS.create_custom_basis_manager(
-            norb::Int64,
-            astrs::Ptr{UInt32}, num_astrs::Int64,
-            bstrs::Ptr{UInt32}, num_bstrs::Int64,
-            orbsym::Ptr{Int64}, total_sym::Int64, num_irreps::Int64,
-        )::Ptr{Cvoid}
+function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32}, orbsym::Vector{Int64})
+    total_sym = 0
+    num_irreps = 16
+    num_astrs = length(astrs)
+    num_bstrs = length(bstrs)
 
-        ptr == C_NULL && error("Failed to create C++ BasisManager.")
+    ptr = @ccall LIB_BASIS.create_custom_basis_manager(
+        norb::Int64,
+        astrs::Ptr{UInt32}, num_astrs::Int64,
+        bstrs::Ptr{UInt32}, num_bstrs::Int64,
+        orbsym::Ptr{Int64}, total_sym::Int64, num_irreps::Int64,
+    )::Ptr{Cvoid}
 
-        dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
-        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
-        obj = new(ptr, dim, norb, (0, 0), orbsym)
+    dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
 
-        finalizer(obj) do o
-            if o.ptr != C_NULL
-                @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
-                o.ptr = C_NULL
-            end
+    obj = BasisManager(ptr, dim, norb, (0, 0), orbsym)
+
+    finalizer(obj) do o
+        if o.ptr != C_NULL
+            @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
+            o.ptr = C_NULL
         end
-
-        return obj
     end
+
+    return obj
 end
 
 function get_hf(basis::BasisManager, nelec::Tuple{Int,Int}; Tv::DataType=Float64)
@@ -291,148 +295,147 @@ mutable struct OTF
     ptr::Ptr{Cvoid}
     dim::Int64
     ngs::Int64
+end
 
-    function OTF(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) where {Ti,Tv,K,V}
-        groups = compress_by_svd(A, tol)
-        ngs = length(groups)
-        axs = Vector{Ti}(undef, ngs)
-        bxs = Vector{Ti}(undef, ngs)
-        ranks = Vector{Int64}(undef, ngs)
-        num_as = Vector{Int64}(undef, ngs)
-        num_bs = Vector{Int64}(undef, ngs)
+function OTF()
+    return OTF(C_NULL, 0, 0)
+end
 
-        flat_azs = Ti[]
-        flat_bzs = Ti[]
-        flat_wa = Tv[]
-        flat_wb = Tv[]
+function OTF(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) where {Ti,Tv,K,V}
+    groups = compress_by_svd(A, tol)
+    ngs = length(groups)
+    axs = Vector{Ti}(undef, ngs)
+    bxs = Vector{Ti}(undef, ngs)
+    ranks = Vector{Int64}(undef, ngs)
+    num_as = Vector{Int64}(undef, ngs)
+    num_bs = Vector{Int64}(undef, ngs)
 
-        for (g, group) in enumerate(groups)
-            axs[g] = group.ax
-            bxs[g] = group.bx
-            ranks[g] = group.rank
+    flat_azs = Ti[]
+    flat_bzs = Ti[]
+    flat_wa = Tv[]
+    flat_wb = Tv[]
 
-            na = length(group.azs)
-            nb = length(group.bzs)
-            num_as[g] = na
-            num_bs[g] = nb
+    for (g, group) in enumerate(groups)
+        axs[g] = group.ax
+        bxs[g] = group.bx
+        ranks[g] = group.rank
 
-            append!(flat_azs, group.azs)
-            append!(flat_bzs, group.bzs)
+        na = length(group.azs)
+        nb = length(group.bzs)
+        num_as[g] = na
+        num_bs[g] = nb
 
-            append!(flat_wa, vec(group.wa))
-            append!(flat_wb, vec(group.wb))
-        end
+        append!(flat_azs, group.azs)
+        append!(flat_bzs, group.bzs)
 
-        if Tv <: Complex
-            ptr = @ccall LIB_OTF.build_network_otf_c64(
-                basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
-                axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
-                flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
-            )::Ptr{Cvoid}
-        else
-            ptr = @ccall LIB_OTF.build_network_otf_f64(
-                basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
-                axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
-                flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
-            )::Ptr{Cvoid}
-        end
-
-        ptr == C_NULL && error("Failed to create C++ OTFNET.")
-
-        obj = new(ptr, basis.dim, ngs)
-
-        if Tv <: Complex
-            finalizer(obj) do o
-                if o.ptr != C_NULL
-                    @ccall LIB_OTF.destroy_network_otf_c64(o.ptr::Ptr{Cvoid})::Cvoid
-                    o.ptr = C_NULL
-                end
-            end
-        else
-            finalizer(obj) do o
-                if o.ptr != C_NULL
-                    @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
-                    o.ptr = C_NULL
-                end
-            end
-        end
-
-        return obj
+        append!(flat_wa, vec(group.wa))
+        append!(flat_wb, vec(group.wb))
     end
 
-    function OTF(
-        basis::BasisManager,
-        pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}},
-        tol::Float64=1e-12,
-    ) where {Ti,Tv,K,V}
-
-        groups = compress_by_svd(pool, tol)
-        ngs = length(groups)
-        axs = Vector{Ti}(undef, ngs)
-        bxs = Vector{Ti}(undef, ngs)
-
-        ranks = Vector{Int64}(undef, ngs)
-        num_as = Vector{Int64}(undef, ngs)
-        num_bs = Vector{Int64}(undef, ngs)
-
-        flat_azs = Ti[]
-        flat_bzs = Ti[]
-        flat_wa = Tv[]
-        flat_wb = Tv[]
-
-        for (g, group) in enumerate(groups)
-            axs[g] = group.ax
-            bxs[g] = group.bx
-            ranks[g] = group.rank
-
-            na = length(group.azs)
-            nb = length(group.bzs)
-            num_as[g] = na
-            num_bs[g] = nb
-
-            append!(flat_azs, group.azs)
-            append!(flat_bzs, group.bzs)
-
-            append!(flat_wa, vec(group.wa))
-            append!(flat_wb, vec(group.wb))
-        end
-
-        if Tv <: Complex
-            ptr = @ccall LIB_OTF.build_network_otf_c64(
-                basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
-                axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
-                flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
-            )::Ptr{Cvoid}
-        else
-            ptr = @ccall LIB_OTF.build_network_otf_f64(
-                basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
-                axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
-                flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
-            )::Ptr{Cvoid}
-        end
-
-        ptr == C_NULL && error("Failed to create C++ OTFNET.")
-
-        obj = new(ptr, basis.dim, ngs)
-
-        if Tv <: Complex
-            finalizer(obj) do o
-                if o.ptr != C_NULL
-                    @ccall LIB_OTF.destroy_network_otf_c64(o.ptr::Ptr{Cvoid})::Cvoid
-                    o.ptr = C_NULL
-                end
-            end
-        else
-            finalizer(obj) do o
-                if o.ptr != C_NULL
-                    @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
-                    o.ptr = C_NULL
-                end
-            end
-        end
-
-        return obj
+    if Tv <: Complex
+        ptr = @ccall LIB_OTF.build_network_otf_c64(
+            basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
+            axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
+            flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
+        )::Ptr{Cvoid}
+    else
+        ptr = @ccall LIB_OTF.build_network_otf_f64(
+            basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
+            axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
+            flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
+        )::Ptr{Cvoid}
     end
+
+    ptr == C_NULL && error("Failed to create C++ OTFNET.")
+
+    obj = OTF(ptr, basis.dim, ngs)
+
+    if Tv <: Complex
+        finalizer(obj) do o
+            if o.ptr != C_NULL
+                @ccall LIB_OTF.destroy_network_otf_c64(o.ptr::Ptr{Cvoid})::Cvoid
+                o.ptr = C_NULL
+            end
+        end
+    else
+        finalizer(obj) do o
+            if o.ptr != C_NULL
+                @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
+                o.ptr = C_NULL
+            end
+        end
+    end
+
+    return obj
+end
+
+function OTF(basis::BasisManager, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, tol::Float64=1e-12) where {Ti,Tv,K,V}
+    groups = compress_by_svd(pool, tol)
+    ngs = length(groups)
+    axs = Vector{Ti}(undef, ngs)
+    bxs = Vector{Ti}(undef, ngs)
+
+    ranks = Vector{Int64}(undef, ngs)
+    num_as = Vector{Int64}(undef, ngs)
+    num_bs = Vector{Int64}(undef, ngs)
+
+    flat_azs = Ti[]
+    flat_bzs = Ti[]
+    flat_wa = Tv[]
+    flat_wb = Tv[]
+
+    for (g, group) in enumerate(groups)
+        axs[g] = group.ax
+        bxs[g] = group.bx
+        ranks[g] = group.rank
+
+        na = length(group.azs)
+        nb = length(group.bzs)
+        num_as[g] = na
+        num_bs[g] = nb
+
+        append!(flat_azs, group.azs)
+        append!(flat_bzs, group.bzs)
+
+        append!(flat_wa, vec(group.wa))
+        append!(flat_wb, vec(group.wb))
+    end
+
+    if Tv <: Complex
+        ptr = @ccall LIB_OTF.build_network_otf_c64(
+            basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
+            axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
+            flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
+        )::Ptr{Cvoid}
+    else
+        ptr = @ccall LIB_OTF.build_network_otf_f64(
+            basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
+            axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
+            flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv},
+        )::Ptr{Cvoid}
+    end
+
+    ptr == C_NULL && error("Failed to create C++ OTFNET.")
+
+    obj = OTF(ptr, basis.dim, ngs)
+
+    if Tv <: Complex
+        finalizer(obj) do o
+            if o.ptr != C_NULL
+                @ccall LIB_OTF.destroy_network_otf_c64(o.ptr::Ptr{Cvoid})::Cvoid
+                o.ptr = C_NULL
+            end
+        end
+    else
+        finalizer(obj) do o
+            if o.ptr != C_NULL
+                @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
+                o.ptr = C_NULL
+            end
+        end
+    end
+
+    return obj
 end
 
 function get_diags(basis::BasisManager, otf::OTF, Tv::DataType)
@@ -583,7 +586,6 @@ function batch_tran_svd(basis::BasisManager, otf::OTF, lv::T1, rv::T2, trans::T3
     )
 end
 
-
 """
 OTF_Functions 结构体包含以下操作函数：
 # 基本操作
@@ -616,13 +618,16 @@ struct OTF_Functions
     batchexpm::Function
     batchgrad::Function 
     batchtran::Function
+    ham::OTF
+    pool::OTF
 end
 
 function OTF_Functions(
     basis::BasisManager, 
     ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}};
-    time_print::Bool=false,
+    info_print::Bool=true,
+    time_print::Bool=false, 
 ) where {Ti,Tv,TK,TV}
     f_hvec      = (v, Hv)               -> nothing
     f_expm      = (idx, θ, v)           -> nothing
@@ -633,11 +638,13 @@ function OTF_Functions(
     f_batchexpm = (idx, θ, mat, N, j)   -> nothing
     f_batchgrad = (lv, rv, grads, x)    -> nothing 
     f_batchtran = (lv, rv, trans)       -> nothing
+    ham_otf     = OTF(C_NULL, 0, 0)
+    pool_otf    = OTF(C_NULL, 0, 0)
 
     if !isempty(ham)
-        print("Pre-compiling Ham OTF ... ")
+        info_print && print("Pre-compiling Ham OTF ... ")
         time_ops = @elapsed ham_otf = OTF(basis, ham)
-        @printf("Done in %.4f seconds\n", time_ops)
+        info_print && @printf("Done in %.4f seconds\n", time_ops)
         if time_print
             f_hvec = (v, Hv) -> @printf(
                 "hvec time %.6f seconds", @elapsed hvec_svd!(basis, ham_otf, v, Hv))
@@ -646,9 +653,9 @@ function OTF_Functions(
         end
     end
     if !isempty(pool)
-        print("Pre-compiling Pool OTF ... ")
+        info_print && print("Pre-compiling Pool OTF ... ")
         time_ops = @elapsed pool_otf = OTF(basis, pool)
-        @printf("Done in %.4f seconds\n", time_ops)
+        info_print && @printf("Done in %.4f seconds\n", time_ops)
 
         f_expm = (idx, θ, v) -> expm_svd!(basis, pool_otf, idx, θ, v)
         f_tvec = (idx, lv, rv) -> tvec_svd!(basis, pool_otf, idx, lv, rv)
@@ -660,6 +667,6 @@ function OTF_Functions(
         f_batchtran = (lv, rv, trans) -> return batch_tran_svd(basis, pool_otf, lv, rv, trans)
     end
 
-    return OTF_Functions(f_hvec, f_expm, f_tvec, f_grad, f_backgrad, f_backtran, f_batchexpm, f_batchgrad, f_batchtran)
+    return OTF_Functions(f_hvec, f_expm, f_tvec, f_grad, f_backgrad, f_backtran, f_batchexpm, f_batchgrad, f_batchtran, ham_otf, pool_otf)
 end
 
