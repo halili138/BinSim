@@ -1,3 +1,4 @@
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -24,7 +25,7 @@ OPTIONS = {
     "ytick.direction": "in",            # 刻度向内
     
     # 图例设置
-    "legend.fontsize": 12,              # 图例字号 (稍微调小一点，避免遮挡曲线)
+    "legend.fontsize": 12,              # 图例字号 (稍微调小一点, 避免遮挡曲线)
     "legend.framealpha": 0.95,          # 图例透明度
     
     # 图形设置
@@ -62,14 +63,18 @@ MOL_LATEX = {
     "HCOOH": r"HCOOH"
 }
 
+TEXT_SIZE = 16
+
+CURR_PATH = os.path.dirname(os.path.abspath(__file__))
 
 def plot_speedup_ratio(save_filename="speedup_chart.png"):
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    output_file = os.path.join(current_dir, f'pict/{save_filename}')
+
     """
     绘制以 a100 为基准的速度倍率柱状图
     """
-    # 如果遇到中文显示为方块的问题，请取消以下两行的注释并根据你的系统选择合适的字体
-    # plt.rcParams['font.sans-serif'] = ['SimHei'] # Windows用黑体
-    # plt.rcParams['axes.unicode_minus'] = False 
+
     plt.rcdefaults()
     plt.rcParams.update(OPTIONS)
 
@@ -83,7 +88,7 @@ def plot_speedup_ratio(save_filename="speedup_chart.png"):
     data_h100      = np.array([0.8999517, 1.7418493, 32.9227259])
 
     # 2. 计算速度倍率 (以 a100 为基准: 基准时间 / 当前配置时间)
-    # 倍率越大，说明速度越快
+    # 倍率越大, 说明速度越快
     ratio_a100      = data_9a14_96t / data_a100
     ratio_h100      = data_9a14_96t / data_h100
     ratio_9a14_96t  = data_9a14_96t / data_9a14_96t
@@ -109,13 +114,13 @@ def plot_speedup_ratio(save_filename="speedup_chart.png"):
     ax.set_xticks(x)
     ax.set_xticklabels(systems, fontsize=12)
     
-    # 动态调高 Y 轴上限，防止最高柱子的文本标签顶出画布被截断
+    # 动态调高 Y 轴上限, 防止最高柱子的文本标签顶出画布被截断
     ax.set_ylim(0, max(ratio_h100) * 1.15)
     ax.legend(title='', loc='upper left')
 
     # 6. 在柱子上方添加具体的倍率数值标签
     def autolabel(rects):
-        """为每个柱状图附加一个文本标签，显示其倍率（保留2位小数）"""
+        """为每个柱状图附加一个文本标签, 显示其倍率(保留2位小数)"""
         for rect in rects:
             height = rect.get_height()
             # 格式化为两位小数并加上 'x'
@@ -134,10 +139,9 @@ def plot_speedup_ratio(save_filename="speedup_chart.png"):
     fig.tight_layout()
 
     # 保存并关闭
-    plt.savefig(save_filename, dpi=300, bbox_inches='tight')
-    print(f"速度倍率图已成功保存为: {save_filename}")
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"速度倍率图已成功保存为: {output_file}")
     plt.close(fig)
-
 
 if __name__ == "__main__":
     plot_speedup_ratio("system_speedup_ratio_chart.png")
