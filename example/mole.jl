@@ -8,8 +8,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     build(mole)
 
-    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
-    ham = JW_hamiltonian(mole)
+    # basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    # ham = JW_hamiltonian(mole)
 
-    run_fci(basis, ham, get_hf(basis, mole.nelec))
+    # run_fci(basis, ham, get_hf(basis, mole.nelec))
+    println("Single elect int terms: ", length(findall(x->abs(x)>1e-12, mole.one_body_mo)))
+    println("Double elect int terms: ", length(findall(x->abs(x)>1e-12, mole.two_body_mo)))
 end

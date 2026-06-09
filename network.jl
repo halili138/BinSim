@@ -622,12 +622,8 @@ struct OTF_Functions
     pool::OTF
 end
 
-function OTF_Functions(
-    basis::BasisManager, 
-    ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
-    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}};
-    info_print::Bool=true,
-    time_print::Bool=false, 
+function OTF_Functions(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}; 
+    info_print::Bool=true, time_print::Bool=false
 ) where {Ti,Tv,TK,TV}
     f_hvec      = (v, Hv)               -> nothing
     f_expm      = (idx, θ, v)           -> nothing

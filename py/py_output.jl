@@ -139,7 +139,7 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H   $( x)  $(-x)  $(-x);
         H   $(-x)  $( x)  $(-x);
         H   $(-x)  $(-x)  $( x);
-        "   
+        "
     elseif name == "sih4"
         a = 1.48 * ratio
         x = a / sqrt(3)
@@ -218,7 +218,7 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H $(h4x) $(h4y) $(h4z)
         H $(h5x) $(h5y) $(h5z)
         H $(h6x) $(h6y) $(h6z)
-        "    
+        "
     elseif name == "c6h6"
         cc_bond = 1.39 * ratio
         ch_bond = 1.08 * ratio
@@ -251,7 +251,7 @@ function mole_geo(name::String, ratio::Float64=1.0)
         # Cr₂的平衡键长约为1.68 Å（168 pm）
         # 参考：J. Chem. Phys. 96, 6796 (1992) 等文献
         a = 1.68 * ratio
-        
+
         geo = "
         Cr 0.0 0.0 0.0;
         Cr 0.0 0.0 $(a);
@@ -344,7 +344,7 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H  $(-2.146 * ratio)  $( 0.187 * ratio)  $( 0.000 * ratio);
         H  $(-1.157 * ratio)  $( 1.365 * ratio)  $( 0.880 * ratio);
         H  $(-1.157 * ratio)  $( 1.365 * ratio)  $(-0.880 * ratio);
-        "        
+        "
     else
         throw(DomainError("No corresponding geometry name!"))
     end
@@ -367,37 +367,37 @@ function build_ethane_geometry(ratio=1.0, phi_deg=60.0)
     a1 = 1.54 * ratio
     a2 = 1.09 * ratio
     θ = deg2rad(109.5)
-    
+
     (c1x, c1y, c1z) = (0.0, 0.0, 0.0)
     (c2x, c2y, c2z) = (a1, 0.0, 0.0)
-    
+
     # C1上的氢原子（基准角度：0°, 120°, 240°）
     h1x = a2 * cos(θ)
     h1y = a2 * sin(θ) * cos(0.0) # 明确写出cos(0)和sin(0)以保持对称性
     h1z = a2 * sin(θ) * sin(0.0)
-    
+
     h2x = a2 * cos(θ)
     h2y = a2 * sin(θ) * cos(deg2rad(120))
     h2z = a2 * sin(θ) * sin(deg2rad(120))
-    
+
     h3x = a2 * cos(θ)
     h3y = a2 * sin(θ) * cos(deg2rad(240))
     h3z = a2 * sin(θ) * sin(deg2rad(240))
-    
+
     # C2上的氢原子（引入二面角旋转参数 phi_deg）
     # 当 phi_deg = 0 时为重叠式，phi_deg = 60 时为交叉式
-    h4x = a1 - a2 * cos(θ)  
+    h4x = a1 - a2 * cos(θ)
     h4y = a2 * sin(θ) * cos(deg2rad(phi_deg))
     h4z = a2 * sin(θ) * sin(deg2rad(phi_deg))
-    
+
     h5x = a1 - a2 * cos(θ)
     h5y = a2 * sin(θ) * cos(deg2rad(phi_deg + 120))
     h5z = a2 * sin(θ) * sin(deg2rad(phi_deg + 120))
-    
+
     h6x = a1 - a2 * cos(θ)
     h6y = a2 * sin(θ) * cos(deg2rad(phi_deg + 240))
     h6z = a2 * sin(θ) * sin(deg2rad(phi_deg + 240))
-    
+
     geo = """
     C $(c1x) $(c1y) $(c1z)
     C $(c2x) $(c2y) $(c2z)
@@ -418,32 +418,32 @@ function build_ethylene_geometry(ratio=1.0, phi_deg=0.0)
     a_cc = 1.339 * ratio  # C=C 双键键长
     a_ch = 1.087 * ratio  # C-H 键长
     θ = deg2rad(121.2)    # H-C-C 键角
-    
+
     # C1和C2的位置 (沿X轴分布)
     (c1x, c1y, c1z) = (0.0, 0.0, 0.0)
     (c2x, c2y, c2z) = (a_cc, 0.0, 0.0)
-    
+
     # C1上的氢原子 (固定在 XY 平面，z = 0)
     # 向量向 -X 方向发散，因此 x 分量为负 (因为 cos(121.2°) < 0)
     h1x = a_ch * cos(θ)
     h1y = a_ch * sin(θ)
     h1z = 0.0
-    
+
     h2x = a_ch * cos(θ)
     h2y = -a_ch * sin(θ)
     h2z = 0.0
-    
+
     # C2上的氢原子基准位置 (尚未旋转，与C1共面，反向对称)
     # 向量向 +X 方向发散，所以相对 C2 的 x 偏移量取 -cos(θ) 使其为正
     base_h3x = -a_ch * cos(θ)
     base_h3y = a_ch * sin(θ)
-    
+
     base_h4x = -a_ch * cos(θ)
     base_h4y = -a_ch * sin(θ)
-    
+
     # 将旋转角度转换为弧度
     phi = deg2rad(phi_deg)
-    
+
     # 应用绕 X 轴的旋转矩阵:
     # y' = y*cos(phi) - z*sin(phi)
     # z' = y*sin(phi) + z*cos(phi)
@@ -451,11 +451,11 @@ function build_ethylene_geometry(ratio=1.0, phi_deg=0.0)
     h3x = c2x + base_h3x
     h3y = base_h3y * cos(phi)
     h3z = base_h3y * sin(phi)
-    
+
     h4x = c2x + base_h4x
     h4y = base_h4y * cos(phi)
     h4z = base_h4y * sin(phi)
-    
+
     geo = """
     C $(c1x) $(c1y) $(c1z)
     C $(c2x) $(c2y) $(c2z)
@@ -478,11 +478,11 @@ function init_scf(
     run_fci::Bool=true,
     is_save::Bool=false,
 )
-    e_scf  = 0.0
+    e_scf = 0.0
     e_cisd = 0.0
-    e_mp2  = 0.0
+    e_mp2 = 0.0
     e_ccsd = 0.0
-    e_fci  = 0.0
+    e_fci = 0.0
 
     geo = molecule_geometry(name, ratio)
 
@@ -494,7 +494,7 @@ function init_scf(
     energy_nuc::Float64 = mol.energy_nuc()
     println("Norb: $(norb)   Ne: $(nelec)")
 
-    norb > 120 && return ;
+    norb > 120 && return
 
     mf = scf.RHF(mol)
     println("Running RHF...")
@@ -566,11 +566,11 @@ function init_scf(
     run_ccsd::Bool=true,
     run_fci::Bool=true,
 )
-    e_scf  = 0.0
+    e_scf = 0.0
     e_cisd = 0.0
-    e_mp2  = 0.0
+    e_mp2 = 0.0
     e_ccsd = 0.0
-    e_fci  = 0.0
+    e_fci = 0.0
 
     geo = build_ethylene_geometry(1.0, phi_deg)
     mol = gto.M(atom=geo, basis="sto-3g", spin=0.0, symmetry=true)
@@ -581,7 +581,7 @@ function init_scf(
     energy_nuc::Float64 = mol.energy_nuc()
     println("Norb: $(norb)   Ne: $(nelec)")
 
-    norb > 120 && return ;
+    norb > 120 && return
 
     mf = scf.RHF(mol)
     println("Running RHF...")
@@ -628,7 +628,7 @@ function init_scf(
     one_body_mo::Array{Float64,2}, two_body_mo::Array{Float64,4} = pyfun.mol_int(mf)
 
     filepath = joinpath(jld2path, "c2h4-1.0-$(phi_deg)-sto-3g.jld2")
-    
+
     jldopen(filepath, "w") do file
         file["norb"] = norb
         file["nelec"] = nelec
@@ -685,4 +685,3 @@ if abspath(PROGRAM_FILE) == @__FILE__
     init_scf("c2h4", 1.0, basis="sto-3g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=false)
 end
 
- 
