@@ -46,10 +46,8 @@ __global__ void grad_diag_kernel_2d(
 
             const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-            const double val = vt.imag() * theta;
-            const Tv u(cos(val), sin(val));
-
-            local_res += vt * u;
+            const Tv du = fast_diag_grad<Tv>(vt, theta);
+            local_res += dev_conj(lp[di] * du) * rp[di];
         }
     }
 
@@ -379,8 +377,8 @@ Tv grad_svd_network_otf_gpu(
     basis_slice.astr2idx = basis.astr2idx;
     basis_slice.bstr2idx = basis.bstr2idx;
 
-    double cd = -std::sin(theta);
-    double co = std::cos(theta);
+    const double cd = -std::sin(theta);
+    const double co = std::cos(theta);
 
     dim3 block(16, 16);
     dim3 grid((basis.max_b_count + block.x - 1) / block.x,

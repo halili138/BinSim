@@ -1,6 +1,35 @@
 #pragma once
 #include "cuda_common.cuh"
 
+template <typename Tv>
+__device__ __forceinline__ Tv fast_diag_exp(Tv vt, double theta)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+        return static_cast<Tv>(1.0);
+    }
+    else
+    {
+        const double val = vt.imag() * theta;
+        return Tv(std::cos(val), std::sin(val));
+    }
+}
+
+template <typename Tv>
+__device__ __forceinline__ Tv fast_diag_grad(Tv vt, double theta)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+        return static_cast<Tv>(0.0);
+    }
+    else
+    {
+        const double val = vt.imag() * theta;
+        const Tv u(std::cos(val), std::sin(val));
+        return vt * u;
+    }
+}
+
 template <int Rank, typename Ti, typename Tv>
 __device__ __forceinline__ void compute_phase_dev(Ti str, const Ti *__restrict__ zs, int num_zs, const Tv *__restrict__ w0, Tv *p0, int stride, int rank)
 {

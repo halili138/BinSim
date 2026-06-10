@@ -43,8 +43,7 @@ __global__ void expm_diag_kernel_2d(
 
         const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-        const double val = vt.imag() * theta;
-        const Tv u(cos(val), sin(val));
+        const Tv u = fast_diag_exp<Tv>(vt, theta);
         vec[di] *= u;
     }
 }

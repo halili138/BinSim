@@ -1,6 +1,7 @@
 #include "cuda_hvec.cuh"
 #include "cuda_expm.cuh"
 #include "cuda_grad.cuh"
+#include "cuda_backgrad.cuh"
 
 extern "C"
 {
@@ -80,5 +81,18 @@ extern "C"
         const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
 
         return grad_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, lp, rp);
+    }
+
+    double backgrad_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        int64 idx, double theta,
+        double *__restrict__ lp,
+        double *__restrict__ rp)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        return backgrad_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, lp, rp);
     }
 }
