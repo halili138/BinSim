@@ -1,7 +1,14 @@
 #include "cuda_hvec.cuh"
+#include "cuda_expm.cuh"
+#include "cuda_grad.cuh"
 
 extern "C"
 {
+    void sync_device_cuda()
+    {
+        cudaDeviceSynchronize();
+    }
+
     void destroy_basisdev_f64(void *basis_ptr)
     {
         if (basis_ptr == nullptr)
@@ -48,5 +55,30 @@ extern "C"
         const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
 
         cuda_hvec<uint32, double>(*basis, *net, src, dst);
+    }
+
+    void expm_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        int64 idx, double theta,
+        double *__restrict__ vec)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        expm_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, vec);
+    }
+
+    double grad_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        int64 idx, double theta,
+        const double *__restrict__ lp,
+        const double *__restrict__ rp)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        return grad_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, lp, rp);
     }
 }

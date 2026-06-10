@@ -194,6 +194,9 @@ struct NetworkDev
     GroupsViewDev<Ti, Tv> pure_b_groups = {};
     GroupsViewDev<Ti, Tv> mixed_groups = {};
 
+    std::vector<int64> host_sorted_idxs;
+    std::vector<uint8> host_excit_types;
+
     NetworkDev(const NetworkDev &) = delete;
     NetworkDev &operator=(const NetworkDev &) = delete;
     NetworkDev(NetworkDev &&) noexcept = default;
@@ -208,6 +211,8 @@ struct NetworkDev
         pure_a_groups.clear();
         pure_b_groups.clear();
         mixed_groups.clear();
+        host_sorted_idxs.clear();
+        host_excit_types.clear();
     }
 };
 
@@ -331,5 +336,31 @@ void *upload_network(const Network_OTF<Ti, Tv> *hn)
     flatten_bucket(hn->pure_b_groups, dn->pure_b_groups);
     flatten_bucket(hn->mixed_groups, dn->mixed_groups);
 
+    dn->host_sorted_idxs.assign(hn->sorted_idxs, hn->sorted_idxs + hn->num_groups);
+    dn->host_excit_types.assign(hn->excit_types, hn->excit_types + hn->num_groups);
+
     return static_cast<void *>(dn);
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE GroupsSliceDev<Ti, Tv> make_groups_slice(const GroupsViewDev<Ti, Tv> &view)
+{
+    GroupsSliceDev<Ti, Tv> s;
+    s.num_groups = view.num_groups;
+    s.axs = view.axs;
+    s.bxs = view.bxs;
+    s.asyms = view.asyms;
+    s.bsyms = view.bsyms;
+    s.ranks = view.ranks;
+    s.num_zas = view.num_zas;
+    s.num_zbs = view.num_zbs;
+    s.flat_zas = view.flat_zas;
+    s.flat_zbs = view.flat_zbs;
+    s.flat_wa = view.flat_wa;
+    s.flat_wb = view.flat_wb;
+    s.za_start = view.za_start;
+    s.zb_start = view.zb_start;
+    s.wa_start = view.wa_start;
+    s.wb_start = view.wb_start;
+    return s;
 }

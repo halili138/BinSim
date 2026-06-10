@@ -61,3 +61,42 @@ static const T *up(const T *h, int64 n)
     }
     return dev_ptr;
 }
+
+template <typename Tv>
+__device__ __forceinline__ Tv warp_reduce_sum(Tv val)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+#pragma unroll
+        for (int offset = 16; offset > 0; offset /= 2)
+            val += __shfl_down_sync(0xffffffff, val, offset);
+        return val;
+    }
+    else
+    {
+        double re = val.real();
+        double im = val.imag();
+#pragma unroll
+        for (int offset = 16; offset > 0; offset /= 2)
+        {
+            re += __shfl_down_sync(0xffffffff, re, offset);
+            im += __shfl_down_sync(0xffffffff, im, offset);
+        }
+        return Tv(re, im);
+    }
+}
+
+template <typename Tv>
+__device__ __forceinline__ void atomicAdd_Tv(Tv *address, Tv val)
+{
+    if constexpr (std::is_arithmetic_v<Tv>)
+    {
+        atomicAdd(address, val);
+    }
+    else
+    {
+        double *p = reinterpret_cast<double *>(address);
+        atomicAdd(p, val.real());
+        atomicAdd(p + 1, val.imag());
+    }
+}
