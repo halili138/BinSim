@@ -345,6 +345,38 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H  $(-1.157 * ratio)  $( 1.365 * ratio)  $( 0.880 * ratio);
         H  $(-1.157 * ratio)  $( 1.365 * ratio)  $(-0.880 * ratio);
         "
+    elseif name == "c2h2"
+        # 乙炔 (Acetylene), D∞h 对称性
+        geo = "
+        C   $( 0.000 * ratio)  $( 0.000 * ratio)  $( 0.600 * ratio);
+        C   $( 0.000 * ratio)  $( 0.000 * ratio)  $(-0.600 * ratio);
+        H   $( 0.000 * ratio)  $( 0.000 * ratio)  $( 1.660 * ratio);
+        H   $( 0.000 * ratio)  $( 0.000 * ratio)  $(-1.660 * ratio);
+        "
+    elseif name == "c3h4"
+        # 丙炔 (Propyne), C3v 对称性 (高精度修正版)
+        z_c1 = 1.189 * ratio
+        z_c2 = 0.000 * ratio
+        z_c3 = -1.459 * ratio
+        z_h1 = 2.253 * ratio
+        z_hm = -1.834 * ratio # 甲基氢的Z坐标
+        r_hm = 1.023 * ratio  # 甲基氢在XY平面上的投影半径
+
+        # 完美120度旋转的精确坐标
+        h2x = r_hm
+        h2y = 0.0
+        h3x = r_hm * cos(2 * pi / 3)
+        h3y = r_hm * sin(2 * pi / 3)
+        
+        geo = "
+        C   0.000  0.000  $(z_c1);
+        C   0.000  0.000  $(z_c2);
+        C   0.000  0.000  $(z_c3);
+        H   0.000  0.000  $(z_h1);
+        H   $(h2x) $(h2y) $(z_hm);
+        H   $(h3x) $(h3y) $(z_hm);
+        H   $(h3x) $(-h3y) $(z_hm);
+        "
     else
         throw(DomainError("No corresponding geometry name!"))
     end
@@ -682,6 +714,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # for e in e_scfs
     #     println(e)
     # end
-    init_scf("c2h4", 1.0, basis="sto-3g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=false)
+    # init_scf("c2h2", 1.0, basis="sto-3g", run_mp2=false, run_ccsd=false, run_fci=true, is_save=true)
+    # init_scf("c2h2", 1.0, basis="6-31g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=true)
+    # init_scf("c2h2", 1.0, basis="cc-pvdz", run_mp2=false, run_ccsd=false, run_fci=false, is_save=true)
+    init_scf("c3h4", 1.0, basis="sto-3g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=true)
+    init_scf("c3h4", 1.0, basis="6-31g", run_mp2=false, run_ccsd=false, run_fci=false, is_save=true)
 end
 

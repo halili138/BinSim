@@ -1,4 +1,4 @@
-function energy_objective(f_hvec::Function, f_expm::Function, f_backgrad::Function, idxs::Vector{Int64}, x::Vector{Float64}, lv::T, rv::T) where {Tv,T<:AbstractArray{Tv,1}}
+function energy_objective(f_hvec::Function, f_expm::Function, f_backgrad::Function, idxs::Vector{Int64}, x::Vector{Float64}, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     nparas = length(x)
 
     for i in 1:nparas

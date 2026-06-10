@@ -276,7 +276,7 @@ void expm_svd_network_otf_gpu(
     const double cd = std::cos(theta) - 1.0;
     const double co = std::sin(theta);
 
-    dim3 block(16, 16);
+    dim3 block(32, 16);
     dim3 grid((basis.max_b_count + block.x - 1) / block.x,
               (basis.max_a_count + block.y - 1) / block.y);
 

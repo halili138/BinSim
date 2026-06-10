@@ -3,6 +3,10 @@ using CUDA
 
 const LIB_CUOTF = joinpath(@__DIR__, "../src/lib/libcuotf.so")
 
+function sync_device!()
+    @ccall LIB_CUOTF.sync_device_cuda()::Cvoid
+end
+
 mutable struct CuBasisManager
     ptr::Ptr{Cvoid}
 end
@@ -53,7 +57,6 @@ function CuOTF(otf::OTF)
     return obj
 end
 
-
 function hvec_cuda!(basis::CuBasisManager, otf::CuOTF, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     @ccall LIB_CUOTF.hvec_cuda(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -66,6 +69,20 @@ function expm_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, 
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         (idx-1)::Int64, θ::Cdouble, vec::CuPtr{Cdouble},
     )::Cvoid
+end
+
+function grad_cuda(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
+    return @ccall LIB_CUOTF.grad_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
+end
+
+function backgrad_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
+    return @ccall LIB_CUOTF.backgrad_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
 end
 
 struct CuOTF_Functions
@@ -102,9 +119,12 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         time_ops = @elapsed cu_ham_otf = CuOTF(ham)
         info_print && @printf("Done in %.4f seconds\n", time_ops)
         if time_print
-            f_hvec = (v, Hv) -> @printf(
-                "hvec time %.6f seconds", 
-                @elapsed hvec_cuda!(cu_basis, cu_ham_otf, v, Hv))
+            f_hvec = (v, Hv) -> @printf("hvec time %.6f seconds", 
+                    @elapsed begin 
+                        hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
+                        sync_device!()
+                    end
+                )
         else
             f_hvec = (v, Hv) -> hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
         end
@@ -116,8 +136,8 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
 
         f_expm = (idx, θ, v) -> expm_cuda!(cu_basis, cu_pool_otf, idx, θ, v)
         # f_tvec = (idx, lv, rv) -> tvec_svd!(basis, pool_otf, idx, lv, rv)
-        # f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_otf, idx, θ, lv, rv)
-        # f_backgrad = (idx, θ, lv, rv) -> return back_grad_svd!(basis, pool_otf, idx, θ, lv, rv)
+        f_grad = (idx, θ, lv, rv) -> return grad_cuda(cu_basis, cu_pool_otf, idx, θ, lv, rv)
+        f_backgrad = (idx, θ, lv, rv) -> return backgrad_cuda!(cu_basis, cu_pool_otf, idx, θ, lv, rv)
         # f_backtran = (idx, θ, lv, rv, tlv) -> return back_tran_svd!(basis, pool_otf, idx, θ, lv, rv, tlv)
         # f_batchexpm = (idx, θ, mat, N, j) -> batch_expm_svd!(basis, pool_otf, idx, θ, mat, N, j)
         # f_batchgrad = (lv, rv, grads, x) -> return batch_grad_svd(basis, pool_otf, x, lv, rv, grads)
@@ -131,24 +151,22 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         cu_basis, cu_ham_otf, cu_pool_otf)
 end
 
-function sync_device!()
-    @ccall LIB_CUOTF.sync_device_cuda()::Cvoid
+function reset_first_kernel!(A)
+    i = threadIdx().x + (blockIdx().x - 1) * blockDim().x
+    
+    if i <= length(A)
+        @inbounds A[i] = (i == 1) ? 1 : 0
+    end
+
+    return
 end
 
-function run_euler_ite_cuda(
-    basis::BasisManager,
-    ham::BinaryQubitAABB{Ti,Tv,K,V},
-    v0::Vector{Tv},
-    e_scale::Float64;
-    dτ::Float64=0.1,
-    max_step::Int64=5000,
-    tol::Float64=1e-10,
-) where {Ti,Tv,K,V}
-    otf = OTF(basis, ham)
-    cubasis = CuBasisManager(basis)
-    cuotf = CuOTF(otf)
-    v = CuArray{Tv,1,CUDA.DeviceMemory}(v0)
-    w = CUDA.zeros(Tv, basis.dim)
+function run_euler_ite_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v::T, e_scale::Float64;
+    dτ::Float64=0.1, max_step::Int64=5000, tol::Float64=1e-10,
+) where {Ti,Tv,K,V,T<:AbstractArray{Tv,1}}
+    funcs    = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[])
+    cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool, time_print=true)
+    w        = CUDA.zeros(Tv, basis.dim)
 
     E_hist = Float64[]
     dH_hist = Float64[]
@@ -156,10 +174,8 @@ function run_euler_ite_cuda(
     step = 0
     while step <= max_step
         step += 1
-        @time begin
-            hvec_cuda!(cubasis, cuotf, v, w)
-            ln = norm(v)^2
-        end
+        cu_funcs.hvec(v, w)
+        ln = norm(v)^2
         rn = norm(w)^2
         E = real(dot(v, w)) / ln
         dH = max(0.0, rn / ln - E^2)
@@ -181,6 +197,62 @@ function run_euler_ite_cuda(
     return E_hist[end]
 end
 
+function run_vqe_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0_idxs::T1, v0_vals::T2, e_scale::Float64;
+    x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(),
+) where {Ti,Tv,K,V,T1<:AbstractArray{Int64,1},T2<:AbstractArray{Tv,1}}
+    funcs    = OTF_Functions(basis, ham, pool)
+    cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool)
+    lv       = CUDA.zeros(Tv, basis.dim)
+    rv       = CUDA.zeros(Tv, basis.dim)
+    idxs     = [i for i in eachindex(pool)]
+
+    if !isempty(x0)
+        @assert length(x0) == length(idxs)
+    else
+        x0 = zeros(Float64, length(pool))
+    end
+
+    energy  = Ref(0.0)
+    gnorm   = Ref(0.0)
+    δ²H     = Ref(0.0)
+    error   = Ref(0.0)
+
+    obj_func = x -> begin
+        if !isempty(options.save_path)
+            jldopen(options.save_path, "w") do file
+                file["x"] = x
+            end
+        end
+
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+
+        result = @timed energy_objective(cu_funcs.hvec, cu_funcs.expm, cu_funcs.backgrad, idxs, x, lv, rv)
+        energy[], grads, δ²H[] = result.value
+        gnorm[] = norm(grads)
+        error[] = abs(energy[] - e_scale)
+        options.verbose > 1 && show_optimze(energy[], gnorm[], δ²H[], error[])
+        options.verbose > 2 && show_time(result)
+
+        return energy[], grads
+    end
+
+    println("Performing VQE optimization ... ")
+    time_ops = @elapsed e_opt, x_opt = optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n",
+            time_ops, energy[], gnorm[], δ²H[], error[])
+    println("\n")
+
+    fill!(lv, 0.0)
+    lv[v0_idxs] .= v0_vals
+
+    for i in eachindex(idxs)
+        cu_funcs.expm(idxs[i], x_opt[i], lv)
+    end
+
+    return e_opt, lv, x_opt
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
     mole = Mole()
     mole.name = ARGS[1]
@@ -191,46 +263,20 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham   = JW_hamiltonian(mole)
-    orbs  = Orbitals(); kernel(mole, orbs, generalize=false)
-    pool  = FEB(orbs)
+    
+    # run_euler_ite_cuda(basis, ham, CuArray{Float64,1,CUDA.DeviceMemory}(get_hf(basis, mole.nelec)), mole.e_scale,
+    #     dτ       = 0.1, 
+    #     max_step = 10, 
+    #     tol      = 1e-10
+    # )
 
-    # funcs    = OTF_Functions(basis, ham, pool)
-    ham_otf  = OTF(basis, ham)
-    pool_otf = OTF(basis, pool)
-    cu_funcs = CuOTF_Functions(basis, ham_otf, pool_otf)
-    # mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
-
-
-    # run_euler_ite_cuda(basis, ham, get_hf(basis, mole.nelec), mole.e_scale,
-    #     dτ=0.1, max_step=5, tol=1e-8)
-
-    # nparas = length(pool)
-    # amps   = rand(Float64, nparas)
-    # idxs   = [i for i in 1:nparas]
-    # lv     = CUDA.rand(Float64,  basis.dim)
-    # rv     = CUDA.zeros(Float64, basis.dim)
-
-    # @time begin
-    #     for i in 1:nparas
-    #         cu_funcs.expm(idxs[i], amps[i], lv)
-    #     end
-
-    #     cu_funcs.hvec(lv, rv)
-
-    #     lnorm  = norm(lv) ^ 2
-    #     rnorm  = norm(rv) ^ 2
-    #     energy = real(dot(lv, rv)) / lnorm
-    # end
-
-    nparas = length(pool)
-    amps   = rand(Float64, nparas)
-    idxs   = [i for i in 1:nparas]
-    lv     = CUDA.rand(Float64, basis.dim)
-
-    @time begin
-        for i in 1:nparas
-            cu_funcs.expm(idxs[i], amps[i], lv)
-        end
-        sync_device!() 
-    end
+    orbs      = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool      = FEB(orbs)
+    v0        = get_hf(basis, mole.nelec)
+    h_v0_idxs = findall(x -> x != 0, v0) 
+    h_v0_vals = v0[h_v0_idxs]
+    d_v0_idxs = CuArray{Int64,1,CUDA.DeviceMemory}(h_v0_idxs)
+    d_v0_vals = CuArray{Float64,1,CUDA.DeviceMemory}(h_v0_vals)
+    
+    run_vqe_cuda(basis, ham, pool, d_v0_idxs, d_v0_vals, mole.e_scale)
 end

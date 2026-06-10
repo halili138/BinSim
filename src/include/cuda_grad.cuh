@@ -53,7 +53,7 @@ __global__ void grad_diag_kernel_2d(
 
     local_res = warp_reduce_sum(local_res);
 
-    __shared__ Tv shared_sums[8];
+    __shared__ Tv shared_sums[16];
     if (threadIdx.x == 0)
         shared_sums[threadIdx.y] = local_res;
 
@@ -61,7 +61,7 @@ __global__ void grad_diag_kernel_2d(
 
     if (threadIdx.y == 0)
     {
-        local_res = (threadIdx.x < 8) ? shared_sums[threadIdx.x] : Tv{};
+        local_res = (threadIdx.x < 16) ? shared_sums[threadIdx.x] : Tv{};
         local_res = warp_reduce_sum(local_res);
 
         if (threadIdx.x == 0)
@@ -149,7 +149,7 @@ __global__ void grad_mixed_kernel_2d(
     local_res = warp_reduce_sum(local_res);
 
     // 2. 将每个 Warp 的 0 号线程结果存入共享内存（Block 为 32x8，刚好 8 个 Warp）
-    __shared__ Tv shared_sums[8];
+    __shared__ Tv shared_sums[16];
     if (threadIdx.x == 0)
         shared_sums[threadIdx.y] = local_res;
 
@@ -158,7 +158,7 @@ __global__ void grad_mixed_kernel_2d(
     // 3. 让 0 号 Warp 再做一次归约，把 8 个结果合而为一
     if (threadIdx.y == 0)
     {
-        local_res = (threadIdx.x < 8) ? shared_sums[threadIdx.x] : Tv{};
+        local_res = (threadIdx.x < 16) ? shared_sums[threadIdx.x] : Tv{};
         local_res = warp_reduce_sum(local_res);
 
         // 4. Block 的总代表（线程 0）去敲全局内存的门
@@ -238,7 +238,7 @@ __global__ void grad_pure_a_kernel_2d(
 
     local_res = warp_reduce_sum(local_res);
 
-    __shared__ Tv shared_sums[8];
+    __shared__ Tv shared_sums[16];
     if (threadIdx.x == 0)
         shared_sums[threadIdx.y] = local_res;
 
@@ -246,7 +246,7 @@ __global__ void grad_pure_a_kernel_2d(
 
     if (threadIdx.y == 0)
     {
-        local_res = (threadIdx.x < 8) ? shared_sums[threadIdx.x] : Tv{};
+        local_res = (threadIdx.x < 16) ? shared_sums[threadIdx.x] : Tv{};
         local_res = warp_reduce_sum(local_res);
 
         if (threadIdx.x == 0)
@@ -325,7 +325,7 @@ __global__ void grad_pure_b_kernel_2d(
 
     local_res = warp_reduce_sum(local_res);
 
-    __shared__ Tv shared_sums[8];
+    __shared__ Tv shared_sums[16];
     if (threadIdx.x == 0)
         shared_sums[threadIdx.y] = local_res;
 
@@ -333,7 +333,7 @@ __global__ void grad_pure_b_kernel_2d(
 
     if (threadIdx.y == 0)
     {
-        local_res = (threadIdx.x < 8) ? shared_sums[threadIdx.x] : Tv{};
+        local_res = (threadIdx.x < 16) ? shared_sums[threadIdx.x] : Tv{};
         local_res = warp_reduce_sum(local_res);
 
         if (threadIdx.x == 0)
@@ -380,7 +380,7 @@ Tv grad_svd_network_otf_gpu(
     const double cd = -std::sin(theta);
     const double co = std::cos(theta);
 
-    dim3 block(16, 16);
+    dim3 block(32, 16);
     dim3 grid((basis.max_b_count + block.x - 1) / block.x,
               (basis.max_a_count + block.y - 1) / block.y);
 
@@ -420,7 +420,7 @@ Tv grad_svd_network_otf_gpu(
     }
     case 2:
     {
-        const GroupsSliceDev<Ti, Tv> slice = make_groups_slice(net.pure_a_groups);
+        const GroupsSliceDev<Ti, Tv> slice = make_groups_slice(net.pure_b_groups);
         int rank = net.pure_a_groups.host_ranks[pos];
         if (rank == 1)
             grad_pure_b_kernel_2d<1, Ti, Tv><<<grid, block>>>(basis_slice, slice, pos, cd, co, lp, rp, d_res);
