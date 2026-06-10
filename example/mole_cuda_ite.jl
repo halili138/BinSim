@@ -253,30 +253,118 @@ function run_vqe_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool
     return e_opt, lv, x_opt
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
+
+
+
+function test1(name, ratio, basis)
     mole = Mole()
-    mole.name = ARGS[1]
-    mole.ratio = parse(Float64, ARGS[2])
-    mole.basis = ARGS[3]
+    mole.name  = name
+    mole.ratio = ratio
+    mole.basis = basis
 
     build(mole)
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham   = JW_hamiltonian(mole)
     
-    # run_euler_ite_cuda(basis, ham, CuArray{Float64,1,CUDA.DeviceMemory}(get_hf(basis, mole.nelec)), mole.e_scale,
-    #     dτ       = 0.1, 
-    #     max_step = 10, 
-    #     tol      = 1e-10
-    # )
+    run_euler_ite_cuda(basis, ham, CuArray{Float64,1,CUDA.DeviceMemory}(get_hf(basis, mole.nelec)), mole.e_scale,
+        dτ       = 0.1, 
+        max_step = 10, 
+        tol      = 1e-10
+    )
+end
 
-    orbs      = Orbitals(); kernel(mole, orbs, generalize=false)
-    pool      = FEB(orbs)
-    v0        = get_hf(basis, mole.nelec)
+function test2(name, ratio, basis)
+    mole = Mole()
+    mole.name  = name
+    mole.ratio = ratio
+    mole.basis = basis
+
+    build(mole)
+
+    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    ham   = JW_hamiltonian(mole)
+    orbs  = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool  = FEB(orbs)
+    v0    = get_hf(basis, mole.nelec)
+
     h_v0_idxs = findall(x -> x != 0, v0) 
     h_v0_vals = v0[h_v0_idxs]
     d_v0_idxs = CuArray{Int64,1,CUDA.DeviceMemory}(h_v0_idxs)
     d_v0_vals = CuArray{Float64,1,CUDA.DeviceMemory}(h_v0_vals)
     
     run_vqe_cuda(basis, ham, pool, d_v0_idxs, d_v0_vals, mole.e_scale)
+end
+
+function test3(name, ratio, basis)
+    mole = Mole()
+    mole.name  = name
+    mole.ratio = ratio
+    mole.basis = basis
+
+    build(mole)
+
+    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    orbs  = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool  = FEB(orbs)
+
+    funcs    = OTF_Functions(basis, eltype(pool)(), pool)
+    cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool)
+
+    nparas = length(pool)
+    amps   = rand(Float64, nparas)
+    idxs   = [i for i in 1:nparas]
+    lv     = CUDA.rand(Float64, basis.dim)
+
+    for _ in 1:10
+        @time begin
+            for i in 1:nparas
+                cu_funcs.expm(idxs[i], amps[i], lv)
+            end
+            sync_device!() 
+        end
+    end
+end
+
+function test4(name, ratio, basis)
+    mole = Mole()
+    mole.name  = name
+    mole.ratio = ratio
+    mole.basis = basis
+
+    build(mole)
+
+    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    ham   = JW_hamiltonian(mole)
+    orbs  = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool  = FEB(orbs)
+
+    funcs    = OTF_Functions(basis, ham, pool)
+    cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool)
+
+    nparas = length(pool)
+    amps   = rand(Float64, nparas)
+    idxs   = [i for i in 1:nparas]
+    lv     = CUDA.rand(Float64, basis.dim)
+    rv     = CUDA.zeros(Float64, basis.dim)
+
+    for _ in 1:10
+        @time begin
+            for i in 1:nparas
+                cu_funcs.expm(idxs[i], amps[i], lv)
+            end
+            cu_funcs.hvec(lv, rv)
+            real(dot(lv, rv)) / norm(lv) ^ 2
+        end
+    end
+end
+
+
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    method = parse(Int, ARGS[4])
+    method == 1 && test1(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
+    method == 2 && test2(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
+    method == 3 && test3(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
+    method == 4 && test4(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
 end
