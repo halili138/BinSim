@@ -10,7 +10,7 @@ __global__ void hvec_gather_diag_kernel(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    const int bid = blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
 
     constexpr int SHARED_MEM_SIZE =
@@ -133,7 +133,7 @@ __global__ void hvec_gather_mixed_kernel(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    const int bid = blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
     const int *a_idx_map = basis.astr2idx;
     const int *b_idx_map = basis.bstr2idx;
@@ -330,7 +330,7 @@ __global__ void hvec_gather_pure_a_kernel(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    const int bid = blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
     const int *a_idx_map = basis.astr2idx;
 
@@ -497,7 +497,7 @@ __global__ void hvec_gather_pure_b_kernel(
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    const int bid = blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
     const int *b_idx_map = basis.bstr2idx;
 
@@ -661,7 +661,7 @@ __global__ void hvec_gather_pure_b_kernel(
 
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_chunks_by_rank_gpu(
-    const BasisViewDev<Ti> &basis,
+    const BasisSliceDev<Ti> &basis_slice, int num_active_blocks,
     const GroupsViewDev<Ti, Tv> &groups,
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
@@ -669,26 +669,6 @@ static inline void dispatch_chunks_by_rank_gpu(
     const int64 total_ngs = groups.num_groups;
     if (total_ngs == 0)
         return;
-
-    // 创建不带 RAII 析构函数的轻量切片体值对象，用于安全浅拷贝传入内核
-    BasisSliceDev<Ti> basis_slice;
-    basis_slice.num_blocks = basis.num_blocks;
-    basis_slice.num_irreps = basis.num_irreps;
-    basis_slice.max_a_count = basis.max_a_count;
-    basis_slice.max_b_count = basis.max_b_count;
-    basis_slice.dim = basis.dim;
-    basis_slice.block_offsets = basis.block_offsets;
-    basis_slice.block_num_a = basis.block_num_a;
-    basis_slice.block_num_b = basis.block_num_b;
-    basis_slice.block_asym = basis.block_asym;
-    basis_slice.block_bsym = basis.block_bsym;
-    basis_slice.astrs_flat = basis.astrs_flat;
-    basis_slice.bstrs_flat = basis.bstrs_flat;
-    basis_slice.astrs_start = basis.astrs_start;
-    basis_slice.bstrs_start = basis.bstrs_start;
-    basis_slice.block_map = basis.block_map;
-    basis_slice.astr2idx = basis.astr2idx;
-    basis_slice.bstr2idx = basis.bstr2idx;
 
     int64 start = 0;
     while (start < total_ngs)
@@ -727,11 +707,9 @@ static inline void dispatch_chunks_by_rank_gpu(
         slice.flat_wb = groups.flat_wb;
 
         int block_size = 256;
-        int num_blocks = basis.num_blocks;
-
         int num_sms = 0;
         cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-        dim3 grid_size(num_blocks, num_sms * 4);
+        dim3 grid_size(num_active_blocks, num_sms * 4);
 
         if constexpr (TypeCode == 0)
         {
@@ -806,9 +784,10 @@ void cuda_hvec(
     Tv *__restrict__ dst_vec)
 {
     cudaMemset(dst_vec, 0, basis.dim * sizeof(Tv));
-
-    dispatch_chunks_by_rank_gpu<0>(basis, net.diag_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank_gpu<1>(basis, net.pure_a_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank_gpu<2>(basis, net.pure_b_groups, src_vec, dst_vec);
-    dispatch_chunks_by_rank_gpu<3>(basis, net.mixed_groups, src_vec, dst_vec);
+    BasisSliceDev<Ti> slice = make_basis_slice(basis);
+    
+    dispatch_chunks_by_rank_gpu<0>(slice, basis.num_blocks, net.diag_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank_gpu<1>(slice, basis.num_blocks, net.pure_a_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank_gpu<2>(slice, basis.num_blocks, net.pure_b_groups, src_vec, dst_vec);
+    dispatch_chunks_by_rank_gpu<3>(slice, basis.num_blocks, net.mixed_groups, src_vec, dst_vec);
 }

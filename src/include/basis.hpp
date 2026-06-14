@@ -65,9 +65,9 @@ struct BasisManager
             _src_offsets[bid] = blk.offset;
         }
         view = BasisView<T>{blocks, nullptr, num_blocks,
-                             max_a_count, max_b_count,
-                             block_map, num_irreps,
-                             a_idx_map, b_idx_map, _src_offsets.data()};
+                            max_a_count, max_b_count,
+                            block_map, num_irreps,
+                            a_idx_map, b_idx_map, _src_offsets.data()};
     }
 
     void clear()
@@ -96,7 +96,7 @@ struct BasisManager
         b_idx_map = nullptr;
         num_blocks = 0;
         num_irreps = 0;
-        total_sym  = 0;
+        total_sym = 0;
         dim = 0;
         norb = 0;
         max_a_count = 0;
@@ -128,7 +128,7 @@ void *create_basis_manager_tmpl(
         basis->dim = 0;
         basis->num_blocks = 0;
         basis->total_sym = total_sym;
-        
+
         basis->num_astrs = new int64[num_irreps]();
         basis->num_bstrs = new int64[num_irreps]();
 
@@ -481,3 +481,73 @@ void *create_custom_basis_manager_tmpl(
 
     return static_cast<void *>(basis);
 }
+
+struct GlobalMemMap
+{
+    int mpi_rank;
+    int mpi_size;
+    int64 local_dim;
+    std::vector<int> block_to_rank;
+    std::vector<int64> block_local_offsets;
+};
+
+template <typename Ti>
+GlobalMemMap *build_global_map(const BasisManager<Ti> *basis, int mpi_rank, int mpi_size)
+{
+    GlobalMemMap *gmap = new GlobalMemMap();
+    gmap->mpi_rank = mpi_rank;
+    gmap->mpi_size = mpi_size;
+
+    int64 num_irreps = basis->num_irreps;
+    int64 max_h = num_irreps * num_irreps;
+    gmap->block_to_rank.assign(max_h, -1);
+    gmap->block_local_offsets.assign(max_h, -1);
+
+    std::vector<int64> rank_loads(mpi_size, 0);
+    std::vector<int64> current_local_offsets(mpi_size, 0);
+
+    struct BInfo
+    {
+        int64 h;
+        int64 size;
+    };
+    std::vector<BInfo> binfo;
+    for (int64 i = 0; i < basis->num_blocks; ++i)
+    {
+        int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
+        binfo.push_back({h, basis->blocks[i].num_a * basis->blocks[i].num_b});
+    }
+
+    // 贪心算法分配波函数块
+    std::sort(binfo.begin(), binfo.end(), [](const BInfo &a, const BInfo &b)
+              { return a.size > b.size; });
+
+    for (const auto &bi : binfo)
+    {
+        int tgt_rank = 0;
+        int64 min_load = rank_loads[0];
+        for (int r = 1; r < mpi_size; ++r)
+        {
+            if (rank_loads[r] < min_load)
+            {
+                min_load = rank_loads[r];
+                tgt_rank = r;
+            }
+        }
+        gmap->block_to_rank[bi.h] = tgt_rank;
+        gmap->block_local_offsets[bi.h] = current_local_offsets[tgt_rank];
+
+        current_local_offsets[tgt_rank] += bi.size;
+        rank_loads[tgt_rank] += bi.size;
+    }
+
+    gmap->local_dim = current_local_offsets[mpi_rank];
+    return gmap;
+}
+
+struct PackJob
+{
+    int64 src_offset;
+    int64 dst_offset;
+    int64 size;
+};

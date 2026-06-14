@@ -2,7 +2,7 @@
 #include "cuda_common.cuh"
 
 template <typename Tv>
-__device__ __forceinline__ Tv fast_diag_exp(Tv vt, double theta)
+__device__ __forceinline__ Tv fast_diag_exp_dev(Tv vt, double theta)
 {
     if constexpr (std::is_arithmetic_v<Tv>)
     {
@@ -16,7 +16,7 @@ __device__ __forceinline__ Tv fast_diag_exp(Tv vt, double theta)
 }
 
 template <typename Tv>
-__device__ __forceinline__ Tv fast_diag_grad(Tv vt, double theta)
+__device__ __forceinline__ Tv fast_diag_grad_dev(Tv vt, double theta)
 {
     if constexpr (std::is_arithmetic_v<Tv>)
     {
@@ -106,7 +106,7 @@ __device__ __forceinline__ Tv compute_coeff_dev(const Tv *__restrict__ pa, const
 }
 
 template <typename Tv>
-__device__ __forceinline__ void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, double co)
+__device__ __forceinline__ void expm_update_dev(Tv *sp, Tv *dp, Tv vt, double cd, double co)
 {
     const Tv vt_c = dev_conj(vt);
 
@@ -122,7 +122,7 @@ __device__ __forceinline__ void expm_update(Tv *sp, Tv *dp, Tv vt, double cd, do
 }
 
 template <typename Tv>
-__device__ __forceinline__ void grad_update(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt, double cd, double co)
+__device__ __forceinline__ void grad_update_dev(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt, double cd, double co)
 {
     const Tv vt_c = dev_conj(vt);
 
@@ -138,14 +138,14 @@ __device__ __forceinline__ void grad_update(Tv &res, const Tv *ls, const Tv *ld,
 }
 
 template <typename Tv>
-__device__ __forceinline__ void tvec_update(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
+__device__ __forceinline__ void tvec_update_dev(const Tv *ss, const Tv *sd, Tv *ds, Tv *dd, Tv vt)
 {
     *ds = *sd * (-dev_conj(vt));
     *dd = *ss * vt;
 }
 
 template <typename Tv>
-__device__ __forceinline__ void tvec_update(Tv *sp, Tv *dp, Tv vt)
+__device__ __forceinline__ void tvec_update_dev(Tv *sp, Tv *dp, Tv vt)
 {
     const Tv vi = *sp;
     const Tv vj = *dp;
@@ -155,13 +155,13 @@ __device__ __forceinline__ void tvec_update(Tv *sp, Tv *dp, Tv vt)
 }
 
 template <typename Tv>
-__device__ __forceinline__ void tran_update(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt)
+__device__ __forceinline__ void tran_update_dev(Tv &res, const Tv *ls, const Tv *ld, const Tv *rs, const Tv *rd, Tv vt)
 {
     res += dev_conj(*ls * vt) * *rd - dev_conj(*ld) * vt * *rs;
 }
 
 template <typename Tv>
-__device__ __forceinline__ void backgrad_update(Tv &res, Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv vt, double ecd, double eco, double gcd, double gco)
+__device__ __forceinline__ void backgrad_update_dev(Tv &res, Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv vt, double ecd, double eco, double gcd, double gco)
 {
     const Tv vt_c = dev_conj(vt);
 
@@ -191,7 +191,7 @@ __device__ __forceinline__ void backgrad_update(Tv &res, Tv *ls, Tv *ld, Tv *rs,
 }
 
 template <typename Tv>
-__device__ __forceinline__ void backtran_update(Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv *bs, Tv *bd, Tv vt, double ecd, double eco)
+__device__ __forceinline__ void backtran_update_dev(Tv *ls, Tv *ld, Tv *rs, Tv *rd, Tv *bs, Tv *bd, Tv vt, double ecd, double eco)
 {
     expm_update(ls, ld, vt, ecd, eco);
     expm_update(rs, rd, vt, ecd, eco);

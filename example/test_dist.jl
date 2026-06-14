@@ -1,11 +1,16 @@
-# 防止 MPI 隔离导致单机 OMP 撞车，把调度权交还给系统
-ENV["OMP_NUM_THREADS"] = ARGS[1]
+_nts   = length(ARGS) >= 1 ? ARGS[1] : 4
+
+ENV["OMP_NUM_THREADS"] = _nts
 delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 
 using MPI
-include("../binsim.jl")
 
+_name  = length(ARGS) >= 2 ? ARGS[2] : "h12"
+_basis = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
+_ratio = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
+
+include("../binsim.jl")
 
 function test_real_mpi_simulation(name, ratio, basis_name)
     MPI.Init()
@@ -106,6 +111,8 @@ function test_real_mpi_simulation(name, ratio, basis_name)
 
     dτ = 1e-1
 
+    GC.gc()
+    
     for step in 1:10
         t0 = time_ns()
         fill!(local_w, 0.0) 
@@ -146,5 +153,5 @@ function test_real_mpi_simulation(name, ratio, basis_name)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    test_real_mpi_simulation(ARGS[2], parse(Float64, ARGS[3]), ARGS[4])
+    test_real_mpi_simulation(_name, _ratio, _basis)
 end

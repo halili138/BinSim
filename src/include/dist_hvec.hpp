@@ -4,72 +4,6 @@
 #include "hvec.hpp"
 
 // =================================================================
-// 1. 全局内存图：决定波函数块在各个节点的物理归属 (仅执行一次)
-// =================================================================
-struct GlobalMemMap
-{
-    int mpi_rank;
-    int mpi_size;
-    int64 local_dim;
-    std::vector<int> block_to_rank;
-    std::vector<int64> block_local_offsets;
-};
-
-template <typename Ti>
-GlobalMemMap *build_global_map(const BasisManager<Ti> *basis, int rank, int size)
-{
-    GlobalMemMap *gmap = new GlobalMemMap();
-    gmap->mpi_rank = rank;
-    gmap->mpi_size = size;
-
-    int64 num_irreps = basis->num_irreps;
-    int64 max_h = num_irreps * num_irreps;
-    gmap->block_to_rank.assign(max_h, -1);
-    gmap->block_local_offsets.assign(max_h, -1);
-
-    std::vector<int64> rank_loads(size, 0);
-    std::vector<int64> current_local_offsets(size, 0);
-
-    struct BInfo
-    {
-        int64 h;
-        int64 size;
-    };
-    std::vector<BInfo> binfo;
-    for (int64 i = 0; i < basis->num_blocks; ++i)
-    {
-        int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
-        binfo.push_back({h, basis->blocks[i].num_a * basis->blocks[i].num_b});
-    }
-
-    // 贪心算法分配波函数块
-    std::sort(binfo.begin(), binfo.end(), [](const BInfo &a, const BInfo &b)
-              { return a.size > b.size; });
-
-    for (const auto &bi : binfo)
-    {
-        int tgt_rank = 0;
-        int64 min_load = rank_loads[0];
-        for (int r = 1; r < size; ++r)
-        {
-            if (rank_loads[r] < min_load)
-            {
-                min_load = rank_loads[r];
-                tgt_rank = r;
-            }
-        }
-        gmap->block_to_rank[bi.h] = tgt_rank;
-        gmap->block_local_offsets[bi.h] = current_local_offsets[tgt_rank];
-
-        current_local_offsets[tgt_rank] += bi.size;
-        rank_loads[tgt_rank] += bi.size;
-    }
-
-    gmap->local_dim = current_local_offsets[rank];
-    return gmap;
-}
-
-// =================================================================
 // 2. 分段通信账本：针对单个 (asym, bsym) 子片段的专属配置
 // =================================================================
 struct SubTopology
@@ -81,14 +15,8 @@ struct SubTopology
 
     // 该片段计算时的虚假内存偏移 (指向 cache 数组)
     std::vector<int64> block_offsets_in_cache;
-    std::vector<int64> target_blocks;
+    std::vector<int> target_blocks;
 
-    struct PackJob
-    {
-        int64 src_offset;
-        int64 dst_offset;
-        int64 size;
-    };
     std::vector<PackJob> pack_jobs;
 };
 
@@ -181,7 +109,7 @@ SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF
         if (gmap->block_to_rank[h] == rank)
         {
             topo->block_offsets_in_cache[h] = gmap->block_local_offsets[h];
-            topo->target_blocks.push_back(h);
+            topo->target_blocks.push_back((int)h);
         }
     }
 
@@ -340,14 +268,14 @@ void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti,
     std::vector<int64> virtual_block_map(num_irreps * num_irreps, -1);
 
     int64 next_idx = 0;
-    for (int64 h : topo->target_blocks)
+    for (int h : topo->target_blocks)
     {
         BlockDesc<Ti> blk = basis->blocks[basis->block_map[h]];
         blk.offset = topo->block_offsets_in_cache[h];
         virtual_blocks.push_back(blk);
         virtual_block_map[h] = next_idx++;
     }
-    for (int64 h = 0; h < num_irreps * num_irreps; ++h)
+    for (int h = 0; h < num_irreps * num_irreps; ++h)
     {
         if (virtual_block_map[h] == -1 && topo->block_offsets_in_cache[h] != -1)
         {

@@ -43,7 +43,7 @@ __global__ void expm_diag_kernel_2d(
 
         const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-        const Tv u = fast_diag_exp<Tv>(vt, theta);
+        const Tv u = fast_diag_exp_dev<Tv>(vt, theta);
         vec[di] *= u;
     }
 }
@@ -112,7 +112,7 @@ __global__ void expm_mixed_kernel_2d(
         const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
         const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-        expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+        expm_update_dev<Tv>(vec + si, vec + di, vt, cd, co);
     }
 }
 
@@ -176,7 +176,7 @@ __global__ void expm_pure_a_kernel_2d(
         const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
         const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-        expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+        expm_update_dev<Tv>(vec + si, vec + di, vt, cd, co);
     }
 }
 
@@ -240,7 +240,7 @@ __global__ void expm_pure_b_kernel_2d(
         const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
         const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-        expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+        expm_update_dev<Tv>(vec + si, vec + di, vt, cd, co);
     }
 }
 

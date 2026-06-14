@@ -62,6 +62,18 @@ static const T *up(const T *h, int64 n)
     return dev_ptr;
 }
 
+template <typename T>
+static T *up(T *h, int64 n)
+{
+    T *dev_ptr = nullptr;
+    if (n > 0 && h != nullptr)
+    {
+        CUDA_CHECK(cudaMalloc(&dev_ptr, n * sizeof(T)));
+        CUDA_CHECK(cudaMemcpy(dev_ptr, h, n * sizeof(T), cudaMemcpyHostToDevice));
+    }
+    return dev_ptr;
+}
+
 template <typename Tv>
 __device__ __forceinline__ Tv warp_reduce_sum(Tv val)
 {

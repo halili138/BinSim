@@ -1,4 +1,15 @@
+_nts   = length(ARGS) >= 1 ? ARGS[1] : 4
+_alg   = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1
+_name  = length(ARGS) >= 3 ? ARGS[3] : "h12"
+_basis = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
+_ratio = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : 1.0
+
+ENV["OMP_NUM_THREADS"] = _nts
+ENV["OMP_PROC_BIND"] = "close"
+ENV["OMP_PLACES"] = "cores"
+
 include("../cunetwork.jl")
+
 
 function run_euler_ite_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v::T, e_scale::Float64;
     dτ::Float64=0.1, max_step::Int64=5000, tol::Float64=1e-10,
@@ -91,9 +102,6 @@ function run_vqe_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool
 
     return e_opt, lv, x_opt
 end
-
-
-
 
 function test1(name, ratio, basis)
     mole = Mole()
@@ -198,12 +206,9 @@ function test4(name, ratio, basis)
     end
 end
 
-
-
 if abspath(PROGRAM_FILE) == @__FILE__
-    method = parse(Int, ARGS[4])
-    method == 1 && test1(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 2 && test2(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 3 && test3(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 4 && test4(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
+    _alg == 1 && test1(_name, _ratio, _basis)
+    _alg == 2 && test2(_name, _ratio, _basis)
+    _alg == 3 && test3(_name, _ratio, _basis)
+    _alg == 4 && test4(_name, _ratio, _basis)
 end

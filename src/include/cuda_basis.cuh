@@ -2,7 +2,7 @@
 #include "cuda_common.cuh"
 #include "basis.hpp"
 
-// 1. 显存物理生命周期管理器（禁止拷贝，支持移动）
+// 1. 显存物理生命周期管理器（禁止拷贝, 支持移动）
 template <typename Ti>
 struct BasisViewDev
 {
@@ -143,7 +143,7 @@ struct BasisViewDev
     }
 };
 
-// 2. 新增的轻量级物理切片体（无析构函数，专供内核按值传递避免参数拷贝拦截）
+// 2. 新增的轻量级物理切片体（无析构函数, 专供内核按值传递避免参数拷贝拦截）
 template <typename Ti>
 struct BasisSliceDev
 {
@@ -164,6 +164,8 @@ struct BasisSliceDev
     const int *block_map = nullptr;
     const int *astr2idx = nullptr;
     const int *bstr2idx = nullptr;
+    // 分布式目标块映射. 如果为空, 则为原生单卡模式; 若不为空, 则为分布式模式
+    const int *target_bids = nullptr;
 };
 
 template <typename Ti>
@@ -224,4 +226,29 @@ void *upload_basis(const BasisManager<Ti> *hb)
     db->bstr2idx = up(hb->b_idx_map, ms);
 
     return static_cast<void *>(db);
+}
+
+template <typename Ti>
+FORCE_INLINE BasisSliceDev<Ti> make_basis_slice(const BasisViewDev<Ti> &basis)
+{
+    BasisSliceDev<Ti> s;
+    s.num_blocks = basis.num_blocks;
+    s.num_irreps = basis.num_irreps;
+    s.max_a_count = basis.max_a_count;
+    s.max_b_count = basis.max_b_count;
+    s.dim = basis.dim;
+    s.block_offsets = basis.block_offsets;
+    s.block_num_a = basis.block_num_a;
+    s.block_num_b = basis.block_num_b;
+    s.block_asym = basis.block_asym;
+    s.block_bsym = basis.block_bsym;
+    s.astrs_flat = basis.astrs_flat;
+    s.bstrs_flat = basis.bstrs_flat;
+    s.astrs_start = basis.astrs_start;
+    s.bstrs_start = basis.bstrs_start;
+    s.block_map = basis.block_map;
+    s.astr2idx = basis.astr2idx;
+    s.bstr2idx = basis.bstr2idx;
+    s.target_bids = nullptr; // 单卡默认无映射
+    return s;
 }

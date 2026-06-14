@@ -17,7 +17,7 @@ CUXXFLAGS := -std=c++20 $(CUXXARCH_FLAGS) -O3 --extended-lambda --expt-relaxed-c
 
 
 INC_FLAGS := -I./include
-THIRD_PARTY_INC := -I ../../third_party/ankerl/unordered_dense/include
+THIRD_PARTY_INC := -I third_party/ankerl/unordered_dense/include
 
 LIKWID_BASE  := /public/software/likwid/install
 LIKWID_MACRO := -DLIKWID_PERFMON -I$(LIKWID_BASE)/include
@@ -25,7 +25,7 @@ LIKWID_LIBS  := -L$(LIKWID_BASE)/lib -Wl,-rpath=$(LIKWID_BASE)/lib -llikwid
 
 TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
 		   lib/libcuotf.so \
-		   lib/libdist.so
+		   lib/libdist.so lib/libcudist.so
 
 .PHONY: all clean
 
@@ -51,6 +51,9 @@ lib/libcuotf.so: extern/cuotf.cu | lib
 
 lib/libdist.so: extern/dist_otf.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $<
+
+lib/libcudist.so: extern/cudist.cu | lib
+	$(CUXX) $(CUXXFLAGS) $(INC_FLAGS) -o $@ $<
 
 clean:
 	rm -rf lib/*.so

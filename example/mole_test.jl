@@ -1,8 +1,15 @@
-ENV["OMP_NUM_THREADS"] = ARGS[1]
+_nts   = length(ARGS) >= 1 ? ARGS[1] : 4
+_alg   = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1
+_name  = length(ARGS) >= 3 ? ARGS[3] : "h12"
+_basis = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
+_ratio = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : 1.0
+
+ENV["OMP_NUM_THREADS"] = _nts
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
 include("../binsim.jl")
+
 
 function test1(name, ratio, basis)
     mole = Mole()
@@ -106,15 +113,9 @@ function test4(name, ratio, basis)
 end
 
 
-
-if abspath(PROGRAM_FILE) == @__FILE__
-    method = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1
-    name   = length(ARGS) >= 3 ? ARGS[3] : "h12"
-    basis  = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
-    ratio  = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : 1.0
-    
-    method == 1 && test1(name, ratio, basis)
-    method == 2 && test2(name, ratio, basis)
-    method == 3 && test3(name, ratio, basis)
-    method == 4 && test4(name, ratio, basis)
+if abspath(PROGRAM_FILE) == @__FILE__    
+    _alg == 1 && test1(_name, _ratio, _basis)
+    _alg == 2 && test2(_name, _ratio, _basis)
+    _alg == 3 && test3(_name, _ratio, _basis)
+    _alg == 4 && test4(_name, _ratio, _basis)
 end

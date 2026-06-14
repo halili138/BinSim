@@ -46,7 +46,7 @@ __global__ void grad_diag_kernel_2d(
 
             const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-            const Tv du = fast_diag_grad<Tv>(vt, theta);
+            const Tv du = fast_diag_grad_dev<Tv>(vt, theta);
             local_res += dev_conj(lp[di] * du) * rp[di];
         }
     }
@@ -138,7 +138,7 @@ __global__ void grad_mixed_kernel_2d(
             const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
             const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-            grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+            grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
         }
     }
 
@@ -232,7 +232,7 @@ __global__ void grad_pure_a_kernel_2d(
             const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
             const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-            grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+            grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
         }
     }
 
@@ -319,7 +319,7 @@ __global__ void grad_pure_b_kernel_2d(
             const int64 si = basis.block_offsets[src_bid] + (int64)sa * basis.block_num_b[src_bid] + sb;
             const int64 di = basis.block_offsets[dst_bid] + (int64)da * basis.block_num_b[dst_bid] + db;
 
-            grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+            grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
         }
     }
 
