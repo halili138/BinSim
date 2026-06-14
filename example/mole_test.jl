@@ -1,3 +1,7 @@
+ENV["OMP_NUM_THREADS"] = ARGS[1]
+ENV["OMP_PROC_BIND"] = "close"
+ENV["OMP_PLACES"] = "cores"
+
 include("../binsim.jl")
 
 function test1(name, ratio, basis)
@@ -18,8 +22,11 @@ function test1(name, ratio, basis)
     while step <= 10
         step += 1
         funcs.hvec(v, w)
-        println("")
+        
         @. v -= dτ * w
+
+        @printf("  Norm: %.8f \n", norm(v))
+
         normalize!(v)
     end
 end
@@ -101,9 +108,13 @@ end
 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    method = parse(Int, ARGS[4])
-    method == 1 && test1(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 2 && test2(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 3 && test3(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
-    method == 4 && test4(ARGS[1], parse(Float64, ARGS[2]), ARGS[3])
+    method = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1
+    name   = length(ARGS) >= 3 ? ARGS[3] : "h12"
+    basis  = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
+    ratio  = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : 1.0
+    
+    method == 1 && test1(name, ratio, basis)
+    method == 2 && test2(name, ratio, basis)
+    method == 3 && test3(name, ratio, basis)
+    method == 4 && test4(name, ratio, basis)
 end

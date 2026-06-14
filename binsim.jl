@@ -53,8 +53,8 @@ include("davidson.jl")
 include("ansatz.jl")
 include("vqe.jl")
 include("method.jl")
-include("vqite.jl")
-include("vqrte.jl")
-
+# include("vqite.jl")
+# include("vqrte.jl")
+include("distribute.jl")
 
 

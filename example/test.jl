@@ -3,7 +3,7 @@ include("../binsim.jl")
 Tv = Float64
 
 mole = Mole()
-mole.name   = "h4"
+mole.name   = "n2"
 mole.ratio  = 1.0
 mole.basis  = "sto-3g"
 
@@ -28,7 +28,4 @@ orbs  = Orbitals(); kernel(mole, orbs, generalize=true)
 pool  = FEB(orbs)
 run_qse(basis, ham, pool, v_vqe, e_scales=e_fcis)
 run_qeom(basis, ham, pool, v_vqe, e_scales=e_fcis)
-# run_qpe_ode(basis, ham, get_hf(basis, mole.nelec, Tv=Tv), e_scales=e_fcis)
-# run_rk4_rte(basis, ham, get_hf(basis, mole.nelec, Tv=Tv))
-# run_vqrte_tdva(basis, ham, pool, get_hf(basis, mole.nelec, Tv=Tv), per_print=50)
-# run_vqrte_pvqd(basis, ham, pool, get_hf(basis, mole.nelec, Tv=Tv), per_print=50)
+

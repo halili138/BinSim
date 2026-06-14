@@ -18,5 +18,4 @@ benchmark
 shell/
 error-log/
 callback/
-batch*
-sub_*
+*.sh

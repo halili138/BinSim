@@ -41,6 +41,7 @@ struct BasisManager
     int64 *orbsym = nullptr;
     int64 *block_map = nullptr;
     int64 num_irreps = {};
+    int64 total_sym = {};
 
     int64 dim = {};
     int64 norb = {};
@@ -95,6 +96,7 @@ struct BasisManager
         b_idx_map = nullptr;
         num_blocks = 0;
         num_irreps = 0;
+        total_sym  = 0;
         dim = 0;
         norb = 0;
         max_a_count = 0;
@@ -125,7 +127,8 @@ void *create_basis_manager_tmpl(
         basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
-
+        basis->total_sym = total_sym;
+        
         basis->num_astrs = new int64[num_irreps]();
         basis->num_bstrs = new int64[num_irreps]();
 
