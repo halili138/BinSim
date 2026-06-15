@@ -1,4 +1,4 @@
-ENV["OMP_NUM_THREADS"] = ARGS[1]
+ENV["OMP_NUM_THREADS"] = 8
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
@@ -7,14 +7,25 @@ include("../binsim.jl")
 Tv = Float64
 
 mole = Mole()
-mole.name   = ARGS[2]
+mole.name   = ARGS[1]
 mole.ratio  = 1.0
-mole.basis  = ARGS[3]
+mole.basis  = ARGS[2]
 
 build(mole)
 
-basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
-ham   = JW_hamiltonian(mole, tol = 1e-18)
+# mole.orbsym = Int64.(mole.orbsym .% 10)
+
+basis  = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+ham    = JW_hamiltonian(mole, spin = "abab")
+orbsym = get_orbsym(ham, mole.norb)
+println(orbsym)
+blocks, block_map = get_sym_blocks(mole.norb, mole.nelec, orbsym, 0, UInt32)
+println(length(blocks))
+
+# println(sort(unique(mole.orbsym))) 
+# println("count(orbsym >= 10) = ", count(x -> x >= 10, mole.orbsym))
+
+
 # ham   = BinaryQubitAABB(ham.axs, ham.bxs, ham.azs, ham.bzs, Tv.(ham.cs))
 # orbs  = Orbitals(); kernel(mole, orbs, generalize=false)
 # pool  = FEB(orbs, Tv=Tv)

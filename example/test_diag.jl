@@ -1,3 +1,7 @@
+ENV["OMP_NUM_THREADS"] = 8
+ENV["OMP_PROC_BIND"] = "close"
+ENV["OMP_PLACES"] = "cores"
+
 include("../binsim.jl")
 
 function run_fci2(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}) where {Ti,Tv,K,V}
@@ -22,5 +26,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham   = JW_hamiltonian(mole)
     
-    run_fci2(basis, ham, get_hf(basis, mole.nelec))
+    v0    = get_hf(basis, mole.nelec)
+    v0 .+= 1e-4 .* randn(eltype(v0), length(v0))
+    
+    normalize!(v0)
+
+    run_fci2(basis, ham, v0)
 end

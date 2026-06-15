@@ -37,12 +37,14 @@ println("Threads.nthreads()    $(Threads.nthreads())")
 println("")
 
 const jld2path::String = joinpath(@__DIR__, "../jld2file/")
+const pypath::String = joinpath(@__DIR__, "py/")
 const eps1::Float64 = 1e-8
 const eps2::Float64 = 1e-12
 const eps3::Float64 = 1e-16
 
 include("integer.jl")
 include("tools.jl")
+include("geo.jl")
 include("load_data.jl")
 include("binqubitabab.jl")
 include("binqubitaabb.jl")
