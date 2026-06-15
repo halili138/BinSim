@@ -67,22 +67,12 @@ function build(mole::Mole, filepath::String="")
             println("  ratio: $(ratio)")
             println("  basis: $(basis)")
         catch
-            # include(joinpath(@__DIR__, "save_int.jl"))
-
-            # @pyimport pyscf.gto as gto
-            # @pyimport pyscf.scf as scf
-            # @pyimport pyscf.mcscf as mcscf
-            # @pyimport pyscf.ao2mo as ao2mo
-            # @pyimport pyscf.ci as ci
-            # @pyimport pyscf.cc as cc
-            # @pyimport pyscf.fci as fci
-            # @pyimport pyscf.pbc as pbc
-            # @pyimport pyscf.mp as mp
-
             pushfirst!(pyimport("sys")."path", pypath)
             pyfun = pyimport("mole_pbc_int")
 
-            mole.norb, mole.nelec, mole.orbsym, mole.energy_nuc, mole.one_body_mo, mole.two_body_mo, mole.e_scale = init_scf(pyfun, mole.name, mole.ratio, mole.basis, filepath, run_fci=false)
+            mole.norb, mole.nelec, mole.orbsym, mole.energy_nuc, 
+            mole.one_body_mo, mole.two_body_mo, mole.e_scale = init_scf(
+                pyfun, mole.name, mole.ratio, mole.basis, filepath, run_fci=false)
         end
     else
         try

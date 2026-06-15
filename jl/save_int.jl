@@ -84,7 +84,8 @@ function init_scf(pyfun, name::String, ratio::Float64, basis::String, save_path:
         file["two_body_mo"] = two_body_mo
         file["e_scale"] = e_scale
     end
-    println("Saved to $(save_path)")
+
+    println("Saved to $(save_path)\n")
 
     return norb, nelec, orbsym, energy_nuc, one_body_mo, two_body_mo, e_scale
 end
