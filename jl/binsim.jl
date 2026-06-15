@@ -69,6 +69,6 @@ include("ansatz.jl")
 include("vqe.jl")
 include("method.jl")
 include("distribute.jl")
-# include("vqite.jl")
+include("vqite.jl")
 # include("vqrte.jl")
 
