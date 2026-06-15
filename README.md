@@ -137,7 +137,7 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
 ```bash
 export OMP_NUM_THREADS=8
-export JULIA_NUM_THREADS=8
+export MKL_NUM_THREADS=8
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 ```
@@ -176,7 +176,7 @@ CUXXARCH_FLAGS := -arch=sm_80   # A100 示例
 然后编译：
 
 ```bash
-make
+make clean && make -j
 cd ..
 ```
 
@@ -204,18 +204,6 @@ CUDA 相关动态库包括：
 
 所有示例需在 `example/` 目录下运行，因为它们通过 `include("../jl/binsim.jl")` 加载主模块。
 
-### CPU 模型示例：Heisenberg / Ising
-
-`example/ising.jl` 从命令行读取量子比特数：
-
-```bash
-cd example
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
-julia --project=.. -t 8 ising.jl 8
-```
-
-脚本中当前默认构造 Heisenberg 模型；如果要改为 Ising 模型，可以参考文件中的注释切换 `ising_module` 和初态。
-
 ### 综合功能示例
 
 `example/test.jl` 接收分子名称和基组，运行 FCI、VQE、ADAPT-VQE、虚时演化、ENPT2、QSE、qEOM 等流程：
@@ -228,21 +216,6 @@ julia --project=.. -t 8 test.jl n2 sto-3g
 
 首次运行会自动调用 PySCF 生成积分并保存到 `jld2file/`，之后再次运行会直接读取缓存。
 
-### 分子示例 (VQE / 虚时演化)
-
-```bash
-# 虚时演化
-cd example
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
-julia --project=.. -t 8 ite.jl h4 1.0 sto-3g
-
-# 后处理（ENPT2 / QSE / qEOM）
-julia --project=.. -t 8 post.jl h4 sto-3g
-
-# 量子相位估计
-julia --project=.. -t 8 qpe.jl h4 sto-3g
-```
-
 ### 直接从 PySCF 生成积分
 
 `example/from_pyscf.jl` 绕过缓存机制，直接调用 PySCF 生成积分并运行计算：
@@ -251,31 +224,6 @@ julia --project=.. -t 8 qpe.jl h4 sto-3g
 cd example
 export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
 julia --project=.. -t 8 from_pyscf.jl
-```
-
-### 实时演化（PVQD / TDVA）
-
-```bash
-cd example
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
-julia --project=.. -t 8 rte.jl 6 10
-```
-
-`example/module.jl` 提供可复用的 TDVA 模块，也可作为独立示例运行 PVQD Fig3 测试：
-
-```bash
-cd example
-julia --project=.. -t 8 module.jl 6 2
-```
-
-### 周期性体系（PBC）
-
-`example/pbc.jl` 支持周期性边界条件的 1D 氢链等体系：
-
-```bash
-cd example
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
-julia --project=.. -t 8 pbc.jl 2
 ```
 
 ### MPI 分布式示例
@@ -326,7 +274,7 @@ export JULIA_NUM_THREADS=8
 ```bash
 cd src
 make clean
-make
+make -j
 cd ..
 ```
 
