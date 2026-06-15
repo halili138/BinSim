@@ -1,6 +1,13 @@
-import sys, math
-from pyscf import gto, scf, fci
-from pyscf.lib import logger
+import os, sys, math
+import shutil
+import numpy as np
+import opt_einsum
+from pyscf import gto, scf
+from pyblock2.driver.core import DMRGDriver, SymmetryTypes
+from pyscf import fci
+import pyscf.ci as ci
+import pyscf.cc as cc
+from pyblock2._pyscf.ao2mo import integrals as itg
 
 
 def mole_geo(name: str, ratio: float = 1.0) -> str:
@@ -191,35 +198,170 @@ def mole_geo(name: str, ratio: float = 1.0) -> str:
     return geo
 
 
-def init_scf(name: str, ratio: float, basis: str = "sto-3g"):
-    ratio = 1.0
-    a_ch = 1.06 * ratio
-    a_cn = 1.16 * ratio
-    geo = f"""
-    H  0.0  0.0  {-a_ch};
-    C  0.0  0.0  0.0;
-    N  0.0  0.0  {a_cn};
+def run_block2_dmrg(
+    h1e,
+    g2e,
+    ecore,
+    n_elec,
+    spin,
+    scratch="./tmp_c2_block2",
+    n_threads=4,
+    bond_dims=None,
+    noises=None,
+    thrds=None,
+):
+    """
+    h1e:   spatial orbital one-electron integral, shape (norb, norb)
+    g2e:   spatial orbital two-electron integral in chemists' notation, (pq|rs)
+    ecore: nuclear repulsion + possible frozen-core energy
+    n_elec: total electron number
+    spin: 2S. For singlet, spin=0.
     """
 
-    geo = mole_geo(name, ratio)
-    mol = gto.M(atom=geo, basis=basis, spin=0.0, symmetry=True)
+    if bond_dims is None:
+        # 小例子用这个就行；cc-pVDZ 全空间想更准可以把 200/400 调大
+        bond_dims = [100] * 4 + [200] * 4
+
+    if noises is None:
+        noises = [1e-4] * 4 + [1e-5] * 2 + [0.0] * 2
+
+    if thrds is None:
+        thrds = [1e-8] * len(bond_dims)
+
+    norb = h1e.shape[0]
+
+    if os.path.exists(scratch):
+        shutil.rmtree(scratch)
+
+    # RHF 闭壳层体系最推荐 SU2：spin-adapted，通常比 SZ/SGF 快
+    driver = DMRGDriver(
+        scratch=scratch,
+        symm_type=SymmetryTypes.SU2,
+        n_threads=n_threads,
+        stack_mem=int(2 * 1024**3),  # 2 GB；大体系可调到 10-30 GB
+    )
+    # driver = DMRGDriver(
+    #     scratch=scratch,
+    #     symm_type=SymmetryTypes.SU2,
+    #     n_threads=n_threads,
+    #     stack_mem=int(8 * 1024**3),
+    # )
+
+    try:
+        # 这里不使用点群对称性，所以 orb_sym=None
+        driver.initialize_system(
+            n_sites=norb,
+            n_elec=n_elec,
+            spin=spin,
+            orb_sym=None,
+        )
+
+        mpo = driver.get_qc_mpo(
+            h1e=h1e,
+            g2e=g2e,
+            ecore=ecore,
+            iprint=1,
+        )
+
+        ket = driver.get_random_mps(
+            tag="GS",
+            bond_dim=bond_dims[0],
+            nroots=1,
+        )
+
+        energy = driver.dmrg(
+            mpo,
+            ket,
+            n_sweeps=len(bond_dims),
+            bond_dims=bond_dims,
+            noises=noises,
+            thrds=thrds,
+            iprint=1,
+        )
+
+        print(f"\nblock2 DMRG energy = {energy:.15f}")
+
+        # 可选：用 1PDM/2PDM 回算能量，检查积分约定是否接对
+        pdm1 = driver.get_1pdm(ket)
+        pdm2 = driver.get_2pdm(ket).transpose(0, 3, 1, 2)
+        g2e_full = driver.unpack_g2e(g2e, n_sites=norb)
+
+        energy_from_pdm = (
+            np.einsum("ij,ij->", pdm1, h1e)
+            + 0.5 * np.einsum("ijkl,ijkl->", pdm2, g2e_full)
+            + ecore
+        )
+
+        print(f"Energy from PDMs  = {energy_from_pdm:.15f}")
+
+        return energy
+
+    finally:
+        driver.finalize()
+
+
+def test():
+    geo = mole_geo("c2", 0.5)
+
+    mol = gto.M(
+        atom=geo,
+        basis="cc-pvdz",
+        spin=0,
+        symmetry=True,
+    )
+
     print(f"Use symmetry. Molecule point group: {mol.topgroup}")
     norb = mol.nao_nr()
     nelec = mol.nelec
+
     print(f"Norb: {norb}   Ne: {nelec}")
 
     mf = scf.RHF(mol)
     print("Running RHF...")
     mf.kernel()
 
-    mf_fci = fci.FCI(mf)
-    mf_fci.max_memory = 256000
-    mf_fci.verbose = logger.DEBUG1
+    mol = mf.mol
 
-    print("Running FCI ...")
-    mf_fci.kernel()
-    print(f"FCI energy: {mf_fci.e_tot}")
+    mf_ci = ci.CISD(mf)
+    print("Running CISD ...")
+    mf_ci.kernel()
+
+    mf_cc = cc.CCSD(mf)
+    print("Running CCSD ...")
+    mf_cc.kernel()
+
+    ncas, n_elec, spin, ecore, h1e, g2e, orb_sym = itg.get_rhf_integrals(
+        mf,
+        ncore=0,
+        ncas=None,
+        g2e_symm=8,
+    )
+
+    e_dmrg = run_block2_dmrg(
+        h1e=h1e,
+        g2e=g2e,
+        ecore=ecore,
+        n_elec=n_elec,
+        spin=spin,
+        scratch="./tmp_c2_ccpvdz_block2",
+        n_threads=int(os.environ.get("OMP_NUM_THREADS", 4)),
+        bond_dims=[200] * 4 + [400] * 4 + [800] * 4,
+        noises=[1e-4] * 4 + [1e-5] * 4 + [1e-6] * 4,
+        thrds=[1e-8] * 4 + [1e-9] * 4 + [1e-9] * 4,
+    )
+
+    # e_dmrg = run_block2_dmrg(
+    #     h1e=h1e,
+    #     g2e=g2e,
+    #     ecore=mol.energy_nuc(),
+    #     n_elec=n_elec,
+    #     spin=mol.spin,  # singlet C2: 0
+    #     scratch="./tmp_c2_block2",
+    #     n_threads=int(os.environ.get("OMP_NUM_THREADS", 4)),
+    # )
+
+    print(f"\nFinal DMRG energy = {e_dmrg:.15f}")
 
 
 if __name__ == "__main__":
-    init_scf(sys.argv[1].lower(), 1.0, sys.argv[2].lower())
+    test()

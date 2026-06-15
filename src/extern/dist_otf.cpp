@@ -42,12 +42,12 @@ extern "C"
     // ==========================================
     // 2. 分段通信账本 (SubTopology) 接口
     // ==========================================
-    void *build_sub_topology_otf_f64(void *basis_ptr, void *subnet_ptr, void *gmap_ptr)
+    void *build_sub_topology_otf_f64(void *basis_ptr, void *subnet_ptr, void *gmap_ptr, int num_phases, int phase_idx)
     {
         auto basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
         auto subnet = static_cast<const Network_OTF<uint32, double> *>(subnet_ptr);
         auto gmap = static_cast<const GlobalMemMap *>(gmap_ptr);
-        return static_cast<void *>(build_sub_topology<uint32, double>(basis, subnet, gmap));
+        return static_cast<void *>(build_sub_topology<uint32, double>(basis, subnet, gmap, num_phases, phase_idx));
     }
 
     void destroy_sub_topology_otf(void *topo_ptr)

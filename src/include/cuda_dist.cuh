@@ -41,32 +41,52 @@ struct SubTopologyDev
 
 template <typename Ti, typename Tv>
 SubTopologyDev *build_sub_topology_gpu_impl(
-    const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const GlobalMemMap *gmap)
+    const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const GlobalMemMap *gmap, int num_phases, int phase_idx)
 {
-    SubTopology *h_topo = build_sub_topology<Ti, Tv>(basis, sub_net, gmap);
+    SubTopology *h_topo = build_sub_topology<Ti, Tv>(basis, sub_net, gmap, num_phases, phase_idx);
 
     SubTopologyDev *d_topo = new SubTopologyDev();
 
-    // 剥离并转移 MPI 通信所需的元数据 (Host -> Host)
-    // 既然 h_topo 马上要销毁, 使用 std::move 避免 vector 的深拷贝! 
     d_topo->send_dim = h_topo->send_dim;
     d_topo->recv_dim = h_topo->recv_dim;
     d_topo->send_counts = std::move(h_topo->send_counts);
     d_topo->recv_counts = std::move(h_topo->recv_counts);
 
-    // 将寻址映射与打包任务上传到显存 (Host -> Device VRAM)
-    d_topo->num_targets = h_topo->target_blocks.size();
-    d_topo->num_pack_jobs = h_topo->pack_jobs.size();
+    // =========================================================================
+    // 【核心修复】：将 CPU 松散的对称性 ID (h) 映射为 GPU 紧凑的 Block Index (bid)
+    // =========================================================================
 
-    if (d_topo->num_targets > 0)
+    // 1. 映射 target_bids
+    d_topo->num_targets = h_topo->target_blocks.size();
+    std::vector<int> gpu_target_bids;
+    gpu_target_bids.reserve(d_topo->num_targets);
+    for (int h : h_topo->target_blocks)
     {
-        d_topo->d_target_bids = up(h_topo->target_blocks.data(), d_topo->num_targets);
+        // 通过 block_map 将物理 h 转为连续的 bid
+        gpu_target_bids.push_back((int)basis->block_map[h]);
     }
 
-    int64 offsets_size = h_topo->block_offsets_in_cache.size();
-    if (offsets_size > 0)
+    // 2. 映射 topo_offsets
+    std::vector<int64> gpu_topo_offsets(basis->num_blocks, -1);
+    for (int i = 0; i < basis->num_blocks; ++i)
     {
-        d_topo->d_topo_offsets = up(h_topo->block_offsets_in_cache.data(), offsets_size);
+        int64 h = basis->blocks[i].asym * basis->num_irreps + basis->blocks[i].bsym;
+        // 把索引为 h 的偏移量，塞进索引为 bid (即 i) 的数组中
+        gpu_topo_offsets[i] = h_topo->block_offsets_in_cache[h];
+    }
+    // =========================================================================
+
+    d_topo->num_pack_jobs = h_topo->pack_jobs.size();
+
+    // 将映射后的干净数据上传到 GPU
+    if (d_topo->num_targets > 0)
+    {
+        d_topo->d_target_bids = up(gpu_target_bids.data(), d_topo->num_targets);
+    }
+
+    if (basis->num_blocks > 0)
+    {
+        d_topo->d_topo_offsets = up(gpu_topo_offsets.data(), basis->num_blocks);
     }
 
     if (d_topo->num_pack_jobs > 0)
@@ -74,8 +94,7 @@ SubTopologyDev *build_sub_topology_gpu_impl(
         d_topo->d_pack_jobs = up(h_topo->pack_jobs.data(), d_topo->num_pack_jobs);
     }
 
-    // 销毁临时的 CPU 拓扑对象, 防止内存泄漏! 
-    delete h_topo;
+    delete h_topo; // 清理 CPU 临时拓扑
 
     return d_topo;
 }

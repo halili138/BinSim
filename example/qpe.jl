@@ -10,7 +10,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     ham = JW_hamiltonian(mole)
-    mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec), net="otf")
+    mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
     ham = BinaryQubitAABB(ham.axs, ham.bxs, ham.azs, ham.bzs, ComplexF64.(ham.cs))
-    run_qpe(basis, ham, get_hf(basis, mole.nelec, Tv=ComplexF64), dt=0.05, net="otf")
+    run_qpe(basis, ham, get_hf(basis, mole.nelec, Tv=ComplexF64), dt=0.05)
 end

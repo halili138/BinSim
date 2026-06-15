@@ -10,8 +10,10 @@ mutable struct CuSubTopology
     recv_counts::Vector{Cint}
 end
 
-function CuSubTopology(basis::BasisManager, subnet::OTF, gmap::GlobalMemMap)
-    ptr = @ccall LIB_CUDIST.build_sub_topology_gpu_f64(basis.ptr::Ptr{Cvoid}, subnet.ptr::Ptr{Cvoid}, gmap.ptr::Ptr{Cvoid})::Ptr{Cvoid}
+function CuSubTopology(basis::BasisManager, subnet::OTF, gmap::GlobalMemMap; num_phases::Int=1, phase_idx::Int=0)
+    ptr = @ccall LIB_CUDIST.build_sub_topology_gpu_f64(
+        basis.ptr::Ptr{Cvoid}, subnet.ptr::Ptr{Cvoid}, gmap.ptr::Ptr{Cvoid}, num_phases::Cint, phase_idx::Cint,
+    )::Ptr{Cvoid}
 
     dims = zeros(Int64, 2)
     @ccall LIB_CUDIST.get_sub_topology_info_gpu(ptr::Ptr{Cvoid}, pointer(dims, 1)::Ptr{Int64}, pointer(dims, 2)::Ptr{Int64})::Cvoid
@@ -27,9 +29,6 @@ function CuSubTopology(basis::BasisManager, subnet::OTF, gmap::GlobalMemMap)
     return obj
 end
 
-# ==========================================
-# 构建分布式 GPU 子网络集合
-# ==========================================
 function build_distributed_cu_otfs(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) where {Ti,Tv,K,V}
     groups = compress_by_svd(A, tol) 
     
@@ -54,11 +53,7 @@ function build_distributed_cu_otfs(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv
     return cpu_otfs, cu_otfs
 end
 
-# ==========================================
-# GPU 局部初态精确定向注入
-# ==========================================
-# 接收原汁原味的 GlobalMemMap！
-function set_local_hf_gpu!(gmap::GlobalMemMap, basis::BasisManager, d_local_v::CuDeviceArray{Float64,1,1}, nelec::Tuple{Int,Int})
+function set_local_hf_gpu!(gmap::GlobalMemMap, basis::BasisManager, d_local_v::CuArray{Float64,1}, nelec::Tuple{Int,Int})
     na, nb = nelec
     hf_astr = UInt32(0); for i in 0:na-1; hf_astr |= (UInt32(1) << i); end
     hf_bstr = UInt32(0); for i in 0:nb-1; hf_bstr |= (UInt32(1) << i); end

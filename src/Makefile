@@ -1,5 +1,6 @@
 CXX := g++
 CXXARCH_FLAGS := -march=znver4 -mtune=znver4
+# CXXARCH_FLAGS := -march=native -mtune=native
 # CXXARCH_FLAGS := -march=skylake-avx512 -mtune=skylake-avx512
 # CXXARCH_FLAGS := -march=icelake-server -mtune=sapphirerapids # dcu节点
 # CXXARCH_FLAGS := -march=icelake-server -mtune=icelake-server # a100_80g节点

@@ -21,7 +21,7 @@ struct SubTopology
 };
 
 template <typename Ti, typename Tv>
-SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const GlobalMemMap *gmap)
+SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const GlobalMemMap *gmap, int num_phases, int phase_idx)
 {
     SubTopology *topo = new SubTopology();
     int rank = gmap->mpi_rank;
@@ -46,8 +46,27 @@ SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF
     std::vector<std::vector<int64>> send_reqs(size);
     std::vector<std::vector<int64>> recv_reqs(size);
 
+    // =================================================================
+    // 【终极切片修复】：按 Local Index 分发 Phase，确保每张卡完美平分！
+    // =================================================================
+    std::vector<int> phase_of_block(basis->num_blocks, 0);
+    std::vector<int> rank_block_count(size, 0);
+
     for (int64 i = 0; i < basis->num_blocks; ++i)
     {
+        int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
+        int dest_r = gmap->block_to_rank[h];
+        // 关键：基于该块在自己 Rank 里的排行来分配 Phase
+        phase_of_block[i] = rank_block_count[dest_r] % num_phases;
+        rank_block_count[dest_r]++;
+    }
+
+    for (int64 i = 0; i < basis->num_blocks; ++i)
+    {
+        // 时间切片拦截
+        if (phase_of_block[i] != phase_idx)
+            continue;
+
         int64 t_asym = basis->blocks[i].asym;
         int64 t_bsym = basis->blocks[i].bsym;
         int64 h_tgt = t_asym * num_irreps + t_bsym;
@@ -106,10 +125,15 @@ SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF
     for (int64 i = 0; i < basis->num_blocks; ++i)
     {
         int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
+
         if (gmap->block_to_rank[h] == rank)
         {
             topo->block_offsets_in_cache[h] = gmap->block_local_offsets[h];
-            topo->target_blocks.push_back((int)h);
+
+            if (phase_of_block[i] == phase_idx)
+            {
+                topo->target_blocks.push_back((int)h);
+            }
         }
     }
 
