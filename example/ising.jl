@@ -1,4 +1,4 @@
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     nq = parse(Int64, ARGS[1])

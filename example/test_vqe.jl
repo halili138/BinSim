@@ -1,4 +1,4 @@
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 function run_vqe2(
     basis::BasisManager, 

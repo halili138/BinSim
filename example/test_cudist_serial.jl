@@ -4,7 +4,7 @@ ENV["OMP_NUM_THREADS"] = _nts
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
-include("../cudistribute.jl")
+include("../jl/cudistribute.jl")
 
 # =====================================================================
 # 2. 纯 CPU 内存路由器 (完美平替底层的 MPI.Alltoallv!)

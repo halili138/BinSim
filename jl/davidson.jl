@@ -1,5 +1,3 @@
-const LIB_DIAG = joinpath(@__DIR__, "src/lib/libdiag.so")
-
 function davidson(
     aop!::Function,
     v0::Vector{Float64},

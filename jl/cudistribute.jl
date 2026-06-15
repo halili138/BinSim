@@ -1,7 +1,5 @@
 include("cunetwork.jl")
 
-const LIB_CUDIST = joinpath(@__DIR__, "src/lib/libcudist.so")
-
 mutable struct CuSubTopology
     ptr::Ptr{Cvoid}
     send_dim::Int64

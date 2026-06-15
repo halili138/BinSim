@@ -1,7 +1,3 @@
-using MPI
-
-const LIB_DIST = joinpath(@__DIR__, "src/lib/libdist.so")
-
 # ==========================================
 # 1. 全局内存图 (GlobalMemMap)
 # ==========================================

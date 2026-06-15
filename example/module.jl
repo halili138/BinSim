@@ -1,4 +1,4 @@
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 function run_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv},
     obs_X::BinaryQubitAABB{Ti,Tv,TK,TV}, obs_Z::BinaryQubitAABB{Ti,Tv,TK,TV};

@@ -1,7 +1,7 @@
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 using PyCall
-pushfirst!(pyimport("sys")."path", @__DIR__)
+pushfirst!(pyimport("sys")."path", pypath)
 nesite = pyimport("nesite")
 
 function QubitOperator(of_qubit, Ti::Type, Tv::Type)

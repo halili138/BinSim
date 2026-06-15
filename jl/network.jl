@@ -1,6 +1,3 @@
-const LIB_BASIS = joinpath(@__DIR__, "src/lib/libbasis.so")
-const LIB_OTF = joinpath(@__DIR__, "src/lib/libotf.so")
-
 mutable struct BasisManager
     ptr::Ptr{Cvoid}
     dim::Int64

@@ -1,6 +1,3 @@
-const LIB_HAM = joinpath(@__DIR__, "src/lib/libham.so")
-
-
 struct HamResult_f64
     axs_ptr::Ptr{Cvoid}
     azs_ptr::Ptr{Cvoid}

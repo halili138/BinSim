@@ -2,7 +2,7 @@ ENV["OMP_NUM_THREADS"] = 4
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 using PyCall
 

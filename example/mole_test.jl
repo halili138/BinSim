@@ -8,7 +8,7 @@ ENV["OMP_NUM_THREADS"] = _nts
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 
 function test1(name, ratio, basis)

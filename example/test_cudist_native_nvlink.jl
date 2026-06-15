@@ -4,7 +4,7 @@ ENV["OMP_PROC_BIND"] = "false"
 ENV["OMPI_MCA_btl"] = "^openib"
 ENV["JULIA_CUDA_MEMORY_POOL"] = "none"
 
-include("../cudistribute.jl")
+include("../jl/cudistribute.jl")
 
 function test_multigpu_native(name, ratio, basis_name; num_phases::Int=2)
     # -------------------------------------------------------------

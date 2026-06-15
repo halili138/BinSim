@@ -10,7 +10,7 @@ _name  = length(ARGS) >= 2 ? ARGS[2] : "h12"
 _basis = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
 _ratio = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
 
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 function test_real_mpi_simulation(name, ratio, basis_name)
     MPI.Init()

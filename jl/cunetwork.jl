@@ -1,7 +1,11 @@
 include("binsim.jl")
-using CUDA
 
-const LIB_CUOTF = joinpath(@__DIR__, "src/lib/libcuotf.so")
+try
+    using CUDA
+catch
+    using Pkg
+    Pkg.add(CUDA)
+end
 
 function sync_device!()
     @ccall LIB_CUOTF.sync_device_cuda()::Cvoid

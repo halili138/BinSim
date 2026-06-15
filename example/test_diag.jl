@@ -2,7 +2,7 @@ ENV["OMP_NUM_THREADS"] = 8
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
-include("../binsim.jl")
+include("../jl/binsim.jl")
 
 function run_fci2(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}) where {Ti,Tv,K,V}
     funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=true)

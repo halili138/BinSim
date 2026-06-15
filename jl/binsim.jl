@@ -8,6 +8,7 @@ using Dates
 using Combinatorics
 using SparseArrays
 
+using MPI
 using Random
 using Optim
 using NLSolversBase
@@ -19,6 +20,7 @@ using Arpack
 using LinearMaps
 using DifferentialEquations
 using RecursiveArrayTools
+using PyCall
 
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
 omp_threads     = get(ENV, "OMP_NUM_THREADS", "Not Set")
@@ -36,8 +38,18 @@ println("BLAS_NUM_THREADS      $(BLAS.get_num_threads())")
 println("Threads.nthreads()    $(Threads.nthreads())")
 println("")
 
-const jld2path::String = joinpath(@__DIR__, "../jld2file/")
-const pypath::String = joinpath(@__DIR__, "py/")
+const jld2path   = joinpath(@__DIR__, "../jld2file/")
+const pypath     = joinpath(@__DIR__, "../py/")
+const libpath    = joinpath(@__DIR__, "../src/lib/")
+
+const LIB_BASIS  = joinpath(libpath, "libbasis.so"  )
+const LIB_HAM    = joinpath(libpath, "libham.so"    )
+const LIB_OTF    = joinpath(libpath, "libotf.so"    )
+const LIB_DIAG   = joinpath(libpath, "libdiag.so"   )
+const LIB_DIST   = joinpath(libpath, "libdist.so"   )
+const LIB_CUDIST = joinpath(libpath, "libcudist.so" )
+const LIB_CUOTF  = joinpath(libpath, "libcuotf.so"  ) 
+
 const eps1::Float64 = 1e-8
 const eps2::Float64 = 1e-12
 const eps3::Float64 = 1e-16
@@ -45,6 +57,7 @@ const eps3::Float64 = 1e-16
 include("integer.jl")
 include("tools.jl")
 include("geo.jl")
+include("save_int.jl")
 include("load_data.jl")
 include("binqubitabab.jl")
 include("binqubitaabb.jl")
@@ -55,8 +68,7 @@ include("davidson.jl")
 include("ansatz.jl")
 include("vqe.jl")
 include("method.jl")
+include("distribute.jl")
 # include("vqite.jl")
 # include("vqrte.jl")
-include("distribute.jl")
-
 

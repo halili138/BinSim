@@ -21,7 +21,7 @@ function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1)
     )
 
     print("Running Arpack directly on C++ OTF Network...")
-    time_ops = @elapsed λ_aggs, ϕ_aggs = eigs(hvec_map, nev=k, ncv=4, which=:SR)
+    time_ops = @elapsed λ_aggs, ϕ_aggs = eigs(hvec_map, nev=k, which=:SR)
     @printf("Done in %.4f seconds\n", time_ops)
 
     λ_aggs = real.(λ_aggs)
