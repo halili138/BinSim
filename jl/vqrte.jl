@@ -26,6 +26,7 @@ function rte_rk4_step!(f_hvec::Function, v::T, ws::Vector{T}, dt::Float64) where
     normalize!(v)
 end
 
+
 function rte_rk4_step2!(f_hvec::Function, v::T, ws::Vector{T}, dt::Float64) where {Tv,T<:AbstractArray{Tv,1}}
     vt = ws[5]
     # k1 = -i * H * v_exact
@@ -54,140 +55,132 @@ function rte_rk4_step2!(f_hvec::Function, v::T, ws::Vector{T}, dt::Float64) wher
     normalize!(v)
 end
 
-# function run_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv};
-#     dt::Float64=1e-2, max_step::Int=500, tikhonov_eps::Float64=1e-4, per_print::Int=10,
-# ) where {Ti,Tv,TK,TV}
-#     @assert Tv == ComplexF64 "TDVA requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
-#     println("============================================================================")
-#     println("--- Time-Dependent Variational Algorithm (TDVA) ---")
-#     println("--- DOI: https://doi.org/10.1103/PhysRevX.7.021050 ---\n")
 
-#     funcs = OTF_Functions(basis, ham, pool, time_print=false)
-#     measure_ops = [QubitOperatorAABB([(0, "Z")], 1.0, Ti, Tv), QubitOperatorAABB([(0, "Z"), (1, "Z")], 1.0, Ti, Tv)]
-#     measure_funcs = OTF_Functions(basis, BinaryQubitAABB{Ti,Tv,TK,TV}(), measure_ops, info_print=false, time_print=false)
-#     measures = zeros(Tv, length(measure_ops))
-#     measures_exact = zeros(Tv, length(measure_ops))
+function run_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv},
+    obs_X::BinaryQubitAABB{Ti,Tv,TK,TV}, obs_Z::BinaryQubitAABB{Ti,Tv,TK,TV};
+    dt::Float64=1e-2, max_step::Int=500, tikhonov_eps::Float64=1e-3, per_print::Int=10,
+) where {Ti,Tv,TK,TV}
+    @assert Tv == ComplexF64 "TDVA requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
+    println("============================================================================")
+    println("--- Time-Dependent Variational Algorithm (TDVA) ---")
+    println("--- DOI: https://doi.org/10.1103/PhysRevX.7.021050 ---\n")
 
-#     N = length(pool)
-#     e_hist = Float64[]
+    funcs = OTF_Functions(basis, ham, pool, time_print=false)
+    xfuncs = OTF_Functions(basis, obs_X, eltype(pool)[], info_print=false, time_print=false)
+    zfuncs = OTF_Functions(basis, obs_Z, eltype(pool)[], info_print=false, time_print=false)
+    obs_X_hist = Float64[]
+    obs_Z_hist = Float64[]
+    exact_obs_X_hist = Float64[]
+    exact_obs_Z_hist = Float64[]
 
-#     x = zeros(Float64, N)
-#     xs = [zeros(Float64, N) for _ in 1:5]
-#     xt = xs[5]
+    N = length(pool)
+    e_hist = Float64[]
 
-#     vs = [zeros(Tv, basis.dim) for _ in 1:N]
-#     ws = [zeros(Tv, basis.dim) for _ in 1:5]
-#     D  = zeros(Tv, N, basis.dim)
+    x = zeros(Float64, N)
+    xs = [zeros(Float64, N) for _ in 1:5]
+    xt = xs[5]
 
-#     ve = copy(v0)
-#     v  = ws[1]
-#     Hv = ws[2]
-        
-#     function compute_xdot_and_energy!(x_in, dx_out)
-#         v .= v0
-#         for k in 1:N
-#             vs[k] .= v
-#             funcs.expm(k, x_in[k], v)
-#         end
+    vs = [zeros(Tv, basis.dim) for _ in 1:N]
+    ws = [zeros(Tv, basis.dim) for _ in 1:5]
+    D = zeros(Tv, N, basis.dim)
 
-#         funcs.hvec(v, Hv)
-#         E_val = real(dot(v, Hv))
+    ve = copy(v0)
+    v = ws[1]
+    Hv = ws[2]
 
-#         # # 当你把 @view D[k, :] 传给底层的 f_tvec 时, Julia 会把这个视图的首地址(即 D[k, 1] 的地址)作为一个裸指针(Tv*)丢给 C++
-#         # # 但是, C++ 里的 f_tvec 函数根本不知道什么叫"视图", 它认为传入的是一个绝对连续的一维数组!
-#         # # 结果就是所有的导数态不仅没有横向写入 D 的行中, 反而竖着把其他的波函数全部覆盖污染了!
-#         # for k in 1:N
-#         #     f_tvec(k, vs[k], @view D[k, :]) 
-#         # end
-#         for k in 1:N
-#             # 1. 让 C++ 将结果写入绝对连续的一维缓存 ws[3]
-#             funcs.tvec(k, vs[k], ws[3]) 
-#             # 2. 让 Julia 将缓存安全地 broadcast 赋值到 D 的行中
-#             D[k, :] .= ws[3]
-#         end
+    function compute_xdot_and_energy!(x_in, dx_out)
+        v .= v0
+        for k in 1:N
+            vs[k] .= v
+            funcs.expm(k, x_in[k], v)
+        end
 
-#         for j in 1:N
-#             funcs.batchexpm(j, x_in[j], D, N, j) 
-#         end
+        funcs.hvec(v, Hv)
+        E_val = real(dot(v, Hv))
 
-#         # Re(D* Hv) ≡ Re(D Hv*)
-#         @. Hv = conj(-im * (Hv - E_val * v))     
-#         # (N x dim) * (dim x 1) -> N x 1   
-#         V = real.(D * Hv)
-#         # (N x dim) * (dim x N) -> N x N
-#         M = real.(D * D')       
+        for k in 1:N
+            funcs.tvec(k, vs[k], ws[3])
+            D[k, :] .= ws[3]
+        end
 
-#         # if dx_out === xs[1]
-#         #     push!(cond_hist, cond(M))
-#         # end
+        for j in 1:N
+            funcs.batchexpm(j, x_in[j], D, N, j)
+        end
 
-#         if any(isnan, M) || any(isinf, M)
-#             println("WARNING: M matrix contains NaN or Inf! Returning zero update.")
-#             dx_out .= 0.0
-#             return E_val, cond(M)
-#         end
+        @. Hv = conj(-im * (Hv - E_val * v))
+        V = real.(D * Hv)
+        M = real.(D * D')
 
-#         # 2. Tikhonov 正则化 (Shift)
-#         # 对角线上加上一个极小的阈值 (例如 1e-12)
-#         # 这就像在矩阵的极度病态深渊里垫了一层钢板, 强行将其从奇异(Inf)拉回到正定!
-#         # 加上这微小的一点, LAPACK 的 eigen 就再也不会崩溃了
-#         # 这里为了不破坏物理轨迹, 我们加的值非常小 (比如 1e-12)
-#         shift_val = 1e-12
-#         for i in 1:N
-#             M[i, i] += shift_val
-#         end
+        if any(isnan, M) || any(isinf, M)
+            println("WARNING: M matrix contains NaN or Inf! Returning zero update.")
+            dx_out .= 0.0
+            return E_val, cond(M)
+        end
 
-#         # 在 N > 4000 时, SVD 的 O(N^3) 开销是极其恐怖的
-#         # 在变分量子动力学中, 由于 M = Re(D*D^\dagger), 它在数学上绝对是一个实对称的半正定矩阵 (Symmetric Positive Semi-Definite)
-#         # 对于实对称矩阵, 求解特征值分解(Eigen Decomposition)的速度远快于全量 SVD 分解, 而且在 LAPACK 中, 对称特征值分解(dsyevd, 分治法)的多线程并行效率极高        
-#         # 伪逆重组： M_pinv = V * D^{-1} * V^T
-#         F = eigen(Symmetric(M))
-#         inv_S = [1.0 / (abs(val) + tikhonov_eps) for val in F.values]
-#         M_pinv = F.vectors * Diagonal(inv_S) * F.vectors'
-#         dx_out .= M_pinv * V
+        shift_val = 1e-12
+        for i in 1:N
+            M[i, i] += shift_val
+        end
 
-#         return E_val, cond(M) 
-#     end
+        F = eigen(Symmetric(M))
+        inv_S = [1.0 / (abs(val) + tikhonov_eps) for val in F.values]
+        M_pinv = F.vectors * Diagonal(inv_S) * F.vectors'
+        dx_out .= M_pinv * V
 
-#     @printf("  Step        Energy           δE       Trj Fid     cond(M)       |dx|      Time\n")
-#     time_ops = @elapsed for step in 1:max_step
-#         e_curr, cond_M = compute_xdot_and_energy!(x, xs[1])
-#         push!(e_hist, e_curr)
+        return E_val, cond(M)
+    end
 
-#         @. xt = x + 0.5 * dt * xs[1]
-#         compute_xdot_and_energy!(xt, xs[2])
+    @printf("  Step        Energy           δE       Trj Fid     cond(M)       |dx|      Time\n")
+    time_ops = @elapsed for step in 1:max_step
+        e_curr, cond_M = compute_xdot_and_energy!(x, xs[1])
+        push!(e_hist, e_curr)
 
-#         @. xt = x + 0.5 * dt * xs[2]
-#         compute_xdot_and_energy!(xt, xs[3])
+        @. xt = x + 0.5 * dt * xs[1]
+        compute_xdot_and_energy!(xt, xs[2])
 
-#         @. xt = x + dt * xs[3]
-#         compute_xdot_and_energy!(xt, xs[4])
+        @. xt = x + 0.5 * dt * xs[2]
+        compute_xdot_and_energy!(xt, xs[3])
 
-#         @. x += dt / 6 * (xs[1] + 2 * xs[2] + 2 * xs[3] + xs[4])
+        @. xt = x + dt * xs[3]
+        compute_xdot_and_energy!(xt, xs[4])
 
-#         rte_rk4_step!(funcs.hvec, ve, ws, dt)
+        @. x += dt / 6 * (xs[1] + 2 * xs[2] + 2 * xs[3] + xs[4])
 
-#         v .= v0
-#         for k in 1:N
-#             funcs.expm(k, x[k], v)
-#         end
+        rte_rk4_step!(funcs.hvec, ve, ws, dt)
 
-#         measure_funcs.batchtran(v, v, measures)
-#         measure_funcs.batchtran(ve, ve, measures_exact)
-#         fid = abs2(dot(v, ve))
+        v .= v0
+        for k in 1:N
+            funcs.expm(k, x[k], v)
+        end
 
-#         if step % per_print == 0 || step == 1
-#             δe = step > 1 ? (e_hist[end] - e_hist[end-1]) : 0.0
-#             # @printf("  %-4.d  % 15.10f    % 8.2e    %.6f    %8.2e    %8.2e    %-6.4g  % 6.4f  % 6.4f  % 6.4f  % 6.4f\n",
-#             #     step, e_curr, δe, fid, cond_M, norm(xs[1]), step * dt, real.(measures)..., real.(measures_exact)...)
-#             @printf("  %-4.d  % 15.10f    % 8.2e    %.6f    %8.2e    %8.2e    %-6.4g\n",
-#                 step, e_curr, δe, fid, cond_M, norm(xs[1]), step * dt)
-#         end
-#     end
+        xfuncs.hvec(v, ws[5])
+        push!(obs_X_hist, real(dot(v, ws[5])))
+        zfuncs.hvec(v, ws[5])
+        push!(obs_Z_hist, real(dot(v, ws[5])))
+        xfuncs.hvec(ve, ws[5])
+        push!(exact_obs_X_hist, real(dot(ve, ws[5])))
+        zfuncs.hvec(ve, ws[5])
+        push!(exact_obs_Z_hist, real(dot(ve, ws[5])))
 
-#     @printf("\nTDVA (RK4) completed in %.4f seconds.\n", time_ops)
-#     println("============================================================================\n")
-# end
+        fid = abs2(dot(v, ve))
+
+        if step % per_print == 0 || step == 1
+            δe = step > 1 ? (e_hist[end] - e_hist[end-1]) : 0.0
+            @printf("  %-4.d  % 15.10f    % 8.2e    %.6f    %8.2e    %8.2e    %-6.4g\n",
+                step, e_curr, δe, fid, cond_M, norm(xs[1]), step * dt)
+        end
+    end
+
+    @printf("\nTDVA (RK4) completed in %.4f seconds.\n", time_ops)
+    println("============================================================================\n")
+
+    for i in eachindex(obs_X_hist)
+        @printf("  step: %04d  x : % 8.4f  xe : % 8.4f  z : % 8.4f  ze : % 8.4f\n",
+            i, obs_X_hist[i], exact_obs_X_hist[i], obs_Z_hist[i], exact_obs_Z_hist[i])
+    end
+
+end
+
 
 function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv};
     dt::Float64=1e-2, max_step::Int=500, adapt_tol::Float64=1e-3, max_ansatz::Int=150, tikhonov_eps::Float64=1e-4, per_print::Int=10,
@@ -207,9 +200,9 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
     vs = [zeros(Tv, basis.dim) for _ in 1:max_ansatz]
     ws = [zeros(Tv, basis.dim) for _ in 1:5]
     ve = copy(v0)
-    v  = ws[1] 
+    v = ws[1]
     Hv = ws[2]
-    R  = zeros(Tv, basis.dim)
+    R = zeros(Tv, basis.dim)
     zx = zeros(Float64, length(pool))
     zg = zeros(Tv, length(pool))
 
@@ -221,39 +214,39 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
     # ==========================================================
     function eval_kinematics!(x_val, dx_out)
         N_act = length(x_val)
-        
+
         v .= v0
         for k in 1:N_act
             vs[k] .= v
             funcs.expm(active_idxs[k], x_val[k], v)
         end
-        
+
         funcs.hvec(v, Hv)
         E_curr = real(dot(v, Hv))
         @. Hv = -im * (Hv - E_curr * v)  # 剔除动力学相位的精确薛定谔演化
 
         if N_act == 0
             dx_out .= 0.0
-            return norm(Hv) ^ 2, E_curr
+            return norm(Hv)^2, E_curr
         end
 
         D_act = @view D_full[1:N_act, :]
 
         # 极速组装切空间 D 矩阵
         for k in 1:N_act
-            funcs.tvec(active_idxs[k], vs[k], ws[3]) 
+            funcs.tvec(active_idxs[k], vs[k], ws[3])
             D_act[k, :] .= ws[3]
         end
 
         # 调用底层的 SIMD 批处理
         for j in 1:N_act
-            funcs.batchexpm(active_idxs[j], x_val[j], D_full, max_ansatz, j) 
+            funcs.batchexpm(active_idxs[j], x_val[j], D_full, max_ansatz, j)
         end
 
         # 全局矩阵投影
         @. ws[4] = conj(Hv)
         V_act = real.(D_act * ws[4])
-        M_act = real.(D_act * D_act') 
+        M_act = real.(D_act * D_act')
 
         # Tikhonov 刚性装甲
         shift_val = 1e-12
@@ -268,7 +261,7 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
         dx_out .= M_pinv * V_act
 
         # McLachlan 误差（几何投影余弦定理）
-        L2_err = norm(Hv) ^ 2 - dot(dx_out, V_act)
+        L2_err = norm(Hv)^2 - dot(dx_out, V_act)
 
         return abs(L2_err), E_curr
     end
@@ -276,27 +269,27 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
     @printf("  Step     N            E         Trj Fid      L²-Err      Time\n")
 
     time_ops = @elapsed for step in 1:max_step
-        
+
         # ==========================================================
         # Phase 1: ADAPT 动态修补阶段 (拦截波函数泄漏)
         # ==========================================================
         k1_act = @view xs_full[1][1:length(active_idxs)]
         L2_error, E_curr = eval_kinematics!(x, k1_act)
-        
+
         while L2_error > adapt_tol && length(active_idxs) < max_ansatz
             N_act = length(active_idxs)
             dx_act = @view xs_full[1][1:N_act]
-            D_act  = @view D_full[1:N_act, :]
-            
+            D_act = @view D_full[1:N_act, :]
+
             # 残差提取：|R> = |Hv> - D^T * \dot{x}
             R .= Hv
             if N_act > 0
                 mul!(R, transpose(D_act), dx_act, -1.0, 1.0)
             end
-            
+
             funcs.batchgrad(v, R, zg, zx)
             max_grad, max_idx = findmax(abs.(real.(zg))) # 获取最大的真实物理投影梯度
-            
+
             # ==========================================================
             # 【核心防御机制 1：池子枯竭拦截】
             # 如果全池子的投影都极小，说明现有的池子已经无法进一步拟合残差。
@@ -306,7 +299,7 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
                 println("  -> Pool functionally exhausted, break ADAPT")
                 break
             end
-            
+
             # ==========================================================
             # 【核心防御机制 2：防贪心停滞拦截】
             # 如果程序试图连续两次添加同一个算符，说明该算符的更新速度被 sv_tol 截断了。
@@ -316,46 +309,46 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
                 println("  -> Stagnation detected (repeated operator), break ADAPT")
                 break
             end
-            
+
             # 膨胀 Ansible (初始化参数为 0)
             push!(active_idxs, max_idx)
             push!(x, 0.0)
-            
+
             # 重新校验流形是否已封堵
             k1_new = @view xs_full[1][1:length(active_idxs)]
             L2_error, E_curr = eval_kinematics!(x, k1_new)
         end
-        
+
         # ==========================================================
         # Phase 2: RK4 物理真实时间推演
         # ==========================================================
         N_act = length(active_idxs)
         if N_act > 0
-            x_act  = @view x[1:N_act]
+            x_act = @view x[1:N_act]
             k1_act = @view xs_full[1][1:N_act]
             k2_act = @view xs_full[2][1:N_act]
             k3_act = @view xs_full[3][1:N_act]
             k4_act = @view xs_full[4][1:N_act]
-            
+
             # 此时的 k1_act 已经是修补完美后的梯度，直接拿来用！
             x_temp = x_act .+ 0.5 .* dt .* k1_act
             eval_kinematics!(x_temp, k2_act)
-            
+
             x_temp .= x_act .+ 0.5 .* dt .* k2_act
             eval_kinematics!(x_temp, k3_act)
-            
+
             x_temp .= x_act .+ dt .* k3_act
             eval_kinematics!(x_temp, k4_act)
-            
+
             # 推演物理时间
             @. x_act += dt / 6 * (k1_act + 2 * k2_act + 2 * k3_act + k4_act)
         end
-        
+
         # ==========================================================
         # Phase 3: 保真度与轨迹监控
         # ==========================================================
         rte_rk4_step!(funcs.hvec, ve, ws, dt)
-        
+
         v .= v0
         for i in 1:N_act
             funcs.expm(active_idxs[i], x[i], v)
@@ -367,7 +360,7 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
 
         if step % per_print == 0 || step == 1
             @printf("  %04d    %03d  % 15.10f    %.6f    %.3e    %4.4g \t % .4f    % .4f    % .4f    % .4f\n",
-                    step, N_act, E_curr, fid, L2_error, step * dt, real.(measures)..., real.(measures_exact)...)
+                step, N_act, E_curr, fid, L2_error, step * dt, real.(measures)..., real.(measures_exact)...)
         end
     end
 
@@ -377,6 +370,7 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
     return (x=x, active_idxs=active_idxs)
 end
 
+
 function run_rk4_rte(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, v0::Vector{Tv};
     dt::Float64=1e-2, max_step::Int64=1000, per_print::Int=100,
 ) where {Ti,Tv,TK,TV}
@@ -384,14 +378,14 @@ function run_rk4_rte(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, v0:
 
     funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], time_print=false)
     ws = [zeros(Tv, basis.dim) for _ in 1:5]
-    v  = copy(v0)
+    v = copy(v0)
     Hv = ws[1]
     vt = ws[5]
     funcs.hvec(v, Hv)
     e = real(dot(v, Hv))
 
-    c_e    = Ref(0.0)
-    c_δe   = Ref(0.0)
+    c_e = Ref(0.0)
+    c_δe = Ref(0.0)
     c_step = Ref(0)
 
     println("Performing RTE with 4-Runge-Kutta ... ")
@@ -423,12 +417,13 @@ function run_rk4_rte(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, v0:
         c_e[], c_δe[], c_step[] = e, δe, step
 
         if step % per_print == 0 || step == 1
-            @printf("  Step: %-5.d   E: %.14f    δE: %.3e    Time: %.3f\n",  step, e, δe, step * dt)
+            @printf("  Step: %-5.d   E: %.14f    δE: %.3e    Time: %.3f\n", step, e, δe, step * dt)
         end
     end
 
     @printf("\nConverged in %.4f seconds with:\n  Step: %-5.d   E: %.14f    δE: %.3e    Time: %.3f\n\n", time_ops, c_step[], c_e[], c_δe[], c_step[] * dt)
 end
+
 
 function run_krylov_rte(hvec!::Function, v0::Vector{ComplexF64};
     dt::Float64=0.05, krylov_dim::Int=20, max_step::Int64=2000, E_ref::Float64=0.0,
@@ -505,167 +500,172 @@ function run_krylov_rte(hvec!::Function, v0::Vector{ComplexF64};
     return C_t
 end
 
-# function run_vqrte_pvqd(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv},
-#     obs_X, obs_Z;
-#     dt::Float64=1e-2, max_step::Int=500, max_opt_steps::Int=50, tol_infidelity::Float64=1e-6, lr::Float64=1e-3, per_print::Int=10,
-# ) where {Ti,Tv,TK,TV}
-#     @assert Tv == ComplexF64 "p-VQD requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
-#     println("============================================================================")
-#     println("--- projected Variational Quantum Dynamics (p-VQD) ---")
-#     println("--- Doi: https://doi.org/10.22331/q-2021-07-28-512 ---\n")
 
-#     funcs = OTF_Functions(basis, ham, pool, time_print=false)
-#     # ops_mx = BinaryQubitAABB{Ti,Tv,TK,TV}[]
-#     # ops_mz = BinaryQubitAABB{Ti,Tv,TK,TV}[]
-#     # nq = basis.norb * 2
-#     # for i in 0:nq-1
-#     #     push!(ops_mx, QubitOperatorAABB([(i, "X")], 1.0, Ti, Tv))
-#     #     push!(ops_mz, QubitOperatorAABB([(i, "Z")], 1.0, Ti, Tv))
-#     # end
-#     # obs_X = linearcombine(ops_mx, ones(Float64, nq), 0.0, 1e-12)
-#     # obs_Z = linearcombine(ops_mz, ones(Float64, nq), 0.0, 1e-12)
-#     # obs_X = QubitOperatorAABB([(i, "X") for i in 0:nq-1], 1.0, Ti, Tv)
-#     # obs_Z = QubitOperatorAABB([(i, "Z") for i in 0:nq-1], 1.0, Ti, Tv)
+function run_vqrte_pvqd(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}}, v0::Vector{Tv},
+    obs_X, obs_Z;
+    dt::Float64=1e-2, max_step::Int=500, max_opt_steps::Int=50, tol_infidelity::Float64=1e-6, lr::Float64=1e-3, per_print::Int=10,
+) where {Ti,Tv,TK,TV}
+    @assert Tv == ComplexF64 "p-VQD requires Tv=ComplexF64 for Hamiltonian, Pool, and initial state!"
+    println("============================================================================")
+    println("--- projected Variational Quantum Dynamics (p-VQD) ---")
+    println("--- Doi: https://doi.org/10.22331/q-2021-07-28-512 ---\n")
 
-#     xfuncs = OTF_Functions(basis, obs_X, eltype(pool)[], info_print=false, time_print=false)
-#     zfuncs = OTF_Functions(basis, obs_Z, eltype(pool)[], info_print=false, time_print=false)
-#     x_hist = Float64[]
-#     z_hist = Float64[]
-#     exact_x_hist = Float64[]
-#     exact_z_hist = Float64[]
+    funcs = OTF_Functions(basis, ham, pool, time_print=false)
+    # ops_mx = BinaryQubitAABB{Ti,Tv,TK,TV}[]
+    # ops_mz = BinaryQubitAABB{Ti,Tv,TK,TV}[]
+    # nq = basis.norb * 2
+    # for i in 0:nq-1
+    #     push!(ops_mx, QubitOperatorAABB([(i, "X")], 1.0, Ti, Tv))
+    #     push!(ops_mz, QubitOperatorAABB([(i, "Z")], 1.0, Ti, Tv))
+    # end
+    # obs_X = linearcombine(ops_mx, ones(Float64, nq), 0.0, 1e-12)
+    # obs_Z = linearcombine(ops_mz, ones(Float64, nq), 0.0, 1e-12)
+    # obs_X = QubitOperatorAABB([(i, "X") for i in 0:nq-1], 1.0, Ti, Tv)
+    # obs_Z = QubitOperatorAABB([(i, "Z") for i in 0:nq-1], 1.0, Ti, Tv)
 
-#     N = length(pool)
-    
-#     # 物理参数与优化增量
-#     x    = zeros(Float64, N)
-#     dx   = zeros(Float64, N) 
-#     x_dx = zeros(Float64, N) # 当前测试参数 x + dx
+    xfuncs = OTF_Functions(basis, obs_X, eltype(pool)[], info_print=false, time_print=false)
+    zfuncs = OTF_Functions(basis, obs_Z, eltype(pool)[], info_print=false, time_print=false)
+    x_hist = Float64[]
+    z_hist = Float64[]
+    exact_x_hist = Float64[]
+    exact_z_hist = Float64[]
 
-#     # 存放底层返回的精确梯度
-#     zg = zeros(Tv, N)
+    N = length(pool)
 
-#     # 独立的态缓存 (避免与 RK4 内部的 ws 冲突)
-#     ve   = copy(v0)
-#     v    = copy(v0)
-#     vt   = copy(v0)
-#     v_dx = copy(v0)
-#     Hv   = copy(v0)
-#     ws   = [zeros(Tv, basis.dim) for _ in 1:5] # 专供 rte_rk4_step! 使用的缓存
+    # 物理参数与优化增量
+    x = zeros(Float64, N)
+    dx = zeros(Float64, N)
+    x_dx = zeros(Float64, N) # 当前测试参数 x + dx
 
-#     # Adam 优化器内部状态
-#     m_adam = zeros(Float64, N)
-#     v_adam = zeros(Float64, N)
-#     beta1, beta2, eps_adam = 0.9, 0.999, 1e-8
+    # 存放底层返回的精确梯度
+    zg = zeros(Tv, N)
 
-#     @printf("  Step     OptSteps      Loss(1-F)       Energy           Trj Fid      Time\n")
-#     time_ops = @elapsed for step in 1:max_step
-        
-#         # ==========================================================
-#         # Phase 1: 构建当前基准态 |ψ_w(t)>
-#         # ==========================================================
-#         v .= v0
-#         for k in 1:N
-#             funcs.expm(k, x[k], v)
-#         end
+    # 独立的态缓存 (避免与 RK4 内部的 ws 冲突)
+    ve = copy(v0)
+    v = copy(v0)
+    vt = copy(v0)
+    v_dx = copy(v0)
+    Hv = copy(v0)
+    ws = [zeros(Tv, basis.dim) for _ in 1:5] # 专供 rte_rk4_step! 使用的缓存
 
-#         # ==========================================================
-#         # Phase 2: 生成目标投影态 |ϕ(t+dt)> 
-#         # ==========================================================
-#         vt .= v
-#         rte_rk4_step!(funcs.hvec, vt, ws, dt)
+    # Adam 优化器内部状态
+    m_adam = zeros(Float64, N)
+    v_adam = zeros(Float64, N)
+    beta1, beta2, eps_adam = 0.9, 0.999, 1e-8
 
-#         # 承接上一步的最优 dx 作为先验 (附录 D 技巧)
-#         fill!(m_adam, 0.0)
-#         fill!(v_adam, 0.0)
+    @printf("  Step     OptSteps      Loss(1-F)       Energy           Trj Fid      Time\n")
+    time_ops = @elapsed for step in 1:max_step
 
-#         opt_k = 0
-#         loss = 1.0
+        # ==========================================================
+        # Phase 1: 构建当前基准态 |ψ_w(t)>
+        # ==========================================================
+        v .= v0
+        for k in 1:N
+            funcs.expm(k, x[k], v)
+        end
 
-#         # ==========================================================
-#         # Phase 3: Exact Backprop 梯度优化 (Adam)
-#         # ==========================================================
-#         for k in 1:max_opt_steps
-#             opt_k = k
-            
-#             # 3.1 前向传播: 生成试验态 |ψ_{w+dx}>
-#             @. x_dx = x + dx
-#             v_dx .= v0
-#             for i in 1:N
-#                 funcs.expm(i, x_dx[i], v_dx)
-#             end
+        # ==========================================================
+        # Phase 2: 生成目标投影态 |ϕ(t+dt)> 
+        # ==========================================================
+        vt .= v
+        rte_rk4_step!(funcs.hvec, vt, ws, dt)
 
-#             # 3.2 评估 Step-Infidelity
-#             ov = dot(vt, v_dx) # <ϕ(δt) | ψ_{w+dx}>
-#             fid_step = abs2(ov)
-#             loss = 1.0 - fid_step
+        # 承接上一步的最优 dx 作为先验 (附录 D 技巧)
+        fill!(m_adam, 0.0)
+        fill!(v_adam, 0.0)
 
-#             # 达到容忍度跳出迭代
-#             if loss < tol_infidelity
-#                 break
-#             end
+        opt_k = 0
+        loss = 1.0
 
-#             # 3.3 反向传播: 计算算符池的精确全导数 ∇_x <vt | U(x_dx) | v0>
-#             # C++ 引擎将结果直接写入 zg
-#             funcs.batchgrad(vt, v0, zg, x_dx)
+        # ==========================================================
+        # Phase 3: Exact Backprop 梯度优化 (Adam)
+        # ==========================================================
+        for k in 1:max_opt_steps
+            opt_k = k
 
-#             # 3.4 组装损失函数梯度并执行 Adam 更新
-#             for i in 1:N
-#                 # F = <ϕ | ψ> <ψ | ϕ>
-#                 # ∂F/∂x_i = 2 Re( <ϕ | ∂_i ψ> * <ψ | ϕ> )
-#                 # zg[i] 即为 <ϕ(δt) | ∂_i ψ_{w+dx}>
-#                 # conj(ov) 即为 <ψ_{w+dx} | ϕ(δt)>
-#                 grad_i = -2.0 * real(zg[i] * conj(ov))
+            # 3.1 前向传播: 生成试验态 |ψ_{w+dx}>
+            @. x_dx = x + dx
+            v_dx .= v0
+            for i in 1:N
+                funcs.expm(i, x_dx[i], v_dx)
+            end
 
-#                 # Adam 动量与方差追踪
-#                 m_adam[i] = beta1 * m_adam[i] + (1.0 - beta1) * grad_i
-#                 v_adam[i] = beta2 * v_adam[i] + (1.0 - beta2) * grad_i^2
-                
-#                 m_hat = m_adam[i] / (1.0 - beta1^opt_k)
-#                 v_hat = v_adam[i] / (1.0 - beta2^opt_k)
+            # 3.2 评估 Step-Infidelity
+            ov = dot(vt, v_dx) # <ϕ(δt) | ψ_{w+dx}>
+            fid_step = abs2(ov)
+            loss = 1.0 - fid_step
 
-#                 # 参数更新
-#                 dx[i] -= lr * m_hat / (sqrt(v_hat) + eps_adam)
-#             end
-#         end
+            # 达到容忍度跳出迭代
+            if loss < tol_infidelity
+                break
+            end
 
-#         # ==========================================================
-#         # Phase 4: 物理时间推演
-#         # ==========================================================
-#         @. x += dx
+            # 3.3 反向传播: 计算算符池的精确全导数 ∇_x <vt | U(x_dx) | v0>
+            # C++ 引擎将结果直接写入 zg
+            funcs.batchgrad(vt, v0, zg, x_dx)
 
-#         # ==========================================================
-#         # Phase 5: 物理量评估与监控
-#         # ==========================================================
-#         rte_rk4_step!(funcs.hvec, ve, ws, dt)
+            # 3.4 组装损失函数梯度并执行 Adam 更新
+            for i in 1:N
+                # F = <ϕ | ψ> <ψ | ϕ>
+                # ∂F/∂x_i = 2 Re( <ϕ | ∂_i ψ> * <ψ | ϕ> )
+                # zg[i] 即为 <ϕ(δt) | ∂_i ψ_{w+dx}>
+                # conj(ov) 即为 <ψ_{w+dx} | ϕ(δt)>
+                grad_i = -2.0 * real(zg[i] * conj(ov))
 
-#         v .= v0
-#         for i in 1:N
-#             funcs.expm(i, x[i], v)
-#         end
-        
-#         funcs.hvec(v, Hv)
-#         E_curr = real(dot(v, Hv))
-#         fid_global = abs2(dot(v, ve))
+                # Adam 动量与方差追踪
+                m_adam[i] = beta1 * m_adam[i] + (1.0 - beta1) * grad_i
+                v_adam[i] = beta2 * v_adam[i] + (1.0 - beta2) * grad_i^2
 
-#         xfuncs.hvec(v, vt); push!(x_hist, real(dot(v, vt)))
-#         zfuncs.hvec(v, vt); push!(z_hist, real(dot(v, vt)))
-#         xfuncs.hvec(ve, vt); push!(exact_x_hist, real(dot(ve, vt)))
-#         zfuncs.hvec(ve, vt); push!(exact_z_hist, real(dot(ve, vt)))
+                m_hat = m_adam[i] / (1.0 - beta1^opt_k)
+                v_hat = v_adam[i] / (1.0 - beta2^opt_k)
 
-#         if step % per_print == 0 || step == 1
-#             @printf("  %04d      %03d         %.3e      % 15.10f    %.6f    %4.4g\n",
-#                     step, opt_k, loss, E_curr, fid_global, step * dt)
-#         end
-#     end
+                # 参数更新
+                dx[i] -= lr * m_hat / (sqrt(v_hat) + eps_adam)
+            end
+        end
 
-#     @printf("\np-VQD completed in %.4f seconds.\n", time_ops)
-#     println("============================================================================\n")
+        # ==========================================================
+        # Phase 4: 物理时间推演
+        # ==========================================================
+        @. x += dx
 
-#     for i in eachindex(x_hist)
-#         @printf("  step: %04d  x : % 8.4f  xe : % 8.4f  z : % 8.4f  ze : % 8.4f\n",
-#                 i, x_hist[i], exact_x_hist[i], z_hist[i], exact_z_hist[i])
-#     end
+        # ==========================================================
+        # Phase 5: 物理量评估与监控
+        # ==========================================================
+        rte_rk4_step!(funcs.hvec, ve, ws, dt)
 
-#     return x
-# end
+        v .= v0
+        for i in 1:N
+            funcs.expm(i, x[i], v)
+        end
+
+        funcs.hvec(v, Hv)
+        E_curr = real(dot(v, Hv))
+        fid_global = abs2(dot(v, ve))
+
+        xfuncs.hvec(v, vt)
+        push!(x_hist, real(dot(v, vt)))
+        zfuncs.hvec(v, vt)
+        push!(z_hist, real(dot(v, vt)))
+        xfuncs.hvec(ve, vt)
+        push!(exact_x_hist, real(dot(ve, vt)))
+        zfuncs.hvec(ve, vt)
+        push!(exact_z_hist, real(dot(ve, vt)))
+
+        if step % per_print == 0 || step == 1
+            @printf("  %04d      %03d         %.3e      % 15.10f    %.6f    %4.4g\n",
+                step, opt_k, loss, E_curr, fid_global, step * dt)
+        end
+    end
+
+    @printf("\np-VQD completed in %.4f seconds.\n", time_ops)
+    println("============================================================================\n")
+
+    for i in eachindex(x_hist)
+        @printf("  step: %04d  x : % 8.4f  xe : % 8.4f  z : % 8.4f  ze : % 8.4f\n",
+            i, x_hist[i], exact_x_hist[i], z_hist[i], exact_z_hist[i])
+    end
+
+    return x
+end
 

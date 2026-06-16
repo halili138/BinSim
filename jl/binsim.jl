@@ -23,19 +23,19 @@ using RecursiveArrayTools
 using PyCall
 
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
-omp_threads     = get(ENV, "OMP_NUM_THREADS", "Not Set")
-omp_proc_bind   = get(ENV, "OMP_PROC_BIND", "Not Set")
-omp_places      = get(ENV, "OMP_PLACES", "Not Set")
+omp_threads     = get(ENV, "OMP_NUM_THREADS",     "Not Set")
+omp_proc_bind   = get(ENV, "OMP_PROC_BIND",       "Not Set")
+omp_places      = get(ENV, "OMP_PLACES",          "Not Set")
 
 BLAS.set_num_threads(parse(Int, omp_threads))
 
-println("Sys.CPU_THREADS       $(Sys.CPU_THREADS)")
-println("SLURM_CPUS_PER_TASK   $(slurm_cpus)")
-println("OMP_NUM_THREADS       $(omp_threads)")
-println("OMP_PROC_BIND         $(omp_proc_bind)")
-println("OMP_PLACES            $(omp_places)")
+println("Sys.CPU_THREADS       $(Sys.CPU_THREADS)"       )
+println("SLURM_CPUS_PER_TASK   $(slurm_cpus)"            )
+println("OMP_NUM_THREADS       $(omp_threads)"           )
+println("OMP_PROC_BIND         $(omp_proc_bind)"         )
+println("OMP_PLACES            $(omp_places)"            )
 println("BLAS_NUM_THREADS      $(BLAS.get_num_threads())")
-println("Threads.nthreads()    $(Threads.nthreads())")
+println("Threads.nthreads()    $(Threads.nthreads())"    )
 println("")
 
 const jld2path   = joinpath(@__DIR__, "../jld2file/")
@@ -70,5 +70,5 @@ include("vqe.jl")
 include("method.jl")
 include("distribute.jl")
 include("vqite.jl")
-# include("vqrte.jl")
+include("vqrte.jl")
 
