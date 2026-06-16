@@ -1,8 +1,5 @@
-_nts   = length(ARGS) >= 1 ? ARGS[1] : 4
-
-ENV["OMP_NUM_THREADS"] = _nts
-ENV["OMP_PROC_BIND"] = "close"
-ENV["OMP_PLACES"] = "cores"
+ENV["OMP_NUM_THREADS"] = "1"
+ENV["OMP_PROC_BIND"] = "false"
 
 include("../jl/cudistribute.jl")
 

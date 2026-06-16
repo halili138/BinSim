@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <algorithm>
-#include "dist_hvec.hpp"
+#include "dist.hpp"
 #include "cuda_hvec.cuh"
 
 struct SubTopologyDev

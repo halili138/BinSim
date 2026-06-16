@@ -1,4 +1,4 @@
-#include "dist_hvec.hpp"
+#include "dist.hpp"
 
 extern "C"
 {

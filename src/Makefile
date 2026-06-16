@@ -50,7 +50,7 @@ lib/libotf.so: extern/otf.cpp | lib
 lib/libcuotf.so: extern/cuotf.cu | lib
 	$(CUXX) $(CUXXFLAGS) $(INC_FLAGS) -o $@ $<
 
-lib/libdist.so: extern/dist_otf.cpp | lib
+lib/libdist.so: extern/dist.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $<
 
 lib/libcudist.so: extern/cudist.cu | lib

@@ -55,5 +55,6 @@ function pvqd_fig3_test(nq::Int, nL::Int)
     )
 end
 
-pvqd_fig3_test(parse(Int, ARGS[1]), parse(Int, ARGS[2]))
-
+if abspath(PROGRAM_FILE) == @__FILE__
+    pvqd_fig3_test(parse(Int, ARGS[1]), parse(Int, ARGS[2]))
+end
