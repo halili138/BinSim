@@ -10,7 +10,7 @@ delete!(ENV, "OMP_PLACES")
 using MPI
 MPI.Init()
 
-include("../jl/distnetwork.jl")
+include("../jl/binsim.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     # MPI.Init() already called above
