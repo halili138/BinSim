@@ -190,7 +190,7 @@ export PATH=$HOME/.julia/bin:$PATH
 
 ```bash
 export OMP_NUM_THREADS=8
-export JULIA_NUM_THREADS=8
+export MKL_NUM_THREADS=8
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 ```

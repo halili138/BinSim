@@ -92,6 +92,3 @@ if abspath(PROGRAM_FILE) == @__FILE__
         )
     )
 end
-# for i in $(seq 0.6 0.2 2.4); do
-#     sbatch -c 192 sub_cpu.sh c2 "$i" cc-pvdz
-# done
