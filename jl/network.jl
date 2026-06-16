@@ -22,7 +22,9 @@ function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int
     ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
     dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
-    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    if is_rank0_or_serial()
+        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    end
 
     obj = BasisManager(ptr, dim, norb, nelec, orbsym)
 
@@ -52,7 +54,9 @@ function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
     dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
-    @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    if is_rank0_or_serial()
+        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+    end
 
     obj = BasisManager(ptr, dim, norb, (0, 0), orbsym)
 

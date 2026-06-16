@@ -202,8 +202,8 @@ def init_scf(name: str, ratio: float, basis: str = "sto-3g"):
     """
 
     geo = mole_geo(name, ratio)
-    mol = gto.M(atom=geo, basis=basis, spin=0.0, symmetry=True)
-    print(f"Use symmetry. Molecule point group: {mol.topgroup}")
+    mol = gto.M(atom=geo, basis=basis, spin=0.0, symmetry="D2h")
+    print(f"Use symmetry. Molecule point group: {mol.groupname}")
     norb = mol.nao_nr()
     nelec = mol.nelec
     print(f"Norb: {norb}   Ne: {nelec}")
@@ -211,14 +211,14 @@ def init_scf(name: str, ratio: float, basis: str = "sto-3g"):
     mf = scf.RHF(mol)
     print("Running RHF...")
     mf.kernel()
+    print("orbsym: ", mf.orbsym)
+    # mf_fci = fci.FCI(mf)
+    # mf_fci.max_memory = 256000
+    # mf_fci.verbose = logger.DEBUG1
 
-    mf_fci = fci.FCI(mf)
-    mf_fci.max_memory = 256000
-    mf_fci.verbose = logger.DEBUG1
-
-    print("Running FCI ...")
-    mf_fci.kernel()
-    print(f"FCI energy: {mf_fci.e_tot}")
+    # print("Running FCI ...")
+    # mf_fci.kernel()
+    # print(f"FCI energy: {mf_fci.e_tot}")
 
 
 if __name__ == "__main__":

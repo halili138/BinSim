@@ -62,10 +62,12 @@ function build(mole::Mole, filepath::String="")
                 mole.e_scale     = file["e_scale"]
             end
 
-            println("Successfully read data from: $(abspath(filepath))")
-            println("  name: $(name)")
-            println("  ratio: $(ratio)")
-            println("  basis: $(basis)")
+            if is_rank0_or_serial()
+                println("Successfully read data from: $(abspath(filepath))")
+                println("  name: $(name)")
+                println("  ratio: $(ratio)")
+                println("  basis: $(basis)")
+            end
         catch
             pushfirst!(pyimport("sys")."path", pypath)
             pyfun = pyimport("mole_pbc_int")
@@ -87,7 +89,9 @@ function build(mole::Mole, filepath::String="")
                 mole.e_scale     = file["e_scale"]
             end
             
-            println("Successfully read data from: $(abspath(filepath))")
+            if is_rank0_or_serial()
+                println("Successfully read data from: $(abspath(filepath))")
+            end
         catch
             error("You need to run your algorithm to and save the system information into $(jld2file)")
         end
@@ -98,8 +102,10 @@ function build(mole::Mole, filepath::String="")
     ne     = na + nb
     nq     = norb * 2
 
-    @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
-    na, nb, ne, norb, nq)
+    if is_rank0_or_serial()
+        @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
+        na, nb, ne, norb, nq)
+    end
 end
 
 mutable struct Pbc <: SysInfo
@@ -175,13 +181,15 @@ function build(pbc::Pbc, filepath::String="")
             pbc.e_scale     = file["e_scale"]
         end
 
-        println("Successfully read data from: $(abspath(filepath))")
-        println("  name: $(name)")
-        println("  ratio: $(ratio)")
-        println("  basis: $(basis)")
-        println("  pseudo: $(pseudo)")
-        println("  mesh: $(mesh)")
-        println("  scaled_center: $(scaled_center)")
+        if is_rank0_or_serial()
+            println("Successfully read data from: $(abspath(filepath))")
+            println("  name: $(name)")
+            println("  ratio: $(ratio)")
+            println("  basis: $(basis)")
+            println("  pseudo: $(pseudo)")
+            println("  mesh: $(mesh)")
+            println("  scaled_center: $(scaled_center)")
+        end
     else
         jldopen(filepath, "r") do file
             pbc.norb        = file["norb"]
@@ -193,7 +201,9 @@ function build(pbc::Pbc, filepath::String="")
             pbc.e_scale     = file["e_scale"]
         end
 
-        println("Successfully read data from: $(abspath(filepath))")
+        if is_rank0_or_serial()
+            println("Successfully read data from: $(abspath(filepath))")
+        end
     end
 
     norb   = pbc.norb
@@ -201,6 +211,8 @@ function build(pbc::Pbc, filepath::String="")
     ne     = na + nb
     nq     = norb * 2
 
-    @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
-    na, nb, ne, norb, nq)
+    if is_rank0_or_serial()
+        @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
+        na, nb, ne, norb, nq)
+    end
 end

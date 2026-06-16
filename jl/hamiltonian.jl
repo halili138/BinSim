@@ -131,8 +131,10 @@ function _JW_hamiltonian(
 
     gs = get_bounds_1based(Haabb.axs, Haabb.bxs)
     
-    println("  ngs: $(length(gs)-1)")
-    println("  ncs: $(length(Haabb.cs))\n")
+    if is_rank0_or_serial()
+        println("  ngs: $(length(gs)-1)")
+        println("  ncs: $(length(Haabb.cs))\n")
+    end
 
     if spin == "aabb"
         return Haabb

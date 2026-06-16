@@ -9,6 +9,10 @@ using Combinatorics
 using SparseArrays
 
 using MPI
+
+# 辅助函数：多进程场景下，仅 rank 0 打印诊断信息
+is_rank0_or_serial() = !MPI.Initialized() || MPI.Comm_rank(MPI.COMM_WORLD) == 0
+
 using Random
 using Optim
 using NLSolversBase
@@ -29,14 +33,16 @@ omp_places      = get(ENV, "OMP_PLACES",          "Not Set")
 
 BLAS.set_num_threads(parse(Int, omp_threads))
 
-println("Sys.CPU_THREADS       $(Sys.CPU_THREADS)"       )
-println("SLURM_CPUS_PER_TASK   $(slurm_cpus)"            )
-println("OMP_NUM_THREADS       $(omp_threads)"           )
-println("OMP_PROC_BIND         $(omp_proc_bind)"         )
-println("OMP_PLACES            $(omp_places)"            )
-println("BLAS_NUM_THREADS      $(BLAS.get_num_threads())")
-println("Threads.nthreads()    $(Threads.nthreads())"    )
-println("")
+if is_rank0_or_serial()
+    println("Sys.CPU_THREADS       $(Sys.CPU_THREADS)"       )
+    println("SLURM_CPUS_PER_TASK   $(slurm_cpus)"            )
+    println("OMP_NUM_THREADS       $(omp_threads)"           )
+    println("OMP_PROC_BIND         $(omp_proc_bind)"         )
+    println("OMP_PLACES            $(omp_places)"            )
+    println("BLAS_NUM_THREADS      $(BLAS.get_num_threads())")
+    println("Threads.nthreads()    $(Threads.nthreads())"    )
+    println("")
+end
 
 const jld2path   = joinpath(@__DIR__, "../jld2file/")
 const pypath     = joinpath(@__DIR__, "../py/")
