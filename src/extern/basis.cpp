@@ -8,6 +8,12 @@ extern "C"
         return get_subspace_dim_tmpl<uint32>(basis);
     }
 
+    int64 get_num_symmetry_blocks(void *basis_ptr)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        return basis->num_blocks;
+    }
+
     void destroy_basis_manager(void *basis_ptr)
     {
         BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
@@ -59,5 +65,21 @@ extern "C"
             input_astrs, num_astrs,
             input_bstrs, num_bstrs,
             orbsym, total_sym, num_irreps);
+    }
+
+    void *create_partitioned_basis_manager(
+        const int64 norb,
+        const int64 na,
+        const int64 nb,
+        const int64 physical_total_sym,
+        const int64 *__restrict__ physical_orbsym,
+        const int64 *__restrict__ virtual_orbsym,
+        const int64 physical_num_irreps,
+        const int64 virtual_num_irreps)
+    {
+        return create_partitioned_basis_manager_tmpl<uint32>(
+            norb, na, nb, physical_total_sym,
+            physical_orbsym, virtual_orbsym,
+            physical_num_irreps, virtual_num_irreps);
     }
 }
