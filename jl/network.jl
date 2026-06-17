@@ -38,6 +38,82 @@ function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int
     return obj
 end
 
+struct VirtualSymmetryPartition
+    k::Int64
+    orbsym::Vector{Int64}
+    num_irreps::Int64
+    seed::Int64
+end
+
+function make_virtual_orbsym(norb::Int, k::Int; seed::Int=1234)
+    @assert k >= 0 "virtual symmetry rank k must be non-negative"
+    k == 0 && return zeros(Int64, norb)
+    @assert k <= 30 "k is too large for Int64 bit labels"
+
+    rng = MersenneTwister(seed)
+    mask = Int64(1 << k) - 1
+    return [Int64(rand(rng, 0:mask)) for _ in 1:norb]
+end
+
+function VirtualSymmetryPartition(norb::Int, k::Int; seed::Int=1234, orbsym::Vector{Int64}=Int64[])
+    virtual_orbsym = isempty(orbsym) ? make_virtual_orbsym(norb, k; seed=seed) : Int64.(orbsym)
+    @assert length(virtual_orbsym) == norb
+    @assert all(0 .<= virtual_orbsym .< (Int64(1) << k))
+    return VirtualSymmetryPartition(Int64(k), virtual_orbsym, Int64(1) << k, Int64(seed))
+end
+
+function combine_orbsym(physical_orbsym::Vector{Int64}, virtual_orbsym::Vector{Int64}; physical_num_irreps::Int64=16)
+    @assert length(physical_orbsym) == length(virtual_orbsym)
+    physical_bits = 0
+    while (Int64(1) << physical_bits) < physical_num_irreps
+        physical_bits += 1
+    end
+    return Int64.(physical_orbsym) .| (Int64.(virtual_orbsym) .<< physical_bits)
+end
+
+function BasisManager(
+    norb::Int64,
+    nelec::Tuple{Int64,Int64},
+    physical_orbsym::Vector{Int64},
+    partition::VirtualSymmetryPartition;
+    physical_total_sym::Int64=0,
+    physical_num_irreps::Int64=16,
+)
+    @assert length(physical_orbsym) == norb
+    @assert length(partition.orbsym) == norb
+    na, nb = nelec
+
+    ptr = @ccall LIB_BASIS.create_partitioned_basis_manager(
+        norb::Int64, na::Int64, nb::Int64,
+        physical_total_sym::Int64,
+        physical_orbsym::Ptr{Int64},
+        partition.orbsym::Ptr{Int64},
+        physical_num_irreps::Int64,
+        partition.num_irreps::Int64,
+    )::Ptr{Cvoid}
+
+    ptr == C_NULL && error("Failed to create partitioned C++ BasisManager.")
+
+    dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    combined_orbsym = combine_orbsym(physical_orbsym, partition.orbsym; physical_num_irreps=physical_num_irreps)
+
+    if is_rank0_or_serial()
+        @printf("Num virtual-symmetry partitioned elements: %d    %.4f GB\n", dim, dim * 8 / (1 << 30))
+        @printf("Virtual symmetry: Z2^%d (%d labels)\n\n", partition.k, partition.num_irreps)
+    end
+
+    obj = BasisManager(ptr, dim, norb, nelec, combined_orbsym)
+
+    finalizer(obj) do o
+        if o.ptr != C_NULL
+            @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
+            o.ptr = C_NULL
+        end
+    end
+
+    return obj
+end
+
 function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32}, orbsym::Vector{Int64})
     total_sym = 0
     num_irreps = 16
@@ -666,4 +742,3 @@ function OTF_Functions(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, p
 
     return OTF_Functions(f_hvec, f_expm, f_tvec, f_grad, f_backgrad, f_backtran, f_batchexpm, f_batchgrad, f_batchtran, ham_otf, pool_otf)
 end
-

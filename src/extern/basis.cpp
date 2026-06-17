@@ -60,4 +60,20 @@ extern "C"
             input_bstrs, num_bstrs,
             orbsym, total_sym, num_irreps);
     }
+
+    void *create_partitioned_basis_manager(
+        const int64 norb,
+        const int64 na,
+        const int64 nb,
+        const int64 physical_total_sym,
+        const int64 *__restrict__ physical_orbsym,
+        const int64 *__restrict__ virtual_orbsym,
+        const int64 physical_num_irreps,
+        const int64 virtual_num_irreps)
+    {
+        return create_partitioned_basis_manager_tmpl<uint32>(
+            norb, na, nb, physical_total_sym,
+            physical_orbsym, virtual_orbsym,
+            physical_num_irreps, virtual_num_irreps);
+    }
 }
