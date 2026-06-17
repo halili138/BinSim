@@ -10,6 +10,10 @@ function BasisManager()
     return BasisManager(C_NULL, 0, 0, (0, 0), Int64[])
 end
 
+function get_num_symmetry_blocks(ptr::Ptr{Cvoid})
+    return @ccall LIB_BASIS.get_num_symmetry_blocks(ptr::Ptr{Cvoid})::Int64
+end
+
 function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int64})
     total_sym = 0
     num_irreps = 16
@@ -22,8 +26,10 @@ function BasisManager(norb::Int64, nelec::Tuple{Int64,Int64}, orbsym::Vector{Int
     ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
     dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    num_blocks = get_num_symmetry_blocks(ptr)
     if is_rank0_or_serial()
-        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+        @printf("Num symmetry allowed elements: %d    %.4f GB\n", dim, dim * 8 / (1 << 30))
+        @printf("Num wavefunction symmetry blocks: %d\n\n", num_blocks)
     end
 
     obj = BasisManager(ptr, dim, norb, nelec, orbsym)
@@ -95,10 +101,12 @@ function BasisManager(
     ptr == C_NULL && error("Failed to create partitioned C++ BasisManager.")
 
     dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    num_blocks = get_num_symmetry_blocks(ptr)
     combined_orbsym = combine_orbsym(physical_orbsym, partition.orbsym; physical_num_irreps=physical_num_irreps)
 
     if is_rank0_or_serial()
         @printf("Num virtual-symmetry partitioned elements: %d    %.4f GB\n", dim, dim * 8 / (1 << 30))
+        @printf("Num wavefunction symmetry blocks: %d\n", num_blocks)
         @printf("Virtual symmetry: Z2^%d (%d labels)\n\n", partition.k, partition.num_irreps)
     end
 
@@ -130,8 +138,10 @@ function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     ptr == C_NULL && error("Failed to create C++ BasisManager.")
 
     dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
+    num_blocks = get_num_symmetry_blocks(ptr)
     if is_rank0_or_serial()
-        @printf("Num symmetry allowed elements: %d    %.4f GB\n\n", dim, dim * 8 / (1 << 30))
+        @printf("Num symmetry allowed elements: %d    %.4f GB\n", dim, dim * 8 / (1 << 30))
+        @printf("Num wavefunction symmetry blocks: %d\n\n", num_blocks)
     end
 
     obj = BasisManager(ptr, dim, norb, (0, 0), orbsym)

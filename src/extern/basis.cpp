@@ -8,6 +8,12 @@ extern "C"
         return get_subspace_dim_tmpl<uint32>(basis);
     }
 
+    int64 get_num_symmetry_blocks(void *basis_ptr)
+    {
+        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        return basis->num_blocks;
+    }
+
     void destroy_basis_manager(void *basis_ptr)
     {
         BasisManager<uint32> *basis = static_cast<BasisManager<uint32> *>(basis_ptr);
