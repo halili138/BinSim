@@ -342,3 +342,23 @@ function DistributedFunctions(
         _expm, _tvec, _grad, _backgrad, _pool_otf,
     )
 end
+
+function DistributedFunctions(
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    comm::MPI.Comm;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    tol::Float64=1e-12,
+) where {Ti,Tv,TK,TV}
+    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
+        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
+        partition = VirtualSymmetryPartition(mole.norb, k; seed=virtual_seed, orbsym=virtual_orbsym)
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
+    else
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
+    end
+
+    return DistributedFunctions(basis, ham, comm; tol=tol), basis
+end
