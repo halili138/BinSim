@@ -208,6 +208,43 @@ function CuDistributedFunctions(
     )
 end
 
+function CuDistributedFunctions(
+    ::Type{ModeSerial},
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv_h,TK,TV};
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+    num_chunks::Int=4,
+    gpu_id::Int=0,
+    tol::Float64=1e-12,
+) where {Ti,Tv_h,TK,TV}
+    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
+        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
+        partition = VirtualSymmetryPartition(
+            mole.norb, k;
+            seed=virtual_seed,
+            orbsym=virtual_orbsym,
+            nelec=mole.nelec,
+            physical_orbsym=mole.orbsym,
+            optimize=virtual_optimize && isempty(virtual_orbsym),
+            ntry=virtual_ntry,
+        )
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
+    else
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
+    end
+
+    return CuDistributedFunctions(
+        ModeSerial, basis, ham;
+        num_chunks=num_chunks,
+        gpu_id=gpu_id,
+        tol=tol,
+    ), basis
+end
+
 # ============================================================
 # NVLink: 多GPU + VRAM驻留
 # ============================================================
