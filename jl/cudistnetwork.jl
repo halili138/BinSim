@@ -514,8 +514,10 @@ function CuDistributedFunctions(
     local_dim     = sum(my_chunk_dims)
     chunk_offsets = vcat(0, cumsum(Int.(my_chunk_dims)))
 
-    max_send_dims = [maximum(t.send_dim for t in sub_topos_all[c, :]) for c in my_chunks]
-    max_recv_dims = [maximum(t.recv_dim for t in sub_topos_all[c, :]) for c in my_chunks]
+    max_send_dims = n_otfs == 0 ? zeros(Int64, n_my) :
+        [maximum(t.send_dim for t in sub_topos_all[c, :]) for c in my_chunks]
+    max_recv_dims = n_otfs == 0 ? zeros(Int64, n_my) :
+        [maximum(t.recv_dim for t in sub_topos_all[c, :]) for c in my_chunks]
 
     host_v_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
     host_w_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
@@ -535,15 +537,22 @@ function CuDistributedFunctions(
         mpi_send_counts = zeros(Cint, nproc)
         mpi_recv_counts = zeros(Cint, nproc)
 
-        for (idx, c) in enumerate(my_cs)
-            for d in 1:num_chunks
-                sc = topos_for_otf[d].send_counts[c]
-                dest_rank = (d - 1) % nproc
+        for src_c in my_cs
+            for dest_c in 1:num_chunks
+                # send_counts[dest_c] is indexed by destination chunk/rank.
+                sc = topos_for_otf[src_c].send_counts[dest_c]
+                dest_rank = (dest_c - 1) % nproc
                 if dest_rank != rank
                     mpi_send_counts[dest_rank + 1] += sc
                 end
-                rc = topos_for_otf[d].recv_counts[c]
-                src_rank = (d - 1) % nproc
+            end
+        end
+
+        for dest_c in my_cs
+            for src_c in 1:num_chunks
+                # recv_counts[src_c] is indexed by source chunk/rank.
+                rc = topos_for_otf[dest_c].recv_counts[src_c]
+                src_rank = (src_c - 1) % nproc
                 if src_rank != rank
                     mpi_recv_counts[src_rank + 1] += rc
                 end
@@ -557,19 +566,21 @@ function CuDistributedFunctions(
         write_pos = send_off .+ 1
 
         # 本地路由 + 打包MPI发送
-        for (idx, c) in enumerate(my_cs)
+        for (src_idx, src_c) in enumerate(my_cs)
             src_offset = 1
-            for d in 1:num_chunks
-                sc = topos_for_otf[d].send_counts[c]
+            for dest_c in 1:num_chunks
+                # send_counts[dest_c] is indexed by destination chunk/rank.
+                sc = topos_for_otf[src_c].send_counts[dest_c]
                 if sc > 0
-                    dest_rank = (d - 1) % nproc
+                    dest_rank = (dest_c - 1) % nproc
                     if dest_rank == rank
-                        d_idx = findfirst(x -> x == d, my_cs)
-                        rc_offset = 1 + sum(topos_for_otf[d].recv_counts[1:c-1]; init=0)
-                        copyto!(recv_bufs[d_idx], rc_offset, send_bufs[idx], src_offset, sc)
+                        dest_idx = findfirst(==(dest_c), my_cs)
+                        # recv_counts[src_c] is indexed by source chunk/rank.
+                        recv_offset = 1 + sum(topos_for_otf[dest_c].recv_counts[1:src_c-1]; init=0)
+                        copyto!(recv_bufs[dest_idx], recv_offset, send_bufs[src_idx], src_offset, sc)
                     else
                         wp = write_pos[dest_rank + 1]
-                        copyto!(mpi_send_buf, wp, send_bufs[idx], src_offset, sc)
+                        copyto!(mpi_send_buf, wp, send_bufs[src_idx], src_offset, sc)
                         write_pos[dest_rank + 1] += sc
                     end
                 end
@@ -577,26 +588,25 @@ function CuDistributedFunctions(
             end
         end
 
-        if sum(mpi_send_counts) + sum(mpi_recv_counts) > 0
-            sv = MPI.VBuffer(mpi_send_buf, mpi_send_counts)
-            rv = MPI.VBuffer(mpi_recv_buf, mpi_recv_counts)
-            MPI.Alltoallv!(sv, rv, comm)
-        end
+        sv = MPI.VBuffer(mpi_send_buf, mpi_send_counts)
+        rv = MPI.VBuffer(mpi_recv_buf, mpi_recv_counts)
+        MPI.Alltoallv!(sv, rv, comm)
 
         read_pos = recv_off .+ 1
-        for (idx, c) in enumerate(my_cs)
-            dst_offset = 1
+        for (dest_idx, dest_c) in enumerate(my_cs)
+            dest_offset = 1
             for src_c in 1:num_chunks
-                rc = topos_for_otf[src_c].recv_counts[c]
+                # recv_counts[src_c] is indexed by source chunk/rank.
+                rc = topos_for_otf[dest_c].recv_counts[src_c]
                 if rc > 0
                     src_rank = (src_c - 1) % nproc
                     if src_rank != rank
                         rp = read_pos[src_rank + 1]
-                        copyto!(recv_bufs[idx], dst_offset, mpi_recv_buf, rp, rc)
+                        copyto!(recv_bufs[dest_idx], dest_offset, mpi_recv_buf, rp, rc)
                         read_pos[src_rank + 1] += rc
                     end
                 end
-                dst_offset += rc
+                dest_offset += rc
             end
         end
     end
