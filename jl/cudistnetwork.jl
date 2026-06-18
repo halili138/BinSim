@@ -43,6 +43,13 @@ function _num_wavefunction_symmetry_blocks(basis::BasisManager)
     return Int(get_num_symmetry_blocks(basis.ptr))
 end
 
+_hvec_bytes(nscalars::Integer) = Int64(nscalars) * Int64(sizeof(Float64))
+_hvec_gib(nbytes::Integer) = round(nbytes / 1024^3, digits=3)
+
+function _sum_buffer_bytes(buffers)
+    return Int64(sum(length, buffers; init=0)) * Int64(sizeof(Float64))
+end
+
 function _build_virtual_or_physical_basis(
     mole::Mole;
     virtual_k::Int=0,
@@ -236,20 +243,26 @@ function CuDistributedFunctions(
 
     println("\nCuDistributedFunctions (SerialOOC) built:")
     println("  GPU:                     $(CUDA.name(CUDA.device()))")
-    println("  Virtual chunks:          $(num_chunks) (requested: $(requested_num_chunks))")
-    println("  Total local dim:         $(local_dim)")
-    println("  Sub-networks:            $(n_otfs)")
-    println("  Max chunk local dim:     $(global_max_local)")
-    println("  Max recv dim:            $(global_max_recv)")
-    println("  Max send dim:            $(global_max_send)")
-    hvec_vram_bytes = Int64(global_max_local + global_max_recv + global_max_send) * Int64(sizeof(Float64))
-    host_v_chunks_bytes = Int64(sum(length, host_v_chunks)) * Int64(sizeof(Float64))
-    host_w_chunks_bytes = Int64(sum(length, host_w_chunks)) * Int64(sizeof(Float64))
-    host_send_bufs_bytes = Int64(sum(length, host_send_bufs)) * Int64(sizeof(Float64))
-    host_recv_bufs_bytes = Int64(sum(length, host_recv_bufs)) * Int64(sizeof(Float64))
-    println("  GPU hvec VRAM peak:     $(round(hvec_vram_bytes / 1024^3, digits=3)) GB ($(hvec_vram_bytes) bytes)")
-    println("  Host chunk buffers:      host_v_chunks=$(round(host_v_chunks_bytes / 1024^3, digits=3)) GB ($(host_v_chunks_bytes) bytes), host_w_chunks=$(round(host_w_chunks_bytes / 1024^3, digits=3)) GB ($(host_w_chunks_bytes) bytes)")
-    println("  Host exchange buffers:   host_send_bufs=$(round(host_send_bufs_bytes / 1024^3, digits=3)) GB ($(host_send_bufs_bytes) bytes), host_recv_bufs=$(round(host_recv_bufs_bytes / 1024^3, digits=3)) GB ($(host_recv_bufs_bytes) bytes)\n")
+    println("  Virtual chunks requested: $(requested_num_chunks)")
+    println("  Virtual chunks effective: $(num_chunks)")
+    println("  Total local dim:          $(local_dim)")
+    println("  Sub-networks:             $(n_otfs)")
+    println("  Max local/chunk dim:      $(global_max_local)")
+    println("  Max send dim:             $(global_max_send)")
+    println("  Max recv dim:             $(global_max_recv)")
+    d_cache_bytes = _hvec_bytes(global_max_local + global_max_recv)
+    d_send_bytes = _hvec_bytes(global_max_send)
+    d_w_bytes = _hvec_bytes(global_max_local)
+    hvec_vram_bytes = d_cache_bytes + d_send_bytes + d_w_bytes
+    host_v_chunks_bytes = _sum_buffer_bytes(host_v_chunks)
+    host_w_chunks_bytes = _sum_buffer_bytes(host_w_chunks)
+    host_send_bufs_bytes = _sum_buffer_bytes(host_send_bufs)
+    host_recv_bufs_bytes = _sum_buffer_bytes(host_recv_bufs)
+    println("  Hvec GPU buffers:         d_cache=$(_hvec_gib(d_cache_bytes)) GB ($(d_cache_bytes) bytes), d_send=$(_hvec_gib(d_send_bytes)) GB ($(d_send_bytes) bytes), d_w=$(_hvec_gib(d_w_bytes)) GB ($(d_w_bytes) bytes)")
+    println("  Peak GPU hvec buffer/rank: $(_hvec_gib(hvec_vram_bytes)) GB ($(hvec_vram_bytes) bytes)")
+    println("  Total GPU hvec buffers:   $(_hvec_gib(hvec_vram_bytes)) GB ($(hvec_vram_bytes) bytes)")
+    println("  Host chunk buffers:       host_v_chunks=$(_hvec_gib(host_v_chunks_bytes)) GB ($(host_v_chunks_bytes) bytes), host_w_chunks=$(_hvec_gib(host_w_chunks_bytes)) GB ($(host_w_chunks_bytes) bytes)")
+    println("  Host exchange buffers:    host_send_bufs=$(_hvec_gib(host_send_bufs_bytes)) GB ($(host_send_bufs_bytes) bytes), host_recv_bufs=$(_hvec_gib(host_recv_bufs_bytes)) GB ($(host_recv_bufs_bytes) bytes)\n")
 
     return CuDistributedFunctions{ModeSerial}(
         comm, rank, nproc, local_dim,
@@ -412,15 +425,15 @@ function CuDistributedFunctions(
         println("\nCuDistributedFunctions (NVLink) built:")
         println("  MPI ranks:              $(nproc)")
         println("  Local dim (r0):         $(local_dim)")
-        println("  Max local dim:          $(max_local_dim_all)")
+        println("  Max local/chunk dim:    $(max_local_dim_all)")
         println("  Sub-networks:           $(n_otfs)")
         println("  Phases requested:       $(requested_num_phases)")
         println("  Phases effective:       $(num_phases)")
         println("  Max send dim:           $(max_send_dim_all)")
         println("  Max recv dim:           $(max_recv_dim_all)")
-        println("  Hvec buffers (r0):      d_cache=$(hvec_cache_scalars), d_send=$(hvec_send_scalars), d_recv=$(hvec_recv_scalars), d_w=$(hvec_w_scalars) Float64 scalars")
-        println("  Max hvec VRAM/rank:     $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
-        println("  Total hvec VRAM/ranks:  $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)")
+        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(_hvec_bytes(hvec_cache_scalars))) GB, d_send=$(_hvec_gib(_hvec_bytes(hvec_send_scalars))) GB, d_recv=$(_hvec_gib(_hvec_bytes(hvec_recv_scalars))) GB, d_w=$(_hvec_gib(_hvec_bytes(hvec_w_scalars))) GB")
+        println("  Peak GPU hvec buffer/rank: $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
+        println("  Total GPU hvec buffers:    $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)")
         println()
     end
 
@@ -476,6 +489,13 @@ function CuDistributedFunctions(
     cu_basis_dev = CuBasisManager(basis)
 
     @assert num_chunks >= nproc "num_chunks must be >= MPI size"
+    num_blocks = _num_wavefunction_symmetry_blocks(basis)
+    requested_num_chunks = num_chunks
+    num_chunks = min(num_chunks, max(nproc, num_blocks))
+
+    if rank == 0 && num_chunks != requested_num_chunks
+        println("CuDistributedFunctions (HybridOOC): clamping requested chunks from $(requested_num_chunks) to $(num_chunks) because basis has $(num_blocks) wavefunction blocks and MPI size is $(nproc).")
+    end
 
     gmaps_all = [GlobalMemMap(basis; rank=r - 1, size=num_chunks) for r in 1:num_chunks]
     my_chunks = [c for c in 1:num_chunks if (c - 1) % nproc == rank]
@@ -668,14 +688,30 @@ function CuDistributedFunctions(
     _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
 
+    d_cache_bytes = _hvec_bytes(my_max_local + my_max_recv)
+    d_send_bytes = _hvec_bytes(my_max_send)
+    d_w_bytes = _hvec_bytes(my_max_local)
+    hvec_vram_bytes = d_cache_bytes + d_send_bytes + d_w_bytes
+
+    max_local_dim_all = MPI.Allreduce(Int64(my_max_local), max, comm)
+    max_send_dim_all = MPI.Allreduce(Int64(my_max_send), max, comm)
+    max_recv_dim_all = MPI.Allreduce(Int64(my_max_recv), max, comm)
+    max_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, max, comm)
+    total_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, +, comm)
+
     if rank == 0
-        vram_used = (my_max_local + max(my_max_recv, my_max_send)) * 8 / (1024^3)
         println("\nCuDistributedFunctions (HybridOOC) built:")
-        println("  MPI ranks:       $(nproc)")
-        println("  Virtual chunks:  $(num_chunks) (local: $(n_my))")
-        println("  Local dim (r0):  $(local_dim)")
-        println("  Sub-networks:    $(n_otfs)")
-        println("  GPU VRAM peak:   $(round(vram_used, digits=3)) GB\n")
+        println("  MPI ranks:              $(nproc)")
+        println("  Virtual chunks requested: $(requested_num_chunks)")
+        println("  Virtual chunks effective: $(num_chunks) (local r0: $(n_my))")
+        println("  Local dim (r0):         $(local_dim)")
+        println("  Max local/chunk dim:    $(max_local_dim_all)")
+        println("  Sub-networks:           $(n_otfs)")
+        println("  Max send dim:           $(max_send_dim_all)")
+        println("  Max recv dim:           $(max_recv_dim_all)")
+        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(d_cache_bytes)) GB, d_send=$(_hvec_gib(d_send_bytes)) GB, d_w=$(_hvec_gib(d_w_bytes)) GB")
+        println("  Peak GPU hvec buffer/rank: $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
+        println("  Total GPU hvec buffers:    $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)\n")
     end
 
     return CuDistributedFunctions{ModeHybrid}(
