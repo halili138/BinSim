@@ -43,6 +43,31 @@ function _num_wavefunction_symmetry_blocks(basis::BasisManager)
     return Int(get_num_symmetry_blocks(basis.ptr))
 end
 
+function _build_virtual_or_physical_basis(
+    mole::Mole;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+)
+    if virtual_k > 0 || !isempty(virtual_orbsym)
+        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
+        partition = VirtualSymmetryPartition(
+            mole.norb, k;
+            seed=virtual_seed,
+            orbsym=virtual_orbsym,
+            nelec=mole.nelec,
+            physical_orbsym=mole.orbsym,
+            optimize=virtual_optimize && isempty(virtual_orbsym),
+            ntry=virtual_ntry,
+        )
+        return BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
+    end
+
+    return BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
+end
+
 # ============================================================
 # SerialOOC: 单卡突破显存限制
 # ============================================================
@@ -246,21 +271,14 @@ function CuDistributedFunctions(
     gpu_id::Int=0,
     tol::Float64=1e-12,
 ) where {Ti,Tv_h,TK,TV}
-    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
-        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
-        partition = VirtualSymmetryPartition(
-            mole.norb, k;
-            seed=virtual_seed,
-            orbsym=virtual_orbsym,
-            nelec=mole.nelec,
-            physical_orbsym=mole.orbsym,
-            optimize=virtual_optimize && isempty(virtual_orbsym),
-            ntry=virtual_ntry,
-        )
-        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
-    else
-        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
-    end
+    basis = _build_virtual_or_physical_basis(
+        mole;
+        virtual_k=virtual_k,
+        virtual_seed=virtual_seed,
+        virtual_orbsym=virtual_orbsym,
+        virtual_optimize=virtual_optimize,
+        virtual_ntry=virtual_ntry,
+    )
 
     return CuDistributedFunctions(
         ModeSerial, basis, ham;
@@ -426,21 +444,14 @@ function CuDistributedFunctions(
     tol::Float64=1e-12,
     num_phases::Int=2,
 ) where {Ti,Tv_h,TK,TV}
-    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
-        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
-        partition = VirtualSymmetryPartition(
-            mole.norb, k;
-            seed=virtual_seed,
-            orbsym=virtual_orbsym,
-            nelec=mole.nelec,
-            physical_orbsym=mole.orbsym,
-            optimize=virtual_optimize && isempty(virtual_orbsym),
-            ntry=virtual_ntry,
-        )
-        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
-    else
-        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
-    end
+    basis = _build_virtual_or_physical_basis(
+        mole;
+        virtual_k=virtual_k,
+        virtual_seed=virtual_seed,
+        virtual_orbsym=virtual_orbsym,
+        virtual_optimize=virtual_optimize,
+        virtual_ntry=virtual_ntry,
+    )
 
     return CuDistributedFunctions(ModeNVLink, basis, ham, comm; tol=tol, num_phases=num_phases), basis
 end
@@ -672,4 +683,29 @@ function CuDistributedFunctions(
         _hvec, _normalize, _zeros, _get_hf, _inner,
         _expm, _grad,
     )
+end
+
+function CuDistributedFunctions(
+    ::Type{ModeHybrid},
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv_h,TK,TV},
+    comm::MPI.Comm;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+    num_chunks::Int=16,
+    tol::Float64=1e-12,
+) where {Ti,Tv_h,TK,TV}
+    basis = _build_virtual_or_physical_basis(
+        mole;
+        virtual_k=virtual_k,
+        virtual_seed=virtual_seed,
+        virtual_orbsym=virtual_orbsym,
+        virtual_optimize=virtual_optimize,
+        virtual_ntry=virtual_ntry,
+    )
+
+    return CuDistributedFunctions(ModeHybrid, basis, ham, comm; num_chunks=num_chunks, tol=tol), basis
 end
