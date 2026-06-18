@@ -351,17 +351,20 @@ function DistributedFunctions(
 
     if rank == 0
         println("\nDistributedFunctions built:")
-        println("  MPI ranks:        $(size)")
-        println("  Local dim (rank0): $(local_dim)")
-        println("  Max local dim:    $(global_max_local_dim)")
-        println("  Symmetry fragments: $(n_subnets)")
+
+        @printf("  MPI ranks:               %d\n", size)
+        @printf("  Local dim (rank0):       %d\n", local_dim)
+        @printf("  Max local dim:           %d\n", global_max_local_dim)
+        @printf("  Symmetry fragments:      %d\n", n_subnets)
+
         if num_phases != effective_num_phases
-            println("  Requested communication phases: $(num_phases); clamped to $(effective_num_phases) because max rank-local wavefunction blocks is $(max_rank_num_blocks)")
+            @printf("  Requested communication phases: %d, clamped to %d because max rank-local wavefunction blocks is %d\n", num_phases, effective_num_phases, max_rank_num_blocks)
         end
-        println("  Communication phases: $(effective_num_phases)")
-        println("  Max send/recv:    $(global_max_send_dim) / $(global_max_recv_dim)")
-        println("  Peak hvec buffer memory per rank: $(global_peak_hvec_buffer_bytes) bytes")
-        println("  Total hvec buffer memory across ranks: $(global_total_hvec_buffer_bytes) bytes\n")
+
+        @printf("  Communication phases:    %d\n", effective_num_phases)
+        @printf("  Max send/recv:           %d / %d \n\n", global_max_send_dim, global_max_recv_dim)
+        @printf("  Peak hvec buffer memory per rank:        %.3f GB\n", global_peak_hvec_buffer_bytes / (1 << 30))
+        @printf("  Total hvec buffer memory across ranks:   %.3f GB\n", global_total_hvec_buffer_bytes / (1 << 30))
     end
 
     return DistributedFunctions{Tv}(
