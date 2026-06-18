@@ -15,6 +15,25 @@ inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
     return counts;
 }
 
+template <typename Ti>
+inline int get_max_rank_num_blocks(const BasisManager<Ti> *basis, const GlobalMemMap *gmap)
+{
+    std::vector<int> counts(gmap->mpi_size, 0);
+    const int64 num_irreps = basis->num_irreps;
+
+    // Keep this in lockstep with build_sub_topology(): phases are assigned
+    // from each real basis block's local ordinal on its destination rank.
+    for (int64 i = 0; i < basis->num_blocks; ++i)
+    {
+        const int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
+        const int dest_r = gmap->block_to_rank[h];
+        if (dest_r >= 0 && dest_r < gmap->mpi_size)
+            counts[dest_r]++;
+    }
+
+    return counts.empty() ? 0 : *std::max_element(counts.begin(), counts.end());
+}
+
 // =================================================================
 // 2. 分段通信账本：针对单个 (asym, bsym) 子片段的专属配置
 // =================================================================

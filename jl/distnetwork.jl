@@ -43,6 +43,13 @@ function rank_block_counts(gmap::GlobalMemMap)
 end
 
 
+function get_max_rank_num_blocks(basis::BasisManager, gmap::GlobalMemMap)
+    return Int(@ccall LIB_DIST.get_max_rank_num_blocks_otf_gmap(
+        basis.ptr::Ptr{Cvoid}, gmap.ptr::Ptr{Cvoid}
+    )::Cint)
+end
+
+
 # ==========================================
 # 2. 分段通信账本 (SubTopology)
 # ==========================================

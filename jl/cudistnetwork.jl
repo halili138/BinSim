@@ -229,6 +229,15 @@ function CuDistributedFunctions(
     gmap = GlobalMemMap(basis, comm)
     local_dim = gmap.local_dim
 
+    @assert num_phases >= 1 "num_phases must be >= 1"
+    requested_num_phases = num_phases
+    max_rank_num_blocks = get_max_rank_num_blocks(basis, gmap)
+    num_phases = min(num_phases, max_rank_num_blocks)
+
+    if rank == 0 && num_phases != requested_num_phases
+        println("CuDistributedFunctions (NVLink): clamping requested phases from $(requested_num_phases) to $(num_phases) because max rank block count is $(max_rank_num_blocks).")
+    end
+
     cpu_otfs, cu_otfs = build_distributed_cu_otfs(basis, ham, tol)
     n_otfs = length(cu_otfs)
 

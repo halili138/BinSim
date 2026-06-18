@@ -29,6 +29,13 @@ extern "C"
         std::copy(rank_block_counts.begin(), rank_block_counts.end(), counts);
     }
 
+    int get_max_rank_num_blocks_otf_gmap(void *basis_ptr, void *gmap_ptr)
+    {
+        auto basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        auto gmap = static_cast<const GlobalMemMap *>(gmap_ptr);
+        return get_max_rank_num_blocks<uint32>(basis, gmap);
+    }
+
     // 将物理基态精准切分到各节点的局部内存中
     void scatter_global_v_f64(void *gmap_ptr, void *basis_ptr, const double *global_v, double *local_v)
     {
