@@ -482,6 +482,198 @@ void *create_custom_basis_manager_tmpl(
     return static_cast<void *>(basis);
 }
 
+template <typename Ti>
+void *create_partitioned_basis_manager_tmpl(
+    const int64 norb,
+    const int64 na,
+    const int64 nb,
+    const int64 physical_total_sym,
+    const int64 *__restrict__ physical_orbsym,
+    const int64 *__restrict__ virtual_orbsym,
+    const int64 physical_num_irreps,
+    const int64 virtual_num_irreps)
+{
+    BasisManager<Ti> *basis = new BasisManager<Ti>();
+
+    try
+    {
+        if ((physical_num_irreps & (physical_num_irreps - 1)) != 0 ||
+            (virtual_num_irreps & (virtual_num_irreps - 1)) != 0)
+            throw std::runtime_error("partitioned basis requires power-of-two physical and virtual irreps");
+
+        int64 physical_bits = 0;
+        while ((static_cast<int64>(1) << physical_bits) < physical_num_irreps)
+            physical_bits++;
+
+        const int64 combined_num_irreps = physical_num_irreps * virtual_num_irreps;
+        auto combine_sym = [physical_bits](int64 psym, int64 vsym)
+        {
+            return psym | (vsym << physical_bits);
+        };
+        auto physical_part = [physical_num_irreps](int64 combined_sym)
+        {
+            return combined_sym & (physical_num_irreps - 1);
+        };
+
+        basis->num_irreps = combined_num_irreps;
+        basis->norb = norb;
+        basis->dim = 0;
+        basis->num_blocks = 0;
+        basis->total_sym = physical_total_sym;
+
+        basis->num_astrs = new int64[combined_num_irreps]();
+        basis->num_bstrs = new int64[combined_num_irreps]();
+        basis->orbsym = new int64[norb];
+        for (int64 i = 0; i < norb; ++i)
+            basis->orbsym[i] = combine_sym(physical_orbsym[i], virtual_orbsym[i]);
+
+        Ti a_str = (static_cast<Ti>(1) << na) - 1;
+        Ti a_max = static_cast<Ti>(1) << norb;
+        int64 total_a_strings = 0;
+        while (a_str < a_max)
+        {
+            int64 psym = get_string_sym(a_str, physical_orbsym);
+            int64 vsym = get_string_sym(a_str, virtual_orbsym);
+            int64 sym = combine_sym(psym, vsym);
+            if (psym < physical_num_irreps && vsym < virtual_num_irreps)
+            {
+                basis->num_astrs[sym]++;
+                total_a_strings++;
+            }
+            if (na == 0)
+                break;
+            a_str = next_combination(a_str);
+        }
+
+        Ti b_str = (static_cast<Ti>(1) << nb) - 1;
+        Ti b_max = static_cast<Ti>(1) << norb;
+        int64 total_b_strings = 0;
+        while (b_str < b_max)
+        {
+            int64 psym = get_string_sym(b_str, physical_orbsym);
+            int64 vsym = get_string_sym(b_str, virtual_orbsym);
+            int64 sym = combine_sym(psym, vsym);
+            if (psym < physical_num_irreps && vsym < virtual_num_irreps)
+            {
+                basis->num_bstrs[sym]++;
+                total_b_strings++;
+            }
+            if (nb == 0)
+                break;
+            b_str = next_combination(b_str);
+        }
+
+        for (int64 asym = 0; asym < combined_num_irreps; ++asym)
+        {
+            int64 a_phys = physical_part(asym);
+            int64 b_phys_required = physical_total_sym ^ a_phys;
+            for (int64 bsym = 0; bsym < combined_num_irreps; ++bsym)
+            {
+                if (physical_part(bsym) == b_phys_required &&
+                    basis->num_astrs[asym] > 0 && basis->num_bstrs[bsym] > 0)
+                    basis->num_blocks++;
+            }
+        }
+
+        basis->all_astrs = new Ti[total_a_strings];
+        basis->all_bstrs = new Ti[total_b_strings];
+        basis->astrs_vec = new Ti *[combined_num_irreps];
+        basis->bstrs_vec = new Ti *[combined_num_irreps];
+        basis->blocks = new BlockDesc<Ti>[basis->num_blocks];
+        basis->block_map = new int64[combined_num_irreps * combined_num_irreps];
+        std::fill_n(basis->block_map, combined_num_irreps * combined_num_irreps, -1);
+
+        int64 a_offset = 0;
+        int64 b_offset = 0;
+        for (int64 i = 0; i < combined_num_irreps; ++i)
+        {
+            basis->astrs_vec[i] = basis->all_astrs + a_offset;
+            a_offset += basis->num_astrs[i];
+            basis->bstrs_vec[i] = basis->all_bstrs + b_offset;
+            b_offset += basis->num_bstrs[i];
+        }
+
+        std::vector<int64> a_idx(combined_num_irreps, 0), b_idx(combined_num_irreps, 0);
+        a_str = (static_cast<Ti>(1) << na) - 1;
+        while (a_str < a_max)
+        {
+            int64 sym = get_string_sym(a_str, basis->orbsym);
+            if (sym < combined_num_irreps)
+                basis->astrs_vec[sym][a_idx[sym]++] = a_str;
+            if (na == 0)
+                break;
+            a_str = next_combination(a_str);
+        }
+        b_str = (static_cast<Ti>(1) << nb) - 1;
+        while (b_str < b_max)
+        {
+            int64 sym = get_string_sym(b_str, basis->orbsym);
+            if (sym < combined_num_irreps)
+                basis->bstrs_vec[sym][b_idx[sym]++] = b_str;
+            if (nb == 0)
+                break;
+            b_str = next_combination(b_str);
+        }
+
+        int64 block_counter = 0;
+        for (int64 asym = 0; asym < combined_num_irreps; ++asym)
+        {
+            int64 a_phys = physical_part(asym);
+            int64 b_phys_required = physical_total_sym ^ a_phys;
+            for (int64 bsym = 0; bsym < combined_num_irreps; ++bsym)
+            {
+                if (physical_part(bsym) != b_phys_required ||
+                    basis->num_astrs[asym] == 0 || basis->num_bstrs[bsym] == 0)
+                    continue;
+
+                BlockDesc<Ti> &block = basis->blocks[block_counter];
+                block.asym = asym;
+                block.bsym = bsym;
+                block.num_a = basis->num_astrs[asym];
+                block.num_b = basis->num_bstrs[bsym];
+                block.astrs = basis->astrs_vec[asym];
+                block.bstrs = basis->bstrs_vec[bsym];
+                block.offset = basis->dim;
+                basis->block_map[asym * combined_num_irreps + bsym] = block_counter;
+                basis->dim += block.num_a * block.num_b;
+                block_counter++;
+            }
+        }
+
+        basis->max_a_count = 0;
+        basis->max_b_count = 0;
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            basis->max_a_count = std::max(basis->max_a_count, (int)basis->blocks[i].num_a);
+            basis->max_b_count = std::max(basis->max_b_count, (int)basis->blocks[i].num_b);
+        }
+
+        int32 map_size = 1 << norb;
+        int32 *a_map = new int32[map_size];
+        int32 *b_map = new int32[map_size];
+        std::fill(a_map, a_map + map_size, -1);
+        std::fill(b_map, b_map + map_size, -1);
+        for (int64 i = 0; i < combined_num_irreps; ++i)
+        {
+            for (int32 a = 0; a < basis->num_astrs[i]; ++a)
+                a_map[basis->astrs_vec[i][a]] = a;
+            for (int32 b = 0; b < basis->num_bstrs[i]; ++b)
+                b_map[basis->bstrs_vec[i][b]] = b;
+        }
+        basis->a_idx_map = a_map;
+        basis->b_idx_map = b_map;
+        basis->_init_view();
+    }
+    catch (...)
+    {
+        basis->clear();
+        delete basis;
+        throw;
+    }
+
+    return static_cast<void *>(basis);
+}
+
 struct GlobalMemMap
 {
     int mpi_rank;
