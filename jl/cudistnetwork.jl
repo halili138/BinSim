@@ -251,10 +251,23 @@ function CuDistributedFunctions(
     max_send_dim = n_otfs == 0 ? 0 : maximum(t.send_dim for t in sub_topos)
     max_recv_dim = n_otfs == 0 ? 0 : maximum(t.recv_dim for t in sub_topos)
 
-    d_cache = CUDA.zeros(Float64, local_dim + max_recv_dim)
-    d_send  = CUDA.zeros(Float64, max_send_dim)
-    d_recv  = CUDA.zeros(Float64, max_recv_dim)
-    d_w     = CUDA.zeros(Float64, local_dim)
+    hvec_cache_scalars = local_dim + max_recv_dim
+    hvec_send_scalars = max_send_dim
+    hvec_recv_scalars = max_recv_dim
+    hvec_w_scalars = local_dim
+    hvec_scalar_count = hvec_cache_scalars + hvec_send_scalars + hvec_recv_scalars + hvec_w_scalars
+    hvec_vram_bytes = Int64(hvec_scalar_count) * Int64(sizeof(Float64))
+
+    max_local_dim_all = MPI.Allreduce(Int64(local_dim), max, comm)
+    max_send_dim_all = MPI.Allreduce(Int64(max_send_dim), max, comm)
+    max_recv_dim_all = MPI.Allreduce(Int64(max_recv_dim), max, comm)
+    max_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, max, comm)
+    total_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, +, comm)
+
+    d_cache = CUDA.zeros(Float64, hvec_cache_scalars)
+    d_send  = CUDA.zeros(Float64, hvec_send_scalars)
+    d_recv  = CUDA.zeros(Float64, hvec_recv_scalars)
+    d_w     = CUDA.zeros(Float64, hvec_w_scalars)
 
     d_local_v = @view d_cache[1:local_dim]
 
@@ -317,10 +330,17 @@ function CuDistributedFunctions(
 
     if rank == 0
         println("\nCuDistributedFunctions (NVLink) built:")
-        println("  MPI ranks:       $(nproc)")
-        println("  Local dim (r0):  $(local_dim)")
-        println("  Sub-networks:    $(n_otfs)")
-        println("  Phases:          $(num_phases)")
+        println("  MPI ranks:              $(nproc)")
+        println("  Local dim (r0):         $(local_dim)")
+        println("  Max local dim:          $(max_local_dim_all)")
+        println("  Sub-networks:           $(n_otfs)")
+        println("  Phases requested:       $(requested_num_phases)")
+        println("  Phases effective:       $(num_phases)")
+        println("  Max send dim:           $(max_send_dim_all)")
+        println("  Max recv dim:           $(max_recv_dim_all)")
+        println("  Hvec buffers (r0):      d_cache=$(hvec_cache_scalars), d_send=$(hvec_send_scalars), d_recv=$(hvec_recv_scalars), d_w=$(hvec_w_scalars) Float64 scalars")
+        println("  Max hvec VRAM/rank:     $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
+        println("  Total hvec VRAM/ranks:  $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)")
         println()
     end
 
