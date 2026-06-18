@@ -64,7 +64,7 @@ function CuDistributedFunctions(
     num_chunks = min(num_chunks, max(1, num_blocks))
 
     if num_chunks != requested_num_chunks
-        println("Requested virtual chunks: $(requested_num_chunks); clamped to $(num_chunks) because basis has $(num_chunks) wavefunction blocks")
+        println("Requested virtual chunks: $(requested_num_chunks); clamped to $(num_chunks) because basis has $(num_blocks) wavefunction blocks")
     end
 
     # 虚拟切片：用非MPI的GlobalMemMap构造各chunk的分块视图
@@ -210,12 +210,21 @@ function CuDistributedFunctions(
     nproc = 1
 
     println("\nCuDistributedFunctions (SerialOOC) built:")
-    println("  GPU:             $(CUDA.name(CUDA.device()))")
-    println("  Virtual chunks:  $(num_chunks)")
-    println("  Total local dim: $(local_dim)")
-    println("  Sub-networks:    $(n_otfs)")
-    vram_used = (global_max_local + global_max_recv + global_max_send) * 8 / (1024^3)
-    println("  GPU VRAM peak:   $(round(vram_used, digits=3)) GB\n")
+    println("  GPU:                     $(CUDA.name(CUDA.device()))")
+    println("  Virtual chunks:          $(num_chunks) (requested: $(requested_num_chunks))")
+    println("  Total local dim:         $(local_dim)")
+    println("  Sub-networks:            $(n_otfs)")
+    println("  Max chunk local dim:     $(global_max_local)")
+    println("  Max recv dim:            $(global_max_recv)")
+    println("  Max send dim:            $(global_max_send)")
+    hvec_vram_bytes = Int64(global_max_local + global_max_recv + global_max_send) * Int64(sizeof(Float64))
+    host_v_chunks_bytes = Int64(sum(length, host_v_chunks)) * Int64(sizeof(Float64))
+    host_w_chunks_bytes = Int64(sum(length, host_w_chunks)) * Int64(sizeof(Float64))
+    host_send_bufs_bytes = Int64(sum(length, host_send_bufs)) * Int64(sizeof(Float64))
+    host_recv_bufs_bytes = Int64(sum(length, host_recv_bufs)) * Int64(sizeof(Float64))
+    println("  GPU hvec VRAM peak:     $(round(hvec_vram_bytes / 1024^3, digits=3)) GB ($(hvec_vram_bytes) bytes)")
+    println("  Host chunk buffers:      host_v_chunks=$(round(host_v_chunks_bytes / 1024^3, digits=3)) GB ($(host_v_chunks_bytes) bytes), host_w_chunks=$(round(host_w_chunks_bytes / 1024^3, digits=3)) GB ($(host_w_chunks_bytes) bytes)")
+    println("  Host exchange buffers:   host_send_bufs=$(round(host_send_bufs_bytes / 1024^3, digits=3)) GB ($(host_send_bufs_bytes) bytes), host_recv_bufs=$(round(host_recv_bufs_bytes / 1024^3, digits=3)) GB ($(host_recv_bufs_bytes) bytes)\n")
 
     return CuDistributedFunctions{ModeSerial}(
         comm, rank, nproc, local_dim,
