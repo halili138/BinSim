@@ -322,6 +322,38 @@ function CuDistributedFunctions(
     )
 end
 
+function CuDistributedFunctions(
+    ::Type{ModeNVLink},
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv_h,TK,TV},
+    comm::MPI.Comm;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+    tol::Float64=1e-12,
+    num_phases::Int=2,
+) where {Ti,Tv_h,TK,TV}
+    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
+        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
+        partition = VirtualSymmetryPartition(
+            mole.norb, k;
+            seed=virtual_seed,
+            orbsym=virtual_orbsym,
+            nelec=mole.nelec,
+            physical_orbsym=mole.orbsym,
+            optimize=virtual_optimize && isempty(virtual_orbsym),
+            ntry=virtual_ntry,
+        )
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
+    else
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
+    end
+
+    return CuDistributedFunctions(ModeNVLink, basis, ham, comm; tol=tol, num_phases=num_phases), basis
+end
+
 # ============================================================
 # HybridOOC: 多GPU + CPU驻留 + MPI
 # ============================================================
