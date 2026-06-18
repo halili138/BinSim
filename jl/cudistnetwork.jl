@@ -36,6 +36,13 @@ struct CuDistributedFunctions{Mode<:CuDistMode}
     grad::Function
 end
 
+function _num_wavefunction_symmetry_blocks(basis::BasisManager)
+    if hasproperty(basis, :num_blocks)
+        return Int(getproperty(basis, :num_blocks))
+    end
+    return Int(get_num_symmetry_blocks(basis.ptr))
+end
+
 # ============================================================
 # SerialOOC: 单卡突破显存限制
 # ============================================================
@@ -50,6 +57,15 @@ function CuDistributedFunctions(
     CUDA.device!(gpu_id)
 
     cu_basis_dev = CuBasisManager(basis)
+
+    @assert num_chunks >= 1 "num_chunks must be >= 1"
+    num_blocks = _num_wavefunction_symmetry_blocks(basis)
+    requested_num_chunks = num_chunks
+    num_chunks = min(num_chunks, max(1, num_blocks))
+
+    if num_chunks != requested_num_chunks
+        println("Requested virtual chunks: $(requested_num_chunks); clamped to $(num_chunks) because basis has $(num_chunks) wavefunction blocks")
+    end
 
     # 虚拟切片：用非MPI的GlobalMemMap构造各chunk的分块视图
     gmaps = [GlobalMemMap(basis; rank=r - 1, size=num_chunks) for r in 1:num_chunks]
