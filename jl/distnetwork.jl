@@ -200,7 +200,7 @@ struct DistributedFunctions{Tv}
 
     # === 哈密顿量子网络 ===========
     ham_sub_otfs::Vector{OTF}
-    ham_sub_topos::Vector{SubTopology}
+    ham_sub_topos::Matrix{SubTopology}
 
     # === 预分配缓冲区 ==============
     cache::Vector{Tv}     # local_dim + max_recv_dim
@@ -229,6 +229,7 @@ function DistributedFunctions(
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
     comm::MPI.Comm;
     tol::Float64=1e-12,
+    num_phases::Int=1,
 ) where {Ti,Tv,TK,TV}
     @assert Tv == Float64 "DistributedFunctions currently only supports Tv=Float64 (C++ backend is _f64)"
 
@@ -243,10 +244,14 @@ function DistributedFunctions(
     ham_sub_otfs = build_distributed_otfs(basis, ham, tol)
     n_subnets = length(ham_sub_otfs)
 
-    # 3. 每个切片构建独立通信路由表
-    ham_sub_topos = Vector{SubTopology}(undef, n_subnets)
-    for i in 1:n_subnets
-        ham_sub_topos[i] = SubTopology(basis, ham_sub_otfs[i], gmap)
+    # 3. 每个切片、每个通信相位构建独立通信路由表
+    @assert num_phases >= 1 "DistributedFunctions requires num_phases >= 1"
+    ham_sub_topos = Matrix{SubTopology}(undef, n_subnets, num_phases)
+    for i in 1:n_subnets, p in 1:num_phases
+        ham_sub_topos[i, p] = SubTopology(
+            basis, ham_sub_otfs[i], gmap;
+            num_phases=num_phases, phase_idx=p - 1,
+        )
     end
 
     max_send_dim = n_subnets == 0 ? 0 : maximum(t.send_dim for t in ham_sub_topos)
@@ -270,8 +275,8 @@ function DistributedFunctions(
         fill!(local_w, zero(Tv))
         cache[1:local_dim] .= v
 
-        for i in 1:n_subnets
-            topo = ham_sub_topos[i]
+        for i in 1:n_subnets, p in 1:num_phases
+            topo = ham_sub_topos[i, p]
             otf  = ham_sub_otfs[i]
 
             # pack (only if there is data to send)
@@ -331,6 +336,7 @@ function DistributedFunctions(
         println("  MPI ranks:        $(size)")
         println("  Local dim (rank0): $(local_dim)")
         println("  Symmetry fragments: $(n_subnets)")
+        println("  Communication phases: $(num_phases)")
         println("  Max send/recv:    $(max_send_dim) / $(max_recv_dim)\n")
     end
 
@@ -353,6 +359,7 @@ function DistributedFunctions(
     virtual_optimize::Bool=true,
     virtual_ntry::Int=64,
     tol::Float64=1e-12,
+    num_phases::Int=1,
 ) where {Ti,Tv,TK,TV}
     basis = if virtual_k > 0 || !isempty(virtual_orbsym)
         k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
@@ -370,5 +377,5 @@ function DistributedFunctions(
         BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
     end
 
-    return DistributedFunctions(basis, ham, comm; tol=tol), basis
+    return DistributedFunctions(basis, ham, comm; tol=tol, num_phases=num_phases), basis
 end
