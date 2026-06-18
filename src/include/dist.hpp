@@ -3,6 +3,18 @@
 #include "otf.hpp"
 #include "hvec.hpp"
 
+
+inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
+{
+    std::vector<int> counts(gmap->mpi_size, 0);
+    for (int rank : gmap->block_to_rank)
+    {
+        if (rank >= 0 && rank < gmap->mpi_size)
+            counts[rank]++;
+    }
+    return counts;
+}
+
 // =================================================================
 // 2. 分段通信账本：针对单个 (asym, bsym) 子片段的专属配置
 // =================================================================

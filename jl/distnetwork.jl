@@ -36,6 +36,13 @@ function GlobalMemMap(basis::BasisManager; rank::Int=0, size::Int=1)
 end
 
 
+function rank_block_counts(gmap::GlobalMemMap)
+    counts = zeros(Cint, gmap.mpi_size)
+    @ccall LIB_DIST.get_rank_block_counts_otf_gmap(gmap.ptr::Ptr{Cvoid}, counts::Ptr{Cint})::Cvoid
+    return Int.(counts)
+end
+
+
 # ==========================================
 # 2. 分段通信账本 (SubTopology)
 # ==========================================
@@ -246,11 +253,14 @@ function DistributedFunctions(
 
     # 3. 每个切片、每个通信相位构建独立通信路由表
     @assert num_phases >= 1 "DistributedFunctions requires num_phases >= 1"
-    ham_sub_topos = Matrix{SubTopology}(undef, n_subnets, num_phases)
-    for i in 1:n_subnets, p in 1:num_phases
+    block_counts = rank_block_counts(gmap)
+    max_rank_num_blocks = maximum(block_counts)
+    effective_num_phases = min(num_phases, max_rank_num_blocks)
+    ham_sub_topos = Matrix{SubTopology}(undef, n_subnets, effective_num_phases)
+    for i in 1:n_subnets, p in 1:effective_num_phases
         ham_sub_topos[i, p] = SubTopology(
             basis, ham_sub_otfs[i], gmap;
-            num_phases=num_phases, phase_idx=p - 1,
+            num_phases=effective_num_phases, phase_idx=p - 1,
         )
     end
 
@@ -275,7 +285,7 @@ function DistributedFunctions(
         fill!(local_w, zero(Tv))
         cache[1:local_dim] .= v
 
-        for i in 1:n_subnets, p in 1:num_phases
+        for i in 1:n_subnets, p in 1:effective_num_phases
             topo = ham_sub_topos[i, p]
             otf  = ham_sub_otfs[i]
 
@@ -336,7 +346,10 @@ function DistributedFunctions(
         println("  MPI ranks:        $(size)")
         println("  Local dim (rank0): $(local_dim)")
         println("  Symmetry fragments: $(n_subnets)")
-        println("  Communication phases: $(num_phases)")
+        if num_phases != effective_num_phases
+            println("  Requested communication phases: $(num_phases); clamped to $(effective_num_phases) because max rank-local wavefunction blocks is $(effective_num_phases)")
+        end
+        println("  Communication phases: $(effective_num_phases)")
         println("  Max send/recv:    $(max_send_dim) / $(max_recv_dim)\n")
     end
 
