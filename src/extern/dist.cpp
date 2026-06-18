@@ -22,6 +22,13 @@ extern "C"
         return static_cast<const GlobalMemMap *>(gmap_ptr)->local_dim;
     }
 
+    void get_rank_block_counts_otf_gmap(void *gmap_ptr, int *counts)
+    {
+        auto gmap = static_cast<const GlobalMemMap *>(gmap_ptr);
+        auto rank_block_counts = get_rank_block_counts(gmap);
+        std::copy(rank_block_counts.begin(), rank_block_counts.end(), counts);
+    }
+
     // 将物理基态精准切分到各节点的局部内存中
     void scatter_global_v_f64(void *gmap_ptr, void *basis_ptr, const double *global_v, double *local_v)
     {
