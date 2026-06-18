@@ -365,6 +365,7 @@ function DistributedFunctions(
             optimize=virtual_optimize && isempty(virtual_orbsym),
             ntry=virtual_ntry,
         )
+        partition = VirtualSymmetryPartition(mole.norb, k; seed=virtual_seed, orbsym=virtual_orbsym)
         BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
     else
         BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)

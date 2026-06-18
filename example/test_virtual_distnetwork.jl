@@ -31,6 +31,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     my_rank == 0 && println("="^60)
     my_rank == 0 && println("=== Virtual-symmetry DistributedFunctions Test ===")
     my_rank == 0 && @printf("Molecule: %s / %s  virtual_k: %d  ntry: %d  dim: %d\n", _name, _basis, _vk, _ntry, basis.dim)
+    funcs, basis = DistributedFunctions(mole, ham, comm; virtual_k=_vk, virtual_seed=_seed)
+
+    my_rank == 0 && println("="^60)
+    my_rank == 0 && println("=== Virtual-symmetry DistributedFunctions Test ===")
+    my_rank == 0 && @printf("Molecule: %s / %s  virtual_k: %d  dim: %d\n", _name, _basis, _vk, basis.dim)
     my_rank == 0 && println("="^60)
 
     v = funcs.get_hf(mole.nelec)

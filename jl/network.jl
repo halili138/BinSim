@@ -57,6 +57,8 @@ end
 VirtualSymmetryPartition(k::Int64, orbsym::Vector{Int64}, num_irreps::Int64, seed::Int64) =
     VirtualSymmetryPartition(k, orbsym, num_irreps, seed, Inf, Int64(0), Int64(0))
 
+end
+
 function make_virtual_orbsym(norb::Int, k::Int; seed::Int=1234)
     @assert k >= 0 "virtual symmetry rank k must be non-negative"
     k == 0 && return zeros(Int64, norb)
@@ -205,6 +207,11 @@ function VirtualSymmetryPartition(
         )
     end
     return VirtualSymmetryPartition(Int64(k), virtual_orbsym, Int64(1) << k, Int64(seed), score, max_block, nonzero_blocks)
+function VirtualSymmetryPartition(norb::Int, k::Int; seed::Int=1234, orbsym::Vector{Int64}=Int64[])
+    virtual_orbsym = isempty(orbsym) ? make_virtual_orbsym(norb, k; seed=seed) : Int64.(orbsym)
+    @assert length(virtual_orbsym) == norb
+    @assert all(0 .<= virtual_orbsym .< (Int64(1) << k))
+    return VirtualSymmetryPartition(Int64(k), virtual_orbsym, Int64(1) << k, Int64(seed))
 end
 
 function combine_orbsym(physical_orbsym::Vector{Int64}, virtual_orbsym::Vector{Int64}; physical_num_irreps::Int64=16)
