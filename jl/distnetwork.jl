@@ -272,6 +272,14 @@ function DistributedFunctions(
     local_w  = zeros(Tv, local_dim)
     send_buf = zeros(Tv, max_send_dim)
 
+    local_peak_scalar_count = (local_dim + max_recv_dim) + local_dim + max_send_dim
+    local_peak_bytes = local_peak_scalar_count * sizeof(Tv)
+    global_max_local_dim = MPI.Allreduce(local_dim, max, comm)
+    global_max_send_dim = MPI.Allreduce(max_send_dim, max, comm)
+    global_max_recv_dim = MPI.Allreduce(max_recv_dim, max, comm)
+    global_peak_hvec_buffer_bytes = MPI.Allreduce(local_peak_bytes, max, comm)
+    global_total_hvec_buffer_bytes = MPI.Allreduce(local_peak_bytes, +, comm)
+
     # ====================================================
     # 闭包
     # ====================================================
@@ -345,12 +353,15 @@ function DistributedFunctions(
         println("\nDistributedFunctions built:")
         println("  MPI ranks:        $(size)")
         println("  Local dim (rank0): $(local_dim)")
+        println("  Max local dim:    $(global_max_local_dim)")
         println("  Symmetry fragments: $(n_subnets)")
         if num_phases != effective_num_phases
-            println("  Requested communication phases: $(num_phases); clamped to $(effective_num_phases) because max rank-local wavefunction blocks is $(effective_num_phases)")
+            println("  Requested communication phases: $(num_phases); clamped to $(effective_num_phases) because max rank-local wavefunction blocks is $(max_rank_num_blocks)")
         end
         println("  Communication phases: $(effective_num_phases)")
-        println("  Max send/recv:    $(max_send_dim) / $(max_recv_dim)\n")
+        println("  Max send/recv:    $(global_max_send_dim) / $(global_max_recv_dim)")
+        println("  Peak hvec buffer memory per rank: $(global_peak_hvec_buffer_bytes) bytes")
+        println("  Total hvec buffer memory across ranks: $(global_total_hvec_buffer_bytes) bytes\n")
     end
 
     return DistributedFunctions{Tv}(
