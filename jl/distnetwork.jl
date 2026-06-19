@@ -224,9 +224,10 @@ struct DistributedFunctions{Tv}
     pool_sub_topos::Matrix{SubTopology}
 
     # === 预分配缓冲区 ==============
-    cache::Vector{Tv}     # local_dim + max_recv_dim
-    local_w::Vector{Tv}   # local_dim
-    send_buf::Vector{Tv}  # max_send_dim
+    cache::Vector{Tv}       # local_dim + max_recv_dim
+    back_cache::Vector{Tv}  # local_dim + max_recv_dim, second vector ghost workspace for backgrad
+    local_w::Vector{Tv}     # local_dim
+    send_buf::Vector{Tv}    # max_send_dim
 
     # === 闭包 (已实现) ============
     hvec::Function
@@ -303,11 +304,12 @@ function DistributedFunctions(
     )
 
     # 4. 预分配可复用缓冲区
-    cache    = zeros(Tv, local_dim + max_recv_dim)
-    local_w  = zeros(Tv, local_dim)
-    send_buf = zeros(Tv, max_send_dim)
+    cache      = zeros(Tv, local_dim + max_recv_dim)
+    back_cache = zeros(Tv, local_dim + max_recv_dim)
+    local_w    = zeros(Tv, local_dim)
+    send_buf   = zeros(Tv, max_send_dim)
 
-    local_peak_scalar_count = (local_dim + max_recv_dim) + local_dim + max_send_dim
+    local_peak_scalar_count = 2 * (local_dim + max_recv_dim) + local_dim + max_send_dim
     local_peak_bytes = local_peak_scalar_count * sizeof(Tv)
     global_max_local_dim = MPI.Allreduce(local_dim, max, comm)
     global_max_send_dim = MPI.Allreduce(max_send_dim, max, comm)
@@ -409,7 +411,48 @@ function DistributedFunctions(
     end
     _tvec     = (idx, lv, rv)         -> error("DistributedFunctions.tvec: not yet implemented")
     _grad     = (idx, θ, lv, rv)      -> error("DistributedFunctions.grad: not yet implemented")
-    _backgrad = (idx, θ, lv, rv)      -> error("DistributedFunctions.backgrad: not yet implemented")
+    _backgrad = (idx, θ, lv, rv) -> begin
+        @assert 1 <= idx <= n_pool "DistributedFunctions.backgrad: pool index out of bounds"
+        cache[1:local_dim] .= lv
+        back_cache[1:local_dim] .= rv
+
+        local_grad = zero(Tv)
+        for p in 1:pool_num_phases
+            topo = pool_sub_topos[idx, p]
+            otf = pool_sub_otfs[idx]
+
+            if topo.send_dim > 0
+                @ccall LIB_DIST.pack_send_buffer_f64_sub(
+                    topo.ptr::Ptr{Cvoid},
+                    cache::Ptr{Float64}, send_buf::Ptr{Float64},
+                )::Cvoid
+            end
+            recv_view_l = @view cache[local_dim+1 : local_dim+topo.recv_dim]
+            send_vbuf_l = MPI.VBuffer(send_buf, topo.send_counts)
+            recv_vbuf_l = MPI.VBuffer(recv_view_l, topo.recv_counts)
+            MPI.Alltoallv!(send_vbuf_l, recv_vbuf_l, comm)
+
+            if topo.send_dim > 0
+                @ccall LIB_DIST.pack_send_buffer_f64_sub(
+                    topo.ptr::Ptr{Cvoid},
+                    back_cache::Ptr{Float64}, send_buf::Ptr{Float64},
+                )::Cvoid
+            end
+            recv_view_r = @view back_cache[local_dim+1 : local_dim+topo.recv_dim]
+            send_vbuf_r = MPI.VBuffer(send_buf, topo.send_counts)
+            recv_vbuf_r = MPI.VBuffer(recv_view_r, topo.recv_counts)
+            MPI.Alltoallv!(send_vbuf_r, recv_vbuf_r, comm)
+
+            local_grad += @ccall LIB_DIST.compute_backgrad_sub_chunk_f64(
+                basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, topo.ptr::Ptr{Cvoid},
+                θ::Cdouble, cache::Ptr{Float64}, back_cache::Ptr{Float64},
+            )::Cdouble
+        end
+
+        lv .= @view cache[1:local_dim]
+        rv .= @view back_cache[1:local_dim]
+        return MPI.Allreduce(local_grad, +, comm)
+    end
 
     _pool_otf = OTF(C_NULL, 0, 0)
 
@@ -436,7 +479,7 @@ function DistributedFunctions(
     return DistributedFunctions{Tv}(
         comm, rank, size, basis, gmap, local_dim,
         ham_sub_otfs, ham_sub_topos, pool_sub_otfs, pool_sub_topos,
-        cache, local_w, send_buf,
+        cache, back_cache, local_w, send_buf,
         _hvec, _normalize, _zeros, _get_hf, _get_init, _inner,
         _expm, _tvec, _grad, _backgrad, _pool_otf,
     )
