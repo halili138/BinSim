@@ -34,6 +34,7 @@ struct CuDistributedFunctions{Mode<:CuDistMode}
 
     expm::Function
     grad::Function
+    backgrad::Function
 end
 
 function _num_wavefunction_symmetry_blocks(basis::BasisManager)
@@ -236,6 +237,7 @@ function CuDistributedFunctions(
 
     _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
+    _backgrad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.backgrad: not yet implemented")
 
     comm = MPI.COMM_SELF
     rank = 0
@@ -267,7 +269,7 @@ function CuDistributedFunctions(
     return CuDistributedFunctions{ModeSerial}(
         comm, rank, nproc, local_dim,
         _hvec, _normalize, _zeros, _get_hf, _inner,
-        _expm, _grad,
+        _expm, _grad, _backgrad,
     )
 end
 
@@ -420,6 +422,7 @@ function CuDistributedFunctions(
 
     _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
+    _backgrad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.backgrad: not yet implemented")
 
     if rank == 0
         println("\nCuDistributedFunctions (NVLink) built:")
@@ -440,7 +443,7 @@ function CuDistributedFunctions(
     return CuDistributedFunctions{ModeNVLink}(
         comm, rank, nproc, local_dim,
         _hvec, _normalize, _zeros, _get_hf, _inner,
-        _expm, _grad,
+        _expm, _grad, _backgrad,
     )
 end
 
@@ -697,6 +700,7 @@ function CuDistributedFunctions(
 
     _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
+    _backgrad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.backgrad: not yet implemented")
 
     d_cache_bytes = _hvec_bytes(my_max_local + my_max_recv)
     d_send_bytes = _hvec_bytes(my_max_send)
@@ -727,7 +731,7 @@ function CuDistributedFunctions(
     return CuDistributedFunctions{ModeHybrid}(
         comm, rank, nproc, local_dim,
         _hvec, _normalize, _zeros, _get_hf, _inner,
-        _expm, _grad,
+        _expm, _grad, _backgrad,
     )
 end
 
