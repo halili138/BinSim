@@ -67,9 +67,7 @@ extern "C"
         auto topo = static_cast<const SubTopologyDev *>(topo_ptr);
         if (topo->num_targets == 0)
             return;
-        BasisViewDev<uint32> virtual_basis = *basis;
-        virtual_basis.block_offsets = topo->d_topo_offsets;
-        expm_svd_network_otf_gpu<uint32, double>(virtual_basis, *subnet, idx, theta, d_chunk_cache);
+        expm_svd_sub_chunk_gpu<uint32, double>(*basis, *subnet, *topo, idx, theta, d_chunk_cache);
     }
 
     double compute_backgrad_sub_chunk_gpu_f64(void *basis_ptr, void *subnet_ptr, void *topo_ptr, const double theta, double *d_left_cache, double *d_right_cache)
@@ -79,9 +77,7 @@ extern "C"
         auto topo = static_cast<const SubTopologyDev *>(topo_ptr);
         if (topo->num_targets == 0)
             return 0.0;
-        BasisViewDev<uint32> virtual_basis = *basis;
-        virtual_basis.block_offsets = topo->d_topo_offsets;
-        return backgrad_svd_network_otf_gpu<uint32, double>(virtual_basis, *subnet, 0, theta, d_left_cache, d_right_cache);
+        return backgrad_svd_sub_chunk_gpu<uint32, double>(*basis, *subnet, *topo, theta, d_left_cache, d_right_cache);
     }
 
     void set_local_det_coeff_gpu_f64(void *gmap_ptr, void *basis_ptr, uint32 astr, uint32 bstr, double coeff, double *d_local_vec)
