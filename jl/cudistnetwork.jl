@@ -410,6 +410,13 @@ end
 # ============================================================
 # NVLink: 多GPU + VRAM驻留
 # ============================================================
+_cuda_ping(tag, rank) = begin
+    x = CUDA.zeros(Float64, 1)
+    CUDA.synchronize()
+    println("rank=$rank CUDA ping ok: $tag")
+    nothing
+end
+
 function CuDistributedFunctions(
     ::Type{ModeNVLink},
     basis::BasisManager,
@@ -435,9 +442,12 @@ function CuDistributedFunctions(
 
     ngpus = length(CUDA.devices())
     CUDA.device!(rank % ngpus)
+    _cuda_ping("after CUDA.device!", rank)
 
     cu_basis_dev = CuBasisManager(basis)
+    _cuda_ping("after CuBasisManager", rank)
     gmap = GlobalMemMap(basis, comm)
+    _cuda_ping("after GlobalMemMap", rank)
     local_dim = gmap.local_dim
 
     @assert num_phases >= 1 "num_phases must be >= 1"
@@ -450,6 +460,7 @@ function CuDistributedFunctions(
     end
 
     cpu_otfs, cu_otfs = build_distributed_cu_otfs(basis, ham, tol)
+    _cuda_ping("after build_distributed_cu_otfs(ham)", rank)
     n_otfs = length(cu_otfs)
 
     n_pool = pool === nothing ? 0 : length(pool)
@@ -465,6 +476,7 @@ function CuDistributedFunctions(
         sub_topos[i, p] = CuSubTopology(basis, cpu_otfs[i], gmap;
             num_phases=num_phases, phase_idx=p - 1)
     end
+    _cuda_ping("after CuSubTopology(ham) loop", rank)
 
     # Pool topologies are indexed by [pool_idx][pool_otf_idx, phase].
     pool_sub_topos = [Matrix{CuSubTopology}(undef, length(pool_cpu_otfs[i]), num_phases) for i in 1:n_pool]
@@ -472,6 +484,7 @@ function CuDistributedFunctions(
         pool_sub_topos[i][j, p] = CuSubTopology(basis, pool_cpu_otfs[i][j], gmap;
             num_phases=num_phases, phase_idx=p - 1)
     end
+    _cuda_ping("after CuSubTopology(pool) loop", rank)
 
     all_topos = CuSubTopology[]
     append!(all_topos, vec(sub_topos))
@@ -494,6 +507,7 @@ function CuDistributedFunctions(
     max_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, max, comm)
     total_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, +, comm)
 
+    _cuda_ping("before d_cache CUDA.zeros", rank)
     d_cache = CUDA.zeros(Float64, cache_scalars)
     d_send  = CUDA.zeros(Float64, send_scalars)
     d_recv  = CUDA.zeros(Float64, recv_scalars)
