@@ -159,7 +159,7 @@ jld2file/基组/分子名-键长比例-基组.jld2
 
 ```bash
 git clone <repo-url>
-cd binsim_temp
+cd BinSim
 ```
 
 ### 2. 安装 Julia 依赖
@@ -259,6 +259,8 @@ CUDA 相关动态库包括：
 
 - `src/lib/libcuotf.so`
 - `src/lib/libcudist.so`
+
+> **版本控制约定**：`src/lib/*.so` 是本地编译产物，不随仓库提交。拉取代码后请按上述步骤在目标机器重新编译，以避免 CPU/GPU 架构、CUDA 版本和系统 ABI 不一致导致运行失败。
 
 ## 运行示例
 

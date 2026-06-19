@@ -20,3 +20,6 @@ callback/
 *.sh
 bashs/
 *.jld2
+
+# Native build artifacts
+src/lib/*.so
