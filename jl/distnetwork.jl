@@ -148,6 +148,11 @@ function build_distributed_otfs(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,
     return [OTF_from_groups(basis, sub_groups) for sub_groups in values(dict)]
 end
 
+function build_distributed_otfs(basis::BasisManager, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, tol::Float64=1e-12) where {Ti,Tv,K,V}
+    groups = compress_by_svd(pool, tol)
+    return [OTF_from_groups(basis, SVDGroup{Ti,Tv}[group]) for group in groups]
+end
+
 
 function set_local_reference_state!(
     gmap::GlobalMemMap, basis::BasisManager, local_v::AbstractVector{Tv},
@@ -215,6 +220,8 @@ struct DistributedFunctions{Tv}
     # === 哈密顿量子网络 ===========
     ham_sub_otfs::Vector{OTF}
     ham_sub_topos::Matrix{SubTopology}
+    pool_sub_otfs::Vector{OTF}
+    pool_sub_topos::Matrix{SubTopology}
 
     # === 预分配缓冲区 ==============
     cache::Vector{Tv}     # local_dim + max_recv_dim
@@ -241,6 +248,7 @@ end
 function DistributedFunctions(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
     comm::MPI.Comm;
     tol::Float64=1e-12,
     num_phases::Int=1,
@@ -271,8 +279,28 @@ function DistributedFunctions(
         )
     end
 
-    max_send_dim = n_subnets == 0 ? 0 : maximum(t.send_dim for t in ham_sub_topos)
-    max_recv_dim = n_subnets == 0 ? 0 : maximum(t.recv_dim for t in ham_sub_topos)
+    pool_sub_otfs = build_distributed_otfs(basis, pool, tol)
+    n_pool = length(pool_sub_otfs)
+    # Exponential rotations must see a simultaneous snapshot of all paired
+    # amplitudes.  Keep pool operators in a single communication phase even
+    # when hvec uses phased accumulation.
+    pool_num_phases = 1
+    pool_sub_topos = Matrix{SubTopology}(undef, n_pool, pool_num_phases)
+    for i in 1:n_pool, p in 1:pool_num_phases
+        pool_sub_topos[i, p] = SubTopology(
+            basis, pool_sub_otfs[i], gmap;
+            num_phases=pool_num_phases, phase_idx=p - 1,
+        )
+    end
+
+    max_send_dim = max(
+        n_subnets == 0 ? 0 : maximum(t.send_dim for t in ham_sub_topos),
+        n_pool == 0 ? 0 : maximum(t.send_dim for t in pool_sub_topos),
+    )
+    max_recv_dim = max(
+        n_subnets == 0 ? 0 : maximum(t.recv_dim for t in ham_sub_topos),
+        n_pool == 0 ? 0 : maximum(t.recv_dim for t in pool_sub_topos),
+    )
 
     # 4. 预分配可复用缓冲区
     cache    = zeros(Tv, local_dim + max_recv_dim)
@@ -349,7 +377,36 @@ function DistributedFunctions(
         return v
     end
 
-    _expm     = (idx, θ, v)           -> error("DistributedFunctions.expm: not yet implemented")
+    _expm = (idx, θ, v) -> begin
+        @assert 1 <= idx <= n_pool "DistributedFunctions.expm: pool index out of bounds"
+        cache[1:local_dim] .= v
+
+        for p in 1:pool_num_phases
+            topo = pool_sub_topos[idx, p]
+            otf = pool_sub_otfs[idx]
+
+            if topo.send_dim > 0
+                @ccall LIB_DIST.pack_send_buffer_f64_sub(
+                    topo.ptr::Ptr{Cvoid},
+                    cache::Ptr{Float64}, send_buf::Ptr{Float64},
+                )::Cvoid
+            end
+
+            recv_view = @view cache[local_dim+1 : local_dim+topo.recv_dim]
+            send_vbuf = MPI.VBuffer(send_buf, topo.send_counts)
+            recv_vbuf = MPI.VBuffer(recv_view, topo.recv_counts)
+            MPI.Alltoallv!(send_vbuf, recv_vbuf, comm)
+
+            @ccall LIB_DIST.compute_expm_sub_chunk_f64(
+                basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid},
+                Int64(0)::Int64, θ::Cdouble, cache::Ptr{Float64},
+            )::Cvoid
+        end
+
+        v .= @view cache[1:local_dim]
+        return v
+    end
     _tvec     = (idx, lv, rv)         -> error("DistributedFunctions.tvec: not yet implemented")
     _grad     = (idx, θ, lv, rv)      -> error("DistributedFunctions.grad: not yet implemented")
     _backgrad = (idx, θ, lv, rv)      -> error("DistributedFunctions.backgrad: not yet implemented")
@@ -362,7 +419,9 @@ function DistributedFunctions(
         @printf("  MPI ranks:               %d\n", size)
         @printf("  Local dim (rank0):       %d\n", local_dim)
         @printf("  Max local dim:           %d\n", global_max_local_dim)
-        @printf("  Symmetry fragments:      %d\n", n_subnets)
+        @printf("  Ham symmetry fragments:  %d\n", n_subnets)
+        @printf("  Pool operators:          %d\n", n_pool)
+        @printf("  Pool expm phases:        %d\n", pool_num_phases)
 
         if num_phases != effective_num_phases
             @printf("  Requested communication phases: %d, clamped to %d because max rank-local wavefunction blocks is %d\n", num_phases, effective_num_phases, max_rank_num_blocks)
@@ -376,7 +435,7 @@ function DistributedFunctions(
 
     return DistributedFunctions{Tv}(
         comm, rank, size, basis, gmap, local_dim,
-        ham_sub_otfs, ham_sub_topos,
+        ham_sub_otfs, ham_sub_topos, pool_sub_otfs, pool_sub_topos,
         cache, local_w, send_buf,
         _hvec, _normalize, _zeros, _get_hf, _get_init, _inner,
         _expm, _tvec, _grad, _backgrad, _pool_otf,
@@ -384,8 +443,22 @@ function DistributedFunctions(
 end
 
 function DistributedFunctions(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    comm::MPI.Comm;
+    tol::Float64=1e-12,
+    num_phases::Int=1,
+) where {Ti,Tv,TK,TV}
+    return DistributedFunctions(
+        basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], comm;
+        tol=tol, num_phases=num_phases,
+    )
+end
+
+function DistributedFunctions(
     mole::Mole,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
     comm::MPI.Comm;
     virtual_k::Int=0,
     virtual_seed::Int=1234,
@@ -411,5 +484,30 @@ function DistributedFunctions(
         BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
     end
 
-    return DistributedFunctions(basis, ham, comm; tol=tol, num_phases=num_phases), basis
+    return DistributedFunctions(basis, ham, pool, comm; tol=tol, num_phases=num_phases), basis
+end
+
+
+function DistributedFunctions(
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    comm::MPI.Comm;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+    tol::Float64=1e-12,
+    num_phases::Int=1,
+) where {Ti,Tv,TK,TV}
+    return DistributedFunctions(
+        mole, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], comm;
+        virtual_k=virtual_k,
+        virtual_seed=virtual_seed,
+        virtual_orbsym=virtual_orbsym,
+        virtual_optimize=virtual_optimize,
+        virtual_ntry=virtual_ntry,
+        tol=tol,
+        num_phases=num_phases,
+    )
 end

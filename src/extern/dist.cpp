@@ -1,4 +1,5 @@
 #include "dist.hpp"
+#include "expm.hpp"
 
 extern "C"
 {
@@ -112,5 +113,43 @@ extern "C"
                                static_cast<const Network_OTF<uint32, double> *>(subnet),
                                static_cast<const SubTopology *>(topo),
                                chunk_cache, local_w);
+    }
+
+
+    void compute_expm_sub_chunk_f64(void *basis_ptr, void *subnet_ptr, void *topo_ptr, const int64_t idx, const double theta, double *chunk_cache)
+    {
+        const auto *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        const auto *subnet = static_cast<const Network_OTF<uint32, double> *>(subnet_ptr);
+        const auto *topo = static_cast<const SubTopology *>(topo_ptr);
+
+        const int64_t num_irreps = basis->num_irreps;
+        std::vector<BlockDesc<uint32>> virtual_blocks;
+        std::vector<int64_t> virtual_block_map(num_irreps * num_irreps, -1);
+
+        int64_t next_idx = 0;
+        for (int h : topo->target_blocks)
+        {
+            BlockDesc<uint32> blk = basis->blocks[basis->block_map[h]];
+            blk.offset = topo->block_offsets_in_cache[h];
+            virtual_blocks.push_back(blk);
+            virtual_block_map[h] = next_idx++;
+        }
+        for (int h = 0; h < num_irreps * num_irreps; ++h)
+        {
+            if (virtual_block_map[h] == -1 && topo->block_offsets_in_cache[h] != -1)
+            {
+                BlockDesc<uint32> blk = basis->blocks[basis->block_map[h]];
+                blk.offset = topo->block_offsets_in_cache[h];
+                virtual_blocks.push_back(blk);
+                virtual_block_map[h] = next_idx++;
+            }
+        }
+
+        BasisManager<uint32> virtual_basis = *basis;
+        virtual_basis.blocks = virtual_blocks.data();
+        virtual_basis.block_map = virtual_block_map.data();
+        virtual_basis.num_blocks = static_cast<int64_t>(topo->target_blocks.size());
+
+        expm_svd_network_otf<uint32, double>(&virtual_basis, subnet, idx, theta, chunk_cache);
     }
 }
