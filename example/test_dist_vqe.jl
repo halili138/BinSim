@@ -1,8 +1,3 @@
-# Distributed VQE smoke test.
-#
-# Example:
-#   mpiexec -n 2 julia --project=. example/test_dist_vqe.jl 4 h4 1.0 sto-3g
-
 _nts   = length(ARGS) >= 1 ? ARGS[1] : "4"
 _name  = length(ARGS) >= 2 ? ARGS[2] : "h4"
 _ratio = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : 1.0
@@ -12,10 +7,9 @@ ENV["OMP_NUM_THREADS"] = _nts
 delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 
-using MPI
-MPI.Init()
-
 include("../jl/binsim.jl")
+
+MPI.Init()
 
 function main()
     comm = MPI.COMM_WORLD
