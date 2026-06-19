@@ -113,4 +113,12 @@ extern "C"
                                static_cast<const SubTopology *>(topo),
                                chunk_cache, local_w);
     }
+
+    void compute_expm_sub_chunk_f64(void *basis, void *net, void *topo, int64_t idx, double theta, const double *chunk_cache, double *local_w)
+    {
+        compute_expm_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                               static_cast<const Network_OTF<uint32, double> *>(net),
+                               static_cast<const SubTopology *>(topo),
+                               idx, theta, chunk_cache, local_w);
+    }
 }

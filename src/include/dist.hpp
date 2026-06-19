@@ -2,6 +2,7 @@
 #include "basis.hpp"
 #include "otf.hpp"
 #include "hvec.hpp"
+#include "expm.hpp"
 
 
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
@@ -315,12 +316,15 @@ static inline void dispatch_subchunks_by_rank(const BasisView<Ti> &view, const S
 // =================================================================
 // 4. 最终无状态计算入口：传入完整的 [local_v | 专属 recv_buffer]
 // =================================================================
-template <typename Ti, typename Tv>
-void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const SubTopology *topo, const Tv *chunk_cache, Tv *local_w)
+template <typename Ti>
+BasisView<Ti> make_sub_topology_basis_view(
+    const BasisManager<Ti> *basis, const SubTopology *topo,
+    std::vector<BlockDesc<Ti>> &virtual_blocks,
+    std::vector<int64> &virtual_block_map)
 {
     int64 num_irreps = basis->num_irreps;
-    std::vector<BlockDesc<Ti>> virtual_blocks;
-    std::vector<int64> virtual_block_map(num_irreps * num_irreps, -1);
+    virtual_blocks.clear();
+    virtual_block_map.assign(num_irreps * num_irreps, -1);
 
     int64 next_idx = 0;
     for (int h : topo->target_blocks)
@@ -345,10 +349,56 @@ void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti,
     view.blocks = virtual_blocks.data();
     view.block_map = virtual_block_map.data();
     view.num_blocks = topo->target_blocks.size();
+    return view;
+}
+
+template <typename Ti, typename Tv>
+void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net, const SubTopology *topo, const Tv *chunk_cache, Tv *local_w)
+{
+    std::vector<BlockDesc<Ti>> virtual_blocks;
+    std::vector<int64> virtual_block_map;
+    BasisView<Ti> view = make_sub_topology_basis_view(basis, topo, virtual_blocks, virtual_block_map);
 
     // 在这个阶段，子 OTF 的算子完全保持着 otf.hpp 原生的高效 rank 排序！
     dispatch_subchunks_by_rank<0>(view, sub_net->diag_groups.data(), sub_net->diag_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<1>(view, sub_net->pure_a_groups.data(), sub_net->pure_a_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<2>(view, sub_net->pure_b_groups.data(), sub_net->pure_b_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<3>(view, sub_net->mixed_groups.data(), sub_net->mixed_groups.size(), chunk_cache, local_w);
+}
+
+
+template <typename Ti, typename Tv>
+void compute_expm_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, const SubTopology *topo, int64 idx, double theta, const Tv *chunk_cache, Tv *local_w)
+{
+    std::vector<BlockDesc<Ti>> virtual_blocks;
+    std::vector<int64> virtual_block_map;
+    BasisView<Ti> view = make_sub_topology_basis_view(basis, topo, virtual_blocks, virtual_block_map);
+
+    int64 cache_dim = 0;
+    for (size_t h = 0; h < topo->block_offsets_in_cache.size(); ++h)
+    {
+        const int64 offset = topo->block_offsets_in_cache[h];
+        if (offset == -1)
+            continue;
+        const int64 block_idx = basis->block_map[h];
+        if (block_idx == -1)
+            continue;
+        const BlockDesc<Ti> &blk = basis->blocks[block_idx];
+        cache_dim = std::max(cache_dim, offset + blk.num_a * blk.num_b);
+    }
+    std::vector<Tv> scratch(chunk_cache, chunk_cache + cache_dim);
+
+    BasisManager<Ti> virtual_basis = *basis;
+    virtual_basis.blocks = virtual_blocks.data();
+    virtual_basis.block_map = virtual_block_map.data();
+    virtual_basis.num_blocks = view.num_blocks;
+    expm_svd_network_otf(&virtual_basis, net, idx, theta, scratch.data());
+
+    for (int h : topo->target_blocks)
+    {
+        const BlockDesc<Ti> &blk = basis->blocks[basis->block_map[h]];
+        const int64 size = blk.num_a * blk.num_b;
+        const int64 offset = topo->block_offsets_in_cache[h];
+        std::copy(scratch.data() + offset, scratch.data() + offset + size, local_w + offset);
+    }
 }
