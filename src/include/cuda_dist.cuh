@@ -3,6 +3,8 @@
 #include <algorithm>
 #include "dist.hpp"
 #include "cuda_hvec.cuh"
+#include "cuda_expm.cuh"
+#include "cuda_backgrad.cuh"
 
 struct SubTopologyDev
 {

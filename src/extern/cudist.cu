@@ -58,6 +58,32 @@ extern "C"
         dispatch_chunks_by_rank_gpu<3>(slice, topo->num_targets, subnet->mixed_groups, d_chunk_cache, d_local_w);
     }
 
+
+
+    void compute_expm_sub_chunk_gpu_f64(void *basis_ptr, void *subnet_ptr, void *topo_ptr, const int64 idx, const double theta, double *d_chunk_cache)
+    {
+        auto basis = static_cast<const BasisViewDev<uint32> *>(basis_ptr);
+        auto subnet = static_cast<const NetworkDev<uint32, double> *>(subnet_ptr);
+        auto topo = static_cast<const SubTopologyDev *>(topo_ptr);
+        if (topo->num_targets == 0)
+            return;
+        BasisViewDev<uint32> virtual_basis = *basis;
+        virtual_basis.block_offsets = topo->d_topo_offsets;
+        expm_svd_network_otf_gpu<uint32, double>(virtual_basis, *subnet, idx, theta, d_chunk_cache);
+    }
+
+    double compute_backgrad_sub_chunk_gpu_f64(void *basis_ptr, void *subnet_ptr, void *topo_ptr, const double theta, double *d_left_cache, double *d_right_cache)
+    {
+        auto basis = static_cast<const BasisViewDev<uint32> *>(basis_ptr);
+        auto subnet = static_cast<const NetworkDev<uint32, double> *>(subnet_ptr);
+        auto topo = static_cast<const SubTopologyDev *>(topo_ptr);
+        if (topo->num_targets == 0)
+            return 0.0;
+        BasisViewDev<uint32> virtual_basis = *basis;
+        virtual_basis.block_offsets = topo->d_topo_offsets;
+        return backgrad_svd_network_otf_gpu<uint32, double>(virtual_basis, *subnet, 0, theta, d_left_cache, d_right_cache);
+    }
+
     void set_local_det_coeff_gpu_f64(void *gmap_ptr, void *basis_ptr, uint32 astr, uint32 bstr, double coeff, double *d_local_vec)
     {
         auto gmap = static_cast<const GlobalMemMap *>(gmap_ptr);
