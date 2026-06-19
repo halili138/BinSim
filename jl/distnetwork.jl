@@ -446,11 +446,70 @@ end
 function DistributedFunctions(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
     comm::MPI.Comm;
     tol::Float64=1e-12,
     num_phases::Int=1,
 ) where {Ti,Tv,TK,TV}
-    return DistributedFunctions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], comm; tol=tol, num_phases=num_phases)
+    funcs = DistributedFunctions(basis, ham, comm; tol=tol, num_phases=num_phases)
+
+    pool_otf = OTF(C_NULL, 0, 0)
+    f_expm = funcs.expm
+    f_tvec = funcs.tvec
+    f_grad = funcs.grad
+    f_backgrad = funcs.backgrad
+
+    if !isempty(pool)
+        @assert funcs.size == 1 "DistributedFunctions pool operations currently require a single MPI rank"
+        funcs.rank == 0 && print("Pre-compiling distributed Pool OTF ... ")
+        time_ops = @elapsed pool_otf = OTF(basis, pool)
+        funcs.rank == 0 && @printf("Done in %.4f seconds\n", time_ops)
+
+        f_expm = (idx, θ, v) -> expm_svd!(basis, pool_otf, idx, θ, v)
+        f_tvec = (idx, lv, rv) -> tvec_svd!(basis, pool_otf, idx, lv, rv)
+        f_grad = (idx, θ, lv, rv) -> return grad_svd(basis, pool_otf, idx, θ, lv, rv)
+        f_backgrad = (idx, θ, lv, rv) -> return back_grad_svd!(basis, pool_otf, idx, θ, lv, rv)
+    end
+
+    return DistributedFunctions{Tv}(
+        funcs.comm, funcs.rank, funcs.size, funcs.basis, funcs.gmap, funcs.local_dim,
+        funcs.ham_sub_otfs, funcs.ham_sub_topos,
+        funcs.cache, funcs.local_w, funcs.send_buf,
+        funcs.hvec, funcs.normalize, funcs.zeros, funcs.get_hf, funcs.get_init, funcs.inner,
+        f_expm, f_tvec, f_grad, f_backgrad, pool_otf,
+    )
+end
+
+function DistributedFunctions(
+    mole::Mole,
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
+    comm::MPI.Comm;
+    virtual_k::Int=0,
+    virtual_seed::Int=1234,
+    virtual_orbsym::Vector{Int64}=Int64[],
+    virtual_optimize::Bool=true,
+    virtual_ntry::Int=64,
+    tol::Float64=1e-12,
+    num_phases::Int=1,
+) where {Ti,Tv,TK,TV}
+    basis = if virtual_k > 0 || !isempty(virtual_orbsym)
+        k = virtual_k > 0 ? virtual_k : ceil(Int, log2(maximum(virtual_orbsym) + 1))
+        partition = VirtualSymmetryPartition(
+            mole.norb, k;
+            seed=virtual_seed,
+            orbsym=virtual_orbsym,
+            nelec=mole.nelec,
+            physical_orbsym=mole.orbsym,
+            optimize=virtual_optimize && isempty(virtual_orbsym),
+            ntry=virtual_ntry,
+        )
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym, partition)
+    else
+        BasisManager(Int64(mole.norb), mole.nelec, mole.orbsym)
+    end
+
+    return DistributedFunctions(basis, ham, pool, comm; tol=tol, num_phases=num_phases), basis
 end
 
 function DistributedFunctions(
