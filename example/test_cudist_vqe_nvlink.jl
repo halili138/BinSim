@@ -1,23 +1,13 @@
-# CuDistributedFunctions NVLink VQE smoke test.
-#
-# Example:
-#   mpiexec -n 2 julia --project=. example/test_cudist_vqe_nvlink.jl 1 h4 1.0 sto-3g 2
+_name      = length(ARGS) >= 1 ? ARGS[1] : "h4"
+_ratio     = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 1.0
+_basisname = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
+_nphases   = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 2
 
-_nts       = length(ARGS) >= 1 ? ARGS[1] : "1"
-_name      = length(ARGS) >= 2 ? ARGS[2] : "h4"
-_ratio     = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : 1.0
-_basisname = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
-_nphases   = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : 2
-
-ENV["OMP_NUM_THREADS"] = _nts
+ENV["OMP_NUM_THREADS"] = 1
 ENV["OMP_PROC_BIND"] = "false"
 delete!(ENV, "OMP_PLACES")
 ENV["OMPI_MCA_btl"] = get(ENV, "OMPI_MCA_btl", "^openib")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
-
-using LinearAlgebra
-using MPI
-using Printf
 
 include("../jl/cudistnetwork.jl")
 

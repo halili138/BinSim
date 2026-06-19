@@ -1,20 +1,20 @@
-_nts   = length(ARGS) >= 1 ? ARGS[1] : "4"
-_name  = length(ARGS) >= 2 ? ARGS[2] : "h12"
-_basis = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
-_ratio = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
-_vk    = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : 2
-_seed  = length(ARGS) >= 6 ? parse(Int, ARGS[6]) : 1234
-_ntry  = length(ARGS) >= 7 ? parse(Int, ARGS[7]) : 64
-_phases = length(ARGS) >= 8 ? parse(Int, ARGS[8]) : 20
+_nts    = length(ARGS) >= 1 ? ARGS[1] : "4"
+_name   = length(ARGS) >= 2 ? ARGS[2] : "h12"
+_basis  = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
+_ratio  = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
+_vk     = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : 0
+_phases = length(ARGS) >= 6 ? parse(Int, ARGS[6]) : 2
+
+_seed  = 1234
+_ntry  = 64
 
 ENV["OMP_NUM_THREADS"] = _nts
 delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 
-using MPI
-MPI.Init()
-
 include("../jl/binsim.jl")
+
+MPI.Init()
 
 if abspath(PROGRAM_FILE) == @__FILE__
     comm = MPI.COMM_WORLD
@@ -43,15 +43,13 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
         funcs.hvec(v, Hv)
         energy    = funcs.inner(v, Hv)
-        @. v     -= 0.01 * Hv
-        pre_norm2 = funcs.inner(v, v)
+        @. v     -= 1e-2 * Hv
         funcs.normalize(v)
 
         t_iter = (time_ns() - t_start) / 1.0e9
 
         if my_rank == 0
-            @printf("  Step %2d | E: %14.10f | Norm: %.8f | Time: %.4f s\n",
-                    step, energy, sqrt(pre_norm2), t_iter)
+            @printf("  Step %2d | E: %14.10f | Time: %.4f s\n", step, energy, t_iter)
         end
     end
 
