@@ -21,15 +21,16 @@ if !(_mode in ("serial", "nvlink", "hybrid"))
 end
 
 ENV["OMP_NUM_THREADS"] = _nts
-delete!(ENV, "OMP_PROC_BIND")
+ENV["OMP_PROC_BIND"] = "false"
 delete!(ENV, "OMP_PLACES")
+ENV["OMPI_MCA_btl"] = get(ENV, "OMPI_MCA_btl", "^openib")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
+
+include("../jl/cudistnetwork.jl")
 
 if _mode != "serial"
     MPI.Init()
 end
-
-include("../jl/cudistnetwork.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     comm = _mode == "serial" ? nothing : MPI.COMM_WORLD

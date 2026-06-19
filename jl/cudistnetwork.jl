@@ -149,7 +149,14 @@ function CuDistributedFunctions(
     d_cache = CUDA.zeros(Float64, global_max_local + global_max_recv)
     d_send  = CUDA.zeros(Float64, global_max_send)
     d_w     = CUDA.zeros(Float64, global_max_local)
-    d_back_cache = CUDA.zeros(Float64, global_max_local + global_max_recv)
+    d_back_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
+
+    function backgrad_cache!()
+        if d_back_cache_ref[] === nothing
+            d_back_cache_ref[] = CUDA.zeros(Float64, global_max_local + global_max_recv)
+        end
+        return d_back_cache_ref[]::CuVector{Float64}
+    end
 
     # ============================================================
     # CPU 内存路由器 (模拟 Alltoallv)
@@ -291,6 +298,7 @@ function CuDistributedFunctions(
     _backgrad = (idx, θ, lv, rv) -> begin
         n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeSerial, basis, ham, pool; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
+        d_back_cache = backgrad_cache!()
         for r in 1:num_chunks
             ld = chunk_dims[r]
             if ld > 0
@@ -520,6 +528,16 @@ function CuDistributedFunctions(
         end
     end
 
+    function backgrad_caches!()
+        if d_left_cache_ref[] === nothing
+            d_left_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
+        end
+        if d_right_cache_ref[] === nothing
+            d_right_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
+        end
+        return d_left_cache_ref[]::CuVector{Float64}, d_right_cache_ref[]::CuVector{Float64}
+    end
+
     # ============================================================
     _get_hf = (nelec) -> begin
         set_local_hf_gpu!(gmap, basis, d_local_v, nelec)
@@ -578,14 +596,7 @@ function CuDistributedFunctions(
     _backgrad = (idx, θ, lv::CuVector{Float64}, rv::CuVector{Float64}) -> begin
         n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
-        if d_left_cache_ref[] === nothing
-            d_left_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
-        end
-        if d_right_cache_ref[] === nothing
-            d_right_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
-        end
-        d_left_cache = d_left_cache_ref[]::CuVector{Float64}
-        d_right_cache = d_right_cache_ref[]::CuVector{Float64}
+        d_left_cache, d_right_cache = backgrad_caches!()
         left_local = @view d_left_cache[1:local_dim]
         right_local = @view d_right_cache[1:local_dim]
         copyto!(left_local, lv)
@@ -594,9 +605,9 @@ function CuDistributedFunctions(
         for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
             topo = pool_sub_topos[idx][j, p]
             exchange_ghosts!(topo, d_left_cache, d_send, d_recv)
-            # Reuse d_send/d_recv intentionally: exchange_ghosts! uses blocking
-            # MPI.Alltoallv! and stores received ghost data in the target cache
-            # before returning, so the buffers are safe for the next exchange.
+            # exchange_ghosts! is blocking and copies received ghosts into the
+            # target cache before returning, so the same send/recv workspace can
+            # be reused for the right-vector exchange.
             exchange_ghosts!(topo, d_right_cache, d_send, d_recv)
             local_grad += @ccall LIB_CUDIST.compute_backgrad_sub_chunk_gpu_f64(
                 cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
@@ -768,7 +779,14 @@ function CuDistributedFunctions(
     d_cache = CUDA.zeros(Float64, my_max_local + my_max_recv)
     d_send  = CUDA.zeros(Float64, my_max_send)
     d_w     = CUDA.zeros(Float64, my_max_local)
-    d_back_cache = CUDA.zeros(Float64, my_max_local + my_max_recv)
+    d_back_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
+
+    function backgrad_cache!()
+        if d_back_cache_ref[] === nothing
+            d_back_cache_ref[] = CUDA.zeros(Float64, my_max_local + my_max_recv)
+        end
+        return d_back_cache_ref[]::CuVector{Float64}
+    end
 
     # 混合路由器：同节点CPU拷贝 + 跨节点MPI
     function hybrid_memory_router!(my_cs, topos_for_otf, send_bufs, recv_bufs)
@@ -988,6 +1006,7 @@ function CuDistributedFunctions(
     _backgrad = (idx, θ, lv, rv) -> begin
         n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeHybrid, basis, ham, pool, comm; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
+        d_back_cache = backgrad_cache!()
         for chunk_idx in 1:n_my
             ld = my_chunk_dims[chunk_idx]
             if ld > 0
