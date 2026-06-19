@@ -413,7 +413,19 @@ end
 function CuDistributedFunctions(
     ::Type{ModeNVLink},
     basis::BasisManager,
+    ham::BinaryQubitAABB,
+    comm::MPI.Comm;
+    num_phases::Int=2,
+    tol::Float64=1e-12,
+)
+    return CuDistributedFunctions(ModeNVLink, basis, ham, nothing, comm; num_phases=num_phases, tol=tol)
+end
+
+function CuDistributedFunctions(
+    ::Type{ModeNVLink},
+    basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv_h,TK,TV},
+    pool,
     comm::MPI.Comm;
     num_phases::Int=2,
     tol::Float64=1e-12,
@@ -440,6 +452,13 @@ function CuDistributedFunctions(
     cpu_otfs, cu_otfs = build_distributed_cu_otfs(basis, ham, tol)
     n_otfs = length(cu_otfs)
 
+    n_pool = pool === nothing ? 0 : length(pool)
+    pool_cpu_otfs = Vector{Vector{OTF}}(undef, n_pool)
+    pool_cu_otfs = Vector{Vector{CuOTF}}(undef, n_pool)
+    for i in 1:n_pool
+        pool_cpu_otfs[i], pool_cu_otfs[i] = build_distributed_cu_otfs(basis, pool[i], tol)
+    end
+
     # [otf_idx, phase]
     sub_topos = Matrix{CuSubTopology}(undef, n_otfs, num_phases)
     for i in 1:n_otfs, p in 1:num_phases
@@ -447,14 +466,26 @@ function CuDistributedFunctions(
             num_phases=num_phases, phase_idx=p - 1)
     end
 
-    max_send_dim = n_otfs == 0 ? 0 : maximum(t.send_dim for t in sub_topos)
-    max_recv_dim = n_otfs == 0 ? 0 : maximum(t.recv_dim for t in sub_topos)
+    # Pool topologies are indexed by [pool_idx][pool_otf_idx, phase].
+    pool_sub_topos = [Matrix{CuSubTopology}(undef, length(pool_cpu_otfs[i]), num_phases) for i in 1:n_pool]
+    for i in 1:n_pool, j in 1:length(pool_cpu_otfs[i]), p in 1:num_phases
+        pool_sub_topos[i][j, p] = CuSubTopology(basis, pool_cpu_otfs[i][j], gmap;
+            num_phases=num_phases, phase_idx=p - 1)
+    end
 
-    hvec_cache_scalars = local_dim + max_recv_dim
-    hvec_send_scalars = max_send_dim
-    hvec_recv_scalars = max_recv_dim
-    hvec_w_scalars = local_dim
-    hvec_scalar_count = hvec_cache_scalars + hvec_send_scalars + hvec_recv_scalars + hvec_w_scalars
+    all_topos = CuSubTopology[]
+    append!(all_topos, vec(sub_topos))
+    for topos in pool_sub_topos
+        append!(all_topos, vec(topos))
+    end
+    max_send_dim = isempty(all_topos) ? 0 : maximum(t.send_dim for t in all_topos)
+    max_recv_dim = isempty(all_topos) ? 0 : maximum(t.recv_dim for t in all_topos)
+
+    cache_scalars = local_dim + max_recv_dim
+    send_scalars = max_send_dim
+    recv_scalars = max_recv_dim
+    w_scalars = local_dim
+    hvec_scalar_count = cache_scalars + send_scalars + recv_scalars + w_scalars
     hvec_vram_bytes = Int64(hvec_scalar_count) * Int64(sizeof(Float64))
 
     max_local_dim_all = MPI.Allreduce(Int64(local_dim), max, comm)
@@ -463,12 +494,33 @@ function CuDistributedFunctions(
     max_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, max, comm)
     total_hvec_vram_bytes = MPI.Allreduce(hvec_vram_bytes, +, comm)
 
-    d_cache = CUDA.zeros(Float64, hvec_cache_scalars)
-    d_send  = CUDA.zeros(Float64, hvec_send_scalars)
-    d_recv  = CUDA.zeros(Float64, hvec_recv_scalars)
-    d_w     = CUDA.zeros(Float64, hvec_w_scalars)
+    d_cache = CUDA.zeros(Float64, cache_scalars)
+    d_send  = CUDA.zeros(Float64, send_scalars)
+    d_recv  = CUDA.zeros(Float64, recv_scalars)
+    d_w     = CUDA.zeros(Float64, w_scalars)
+    d_left_cache = CUDA.zeros(Float64, cache_scalars)
+    d_right_cache = CUDA.zeros(Float64, cache_scalars)
+    d_send2 = CUDA.zeros(Float64, send_scalars)
+    d_recv2 = CUDA.zeros(Float64, recv_scalars)
 
     d_local_v = @view d_cache[1:local_dim]
+
+    function exchange_ghosts!(topo::CuSubTopology, cache, send, recv)
+        if topo.send_dim > 0
+            @ccall LIB_CUDIST.pack_send_buffer_gpu_f64(
+                topo.ptr::Ptr{Cvoid},
+                pointer(cache)::CuPtr{Float64},
+                pointer(send)::CuPtr{Float64},
+            )::Cvoid
+        end
+        send_vbuf = MPI.VBuffer(send, topo.send_counts)
+        recv_vbuf = MPI.VBuffer(recv, topo.recv_counts)
+        MPI.Alltoallv!(send_vbuf, recv_vbuf, comm)
+        if topo.recv_dim > 0
+            recv_view = @view cache[local_dim + 1 : local_dim + topo.recv_dim]
+            copyto!(recv_view, 1, recv, 1, topo.recv_dim)
+        end
+    end
 
     # ============================================================
     _get_hf = (nelec) -> begin
@@ -495,25 +547,7 @@ function CuDistributedFunctions(
 
         for i in 1:n_otfs, p in 1:num_phases
             topo = sub_topos[i, p]
-
-            if topo.send_dim > 0
-                @ccall LIB_CUDIST.pack_send_buffer_gpu_f64(
-                    topo.ptr::Ptr{Cvoid},
-                    pointer(d_cache)::CuPtr{Float64},
-                    pointer(d_send)::CuPtr{Float64},
-                )::Cvoid
-            end
-
-            # 集体通信：所有rank必须参与
-            send_vbuf = MPI.VBuffer(d_send, topo.send_counts)
-            recv_vbuf = MPI.VBuffer(d_recv, topo.recv_counts)
-            MPI.Alltoallv!(send_vbuf, recv_vbuf, comm)
-
-            if topo.recv_dim > 0
-                recv_view = @view d_cache[local_dim + 1 : local_dim + topo.recv_dim]
-                copyto!(recv_view, 1, d_recv, 1, topo.recv_dim)
-            end
-
+            exchange_ghosts!(topo, d_cache, d_send, d_recv)
             @ccall LIB_CUDIST.compute_hvec_sub_chunk_gpu_f64(
                 cu_basis_dev.ptr::Ptr{Cvoid}, cu_otfs[i].ptr::Ptr{Cvoid},
                 topo.ptr::Ptr{Cvoid},
@@ -524,9 +558,47 @@ function CuDistributedFunctions(
         copyto!(Hv, d_w)
     end
 
-    _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
+    _expm = (idx, θ, v::CuVector{Float64}) -> begin
+        n_pool == 0 && error("CuDistributedFunctions.expm requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        @assert 1 <= idx <= n_pool "CuDistributedFunctions.expm: pool index out of bounds"
+        copyto!(d_local_v, v)
+        for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
+            topo = pool_sub_topos[idx][j, p]
+            exchange_ghosts!(topo, d_cache, d_send, d_recv)
+            @ccall LIB_CUDIST.compute_expm_sub_chunk_gpu_f64(
+                cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid}, Int64(0)::Int64, θ::Cdouble,
+                pointer(d_cache)::CuPtr{Float64},
+            )::Cvoid
+        end
+        copyto!(v, d_local_v)
+        return v
+    end
+
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
-    _backgrad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.backgrad: not yet implemented")
+
+    _backgrad = (idx, θ, lv::CuVector{Float64}, rv::CuVector{Float64}) -> begin
+        n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
+        left_local = @view d_left_cache[1:local_dim]
+        right_local = @view d_right_cache[1:local_dim]
+        copyto!(left_local, lv)
+        copyto!(right_local, rv)
+        local_grad = 0.0
+        for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
+            topo = pool_sub_topos[idx][j, p]
+            exchange_ghosts!(topo, d_left_cache, d_send, d_recv)
+            exchange_ghosts!(topo, d_right_cache, d_send2, d_recv2)
+            local_grad += @ccall LIB_CUDIST.compute_backgrad_sub_chunk_gpu_f64(
+                cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid}, θ::Cdouble,
+                pointer(d_left_cache)::CuPtr{Float64}, pointer(d_right_cache)::CuPtr{Float64},
+            )::Cdouble
+        end
+        copyto!(lv, left_local)
+        copyto!(rv, right_local)
+        return MPI.Allreduce(local_grad, +, comm)
+    end
 
     if rank == 0
         println("\nCuDistributedFunctions (NVLink) built:")
@@ -534,11 +606,12 @@ function CuDistributedFunctions(
         println("  Local dim (r0):         $(local_dim)")
         println("  Max local/chunk dim:    $(max_local_dim_all)")
         println("  Sub-networks:           $(n_otfs)")
+        println("  Pool operators:         $(n_pool)")
         println("  Phases requested:       $(requested_num_phases)")
         println("  Phases effective:       $(num_phases)")
         println("  Max send dim:           $(max_send_dim_all)")
         println("  Max recv dim:           $(max_recv_dim_all)")
-        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(_hvec_bytes(hvec_cache_scalars))) GB, d_send=$(_hvec_gib(_hvec_bytes(hvec_send_scalars))) GB, d_recv=$(_hvec_gib(_hvec_bytes(hvec_recv_scalars))) GB, d_w=$(_hvec_gib(_hvec_bytes(hvec_w_scalars))) GB")
+        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(_hvec_bytes(cache_scalars))) GB, d_send=$(_hvec_gib(_hvec_bytes(send_scalars))) GB, d_recv=$(_hvec_gib(_hvec_bytes(recv_scalars))) GB, d_w=$(_hvec_gib(_hvec_bytes(w_scalars))) GB")
         println("  Peak GPU hvec buffer/rank: $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
         println("  Total GPU hvec buffers:    $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)")
         println()
