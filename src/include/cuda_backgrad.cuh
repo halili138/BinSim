@@ -349,7 +349,7 @@ __global__ void backgrad_pure_b_kernel_2d(
 
 template <typename Ti, typename Tv>
 Tv backgrad_svd_network_otf_gpu(
-    const BasisViewDev<Ti> &basis,
+    const BasisSliceDev<Ti> &basis_slice,
     const NetworkDev<Ti, Tv> &net,
     int64 idx, double theta,
     Tv *__restrict__ lp, 
@@ -363,24 +363,6 @@ Tv backgrad_svd_network_otf_gpu(
     cudaMalloc(&d_res, sizeof(Tv));
     cudaMemset(d_res, 0, sizeof(Tv));
 
-    BasisSliceDev<Ti> basis_slice;
-    basis_slice.num_blocks = basis.num_blocks;
-    basis_slice.num_irreps = basis.num_irreps;
-    basis_slice.max_a_count = basis.max_a_count;
-    basis_slice.max_b_count = basis.max_b_count;
-    basis_slice.dim = basis.dim;
-    basis_slice.block_offsets = basis.block_offsets;
-    basis_slice.block_num_a = basis.block_num_a;
-    basis_slice.block_num_b = basis.block_num_b;
-    basis_slice.block_asym = basis.block_asym;
-    basis_slice.block_bsym = basis.block_bsym;
-    basis_slice.astrs_flat = basis.astrs_flat;
-    basis_slice.bstrs_flat = basis.bstrs_flat;
-    basis_slice.astrs_start = basis.astrs_start;
-    basis_slice.bstrs_start = basis.bstrs_start;
-    basis_slice.block_map = basis.block_map;
-    basis_slice.astr2idx = basis.astr2idx;
-    basis_slice.bstr2idx = basis.bstr2idx;
 
     const double ecd = std::cos(theta) - 1.0;
     const double eco = -std::sin(theta);
@@ -388,8 +370,8 @@ Tv backgrad_svd_network_otf_gpu(
     const double gco = std::cos(theta);
 
     dim3 block(32, 16);
-    dim3 grid((basis.max_b_count + block.x - 1) / block.x,
-              (basis.max_a_count + block.y - 1) / block.y);
+    dim3 grid((basis_slice.max_b_count + block.x - 1) / block.x,
+              (basis_slice.max_a_count + block.y - 1) / block.y);
 
     switch (type)
     {
@@ -428,7 +410,7 @@ Tv backgrad_svd_network_otf_gpu(
     case 2:
     {
         const GroupsSliceDev<Ti, Tv> slice = make_groups_slice(net.pure_b_groups);
-        int rank = net.pure_a_groups.host_ranks[pos];
+        int rank = net.pure_b_groups.host_ranks[pos];
         if (rank == 1)
             backgrad_pure_b_kernel_2d<1, Ti, Tv><<<grid, block>>>(basis_slice, slice, pos, ecd, eco, gcd, gco, lp, rp, d_res);
         else if (rank == 2)
@@ -457,4 +439,17 @@ Tv backgrad_svd_network_otf_gpu(
     cudaFree(d_res);
 
     return h_res;
+}
+
+
+template <typename Ti, typename Tv>
+Tv backgrad_svd_network_otf_gpu(
+    const BasisViewDev<Ti> &basis,
+    const NetworkDev<Ti, Tv> &net,
+    int64 idx, double theta,
+    Tv *__restrict__ lp,
+    Tv *__restrict__ rp)
+{
+    BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+    return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp);
 }

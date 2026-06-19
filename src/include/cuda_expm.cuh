@@ -246,7 +246,7 @@ __global__ void expm_pure_b_kernel_2d(
 
 template <typename Ti, typename Tv>
 void expm_svd_network_otf_gpu(
-    const BasisViewDev<Ti> &basis,
+    const BasisSliceDev<Ti> &basis_slice,
     const NetworkDev<Ti, Tv> &net,
     int64 idx, double theta,
     Tv *__restrict__ dev_vec)
@@ -254,31 +254,13 @@ void expm_svd_network_otf_gpu(
     const uint8 type = net.host_excit_types[idx];
     const int64 pos = net.host_sorted_idxs[idx];
 
-    BasisSliceDev<Ti> basis_slice;
-    basis_slice.num_blocks = basis.num_blocks;
-    basis_slice.num_irreps = basis.num_irreps;
-    basis_slice.max_a_count = basis.max_a_count;
-    basis_slice.max_b_count = basis.max_b_count;
-    basis_slice.dim = basis.dim;
-    basis_slice.block_offsets = basis.block_offsets;
-    basis_slice.block_num_a = basis.block_num_a;
-    basis_slice.block_num_b = basis.block_num_b;
-    basis_slice.block_asym = basis.block_asym;
-    basis_slice.block_bsym = basis.block_bsym;
-    basis_slice.astrs_flat = basis.astrs_flat;
-    basis_slice.bstrs_flat = basis.bstrs_flat;
-    basis_slice.astrs_start = basis.astrs_start;
-    basis_slice.bstrs_start = basis.bstrs_start;
-    basis_slice.block_map = basis.block_map;
-    basis_slice.astr2idx = basis.astr2idx;
-    basis_slice.bstr2idx = basis.bstr2idx;
 
     const double cd = std::cos(theta) - 1.0;
     const double co = std::sin(theta);
 
     dim3 block(32, 16);
-    dim3 grid((basis.max_b_count + block.x - 1) / block.x,
-              (basis.max_a_count + block.y - 1) / block.y);
+    dim3 grid((basis_slice.max_b_count + block.x - 1) / block.x,
+              (basis_slice.max_a_count + block.y - 1) / block.y);
 
     switch (type)
     {
@@ -340,4 +322,16 @@ void expm_svd_network_otf_gpu(
     default:
         break;
     }
+}
+
+
+template <typename Ti, typename Tv>
+void expm_svd_network_otf_gpu(
+    const BasisViewDev<Ti> &basis,
+    const NetworkDev<Ti, Tv> &net,
+    int64 idx, double theta,
+    Tv *__restrict__ dev_vec)
+{
+    BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+    expm_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, dev_vec);
 }
