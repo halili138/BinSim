@@ -660,6 +660,28 @@ function CuDistributedFunctions(
     num_chunks::Int=16,
     tol::Float64=1e-12,
 ) where {Ti,Tv_h,TK,TV}
+    return CuDistributedFunctions(ModeHybrid, basis, ham, nothing, comm; num_chunks=num_chunks, tol=tol)
+end
+
+CuDistributedFunctions(
+    ::ModeHybrid,
+    basis::BasisManager,
+    ham::BinaryQubitAABB,
+    pool,
+    comm::MPI.Comm;
+    num_chunks::Int=16,
+    tol::Float64=1e-12,
+) = CuDistributedFunctions(ModeHybrid, basis, ham, pool, comm; num_chunks=num_chunks, tol=tol)
+
+function CuDistributedFunctions(
+    ::Type{ModeHybrid},
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv_h,TK,TV},
+    pool,
+    comm::MPI.Comm;
+    num_chunks::Int=16,
+    tol::Float64=1e-12,
+) where {Ti,Tv_h,TK,TV}
     rank = MPI.Comm_rank(comm)
     nproc = MPI.Comm_size(comm)
 
@@ -684,9 +706,21 @@ function CuDistributedFunctions(
     cpu_otfs, cu_otfs = build_distributed_cu_otfs(basis, ham, tol)
     n_otfs = length(cu_otfs)
 
+    n_pool = pool === nothing ? 0 : length(pool)
+    pool_cpu_otfs = Vector{Vector{OTF}}(undef, n_pool)
+    pool_cu_otfs = Vector{Vector{CuOTF}}(undef, n_pool)
+    for i in 1:n_pool
+        pool_cpu_otfs[i], pool_cu_otfs[i] = build_distributed_cu_otfs(basis, pool[i], tol)
+    end
+
     sub_topos_all = Matrix{CuSubTopology}(undef, num_chunks, n_otfs)
     for r in 1:num_chunks, i in 1:n_otfs
         sub_topos_all[r, i] = CuSubTopology(basis, cpu_otfs[i], gmaps_all[r])
+    end
+
+    pool_sub_topos_all = [Matrix{CuSubTopology}(undef, num_chunks, length(pool_cpu_otfs[i])) for i in 1:n_pool]
+    for i in 1:n_pool, r in 1:num_chunks, j in 1:length(pool_cpu_otfs[i])
+        pool_sub_topos_all[i][r, j] = CuSubTopology(basis, pool_cpu_otfs[i][j], gmaps_all[r])
     end
 
     chunk_dims    = [gmaps_all[r].local_dim for r in 1:num_chunks]
@@ -694,15 +728,29 @@ function CuDistributedFunctions(
     local_dim     = sum(my_chunk_dims)
     chunk_offsets = vcat(0, cumsum(Int.(my_chunk_dims)))
 
-    max_send_dims = n_otfs == 0 ? zeros(Int64, n_my) :
-        [maximum(t.send_dim for t in sub_topos_all[c, :]) for c in my_chunks]
-    max_recv_dims = n_otfs == 0 ? zeros(Int64, n_my) :
-        [maximum(t.recv_dim for t in sub_topos_all[c, :]) for c in my_chunks]
+    max_send_dims = [
+        maximum(vcat(
+            [t.send_dim for t in sub_topos_all[c, :]],
+            [topo[c, j].send_dim for topo in pool_sub_topos_all for j in 1:size(topo, 2)],
+            [0],
+        )) for c in my_chunks
+    ]
+    max_recv_dims = [
+        maximum(vcat(
+            [t.recv_dim for t in sub_topos_all[c, :]],
+            [topo[c, j].recv_dim for topo in pool_sub_topos_all for j in 1:size(topo, 2)],
+            [0],
+        )) for c in my_chunks
+    ]
 
     host_v_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
     host_w_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
     host_send_bufs = [Vector{Float64}(undef, max_send_dims[idx]) for idx in 1:n_my]
     host_recv_bufs = [Vector{Float64}(undef, max_recv_dims[idx]) for idx in 1:n_my]
+    host_l_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
+    host_r_chunks  = [Vector{Float64}(undef, my_chunk_dims[idx]) for idx in 1:n_my]
+    host_send2_bufs = [Vector{Float64}(undef, max_send_dims[idx]) for idx in 1:n_my]
+    host_recv2_bufs = [Vector{Float64}(undef, max_recv_dims[idx]) for idx in 1:n_my]
 
     my_max_local = n_my == 0 ? 0 : maximum(my_chunk_dims)
     my_max_recv = n_my == 0 ? 0 : maximum(max_recv_dims)
@@ -711,6 +759,7 @@ function CuDistributedFunctions(
     d_cache = CUDA.zeros(Float64, my_max_local + my_max_recv)
     d_send  = CUDA.zeros(Float64, my_max_send)
     d_w     = CUDA.zeros(Float64, my_max_local)
+    d_back_cache = CUDA.zeros(Float64, my_max_local + my_max_recv)
 
     # 混合路由器：同节点CPU拷贝 + 跨节点MPI
     function hybrid_memory_router!(my_cs, topos_for_otf, send_bufs, recv_bufs)
@@ -875,9 +924,129 @@ function CuDistributedFunctions(
         end
     end
 
-    _expm = (idx, θ, v) -> error("CuDistributedFunctions.expm: not yet implemented")
+    _expm = (idx, θ, v) -> begin
+        n_pool == 0 && error("CuDistributedFunctions.expm requires an operator pool; construct with CuDistributedFunctions(ModeHybrid, basis, ham, pool, comm; ...) for VQE usage")
+        @assert 1 <= idx <= n_pool "CuDistributedFunctions.expm: pool index out of bounds"
+        for chunk_idx in 1:n_my
+            ld = my_chunk_dims[chunk_idx]
+            ld > 0 && copyto!(host_v_chunks[chunk_idx], 1, v, chunk_offsets[chunk_idx] + 1, ld)
+        end
+
+        for j in 1:length(pool_cu_otfs[idx])
+            topos = pool_sub_topos_all[idx][:, j]
+            for chunk_idx in 1:n_my
+                c = my_chunks[chunk_idx]
+                topo = topos[c]
+                if topo.send_dim > 0
+                    ld = my_chunk_dims[chunk_idx]
+                    copyto!(d_cache, 1, host_v_chunks[chunk_idx], 1, ld)
+                    @ccall LIB_CUDIST.pack_send_buffer_gpu_f64(
+                        topo.ptr::Ptr{Cvoid},
+                        pointer(d_cache)::CuPtr{Float64},
+                        pointer(d_send)::CuPtr{Float64},
+                    )::Cvoid
+                    copyto!(host_send_bufs[chunk_idx], 1, d_send, 1, topo.send_dim)
+                end
+            end
+
+            hybrid_memory_router!(my_chunks, topos, host_send_bufs, host_recv_bufs)
+
+            for chunk_idx in 1:n_my
+                c = my_chunks[chunk_idx]
+                topo = topos[c]
+                ld = my_chunk_dims[chunk_idx]
+                ld == 0 && continue
+                copyto!(d_cache, 1, host_v_chunks[chunk_idx], 1, ld)
+                if topo.recv_dim > 0
+                    copyto!(d_cache, ld + 1, host_recv_bufs[chunk_idx], 1, topo.recv_dim)
+                end
+                @ccall LIB_CUDIST.compute_expm_sub_chunk_gpu_f64(
+                    cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
+                    topo.ptr::Ptr{Cvoid}, Int64(0)::Int64, θ::Cdouble,
+                    pointer(d_cache)::CuPtr{Float64},
+                )::Cvoid
+                copyto!(host_v_chunks[chunk_idx], 1, d_cache, 1, ld)
+            end
+        end
+
+        for chunk_idx in 1:n_my
+            ld = my_chunk_dims[chunk_idx]
+            ld > 0 && copyto!(v, chunk_offsets[chunk_idx] + 1, host_v_chunks[chunk_idx], 1, ld)
+        end
+        return v
+    end
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
-    _backgrad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.backgrad: not yet implemented")
+    _backgrad = (idx, θ, lv, rv) -> begin
+        n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeHybrid, basis, ham, pool, comm; ...) for VQE usage")
+        @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
+        for chunk_idx in 1:n_my
+            ld = my_chunk_dims[chunk_idx]
+            if ld > 0
+                copyto!(host_l_chunks[chunk_idx], 1, lv, chunk_offsets[chunk_idx] + 1, ld)
+                copyto!(host_r_chunks[chunk_idx], 1, rv, chunk_offsets[chunk_idx] + 1, ld)
+            end
+        end
+
+        local_grad = 0.0
+        for j in 1:length(pool_cu_otfs[idx])
+            topos = pool_sub_topos_all[idx][:, j]
+            for chunk_idx in 1:n_my
+                c = my_chunks[chunk_idx]
+                topo = topos[c]
+                if topo.send_dim > 0
+                    ld = my_chunk_dims[chunk_idx]
+                    copyto!(d_cache, 1, host_l_chunks[chunk_idx], 1, ld)
+                    @ccall LIB_CUDIST.pack_send_buffer_gpu_f64(
+                        topo.ptr::Ptr{Cvoid},
+                        pointer(d_cache)::CuPtr{Float64},
+                        pointer(d_send)::CuPtr{Float64},
+                    )::Cvoid
+                    copyto!(host_send_bufs[chunk_idx], 1, d_send, 1, topo.send_dim)
+
+                    copyto!(d_cache, 1, host_r_chunks[chunk_idx], 1, ld)
+                    @ccall LIB_CUDIST.pack_send_buffer_gpu_f64(
+                        topo.ptr::Ptr{Cvoid},
+                        pointer(d_cache)::CuPtr{Float64},
+                        pointer(d_send)::CuPtr{Float64},
+                    )::Cvoid
+                    copyto!(host_send2_bufs[chunk_idx], 1, d_send, 1, topo.send_dim)
+                end
+            end
+
+            hybrid_memory_router!(my_chunks, topos, host_send_bufs, host_recv_bufs)
+            hybrid_memory_router!(my_chunks, topos, host_send2_bufs, host_recv2_bufs)
+
+            for chunk_idx in 1:n_my
+                c = my_chunks[chunk_idx]
+                topo = topos[c]
+                ld = my_chunk_dims[chunk_idx]
+                ld == 0 && continue
+                copyto!(d_cache, 1, host_l_chunks[chunk_idx], 1, ld)
+                copyto!(d_back_cache, 1, host_r_chunks[chunk_idx], 1, ld)
+                if topo.recv_dim > 0
+                    copyto!(d_cache, ld + 1, host_recv_bufs[chunk_idx], 1, topo.recv_dim)
+                    copyto!(d_back_cache, ld + 1, host_recv2_bufs[chunk_idx], 1, topo.recv_dim)
+                end
+                local_grad += @ccall LIB_CUDIST.compute_backgrad_sub_chunk_gpu_f64(
+                    cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
+                    topo.ptr::Ptr{Cvoid}, θ::Cdouble,
+                    pointer(d_cache)::CuPtr{Float64},
+                    pointer(d_back_cache)::CuPtr{Float64},
+                )::Cdouble
+                copyto!(host_l_chunks[chunk_idx], 1, d_cache, 1, ld)
+                copyto!(host_r_chunks[chunk_idx], 1, d_back_cache, 1, ld)
+            end
+        end
+
+        for chunk_idx in 1:n_my
+            ld = my_chunk_dims[chunk_idx]
+            if ld > 0
+                copyto!(lv, chunk_offsets[chunk_idx] + 1, host_l_chunks[chunk_idx], 1, ld)
+                copyto!(rv, chunk_offsets[chunk_idx] + 1, host_r_chunks[chunk_idx], 1, ld)
+            end
+        end
+        return MPI.Allreduce(local_grad, +, comm)
+    end
 
     d_cache_bytes = _hvec_bytes(my_max_local + my_max_recv)
     d_send_bytes = _hvec_bytes(my_max_send)
@@ -898,6 +1067,7 @@ function CuDistributedFunctions(
         println("  Local dim (r0):         $(local_dim)")
         println("  Max local/chunk dim:    $(max_local_dim_all)")
         println("  Sub-networks:           $(n_otfs)")
+        println("  Pool operators:         $(n_pool)")
         println("  Max send dim:           $(max_send_dim_all)")
         println("  Max recv dim:           $(max_recv_dim_all)")
         println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(d_cache_bytes)) GB, d_send=$(_hvec_gib(d_send_bytes)) GB, d_w=$(_hvec_gib(d_w_bytes)) GB")
