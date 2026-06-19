@@ -10,17 +10,18 @@ _basisname = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
 _nchunks   = length(ARGS) >= 5 ? parse(Int, ARGS[5]) : 8
 
 ENV["OMP_NUM_THREADS"] = _nts
-delete!(ENV, "OMP_PROC_BIND")
+ENV["OMP_PROC_BIND"] = "false"
 delete!(ENV, "OMP_PLACES")
+ENV["OMPI_MCA_btl"] = get(ENV, "OMPI_MCA_btl", "^openib")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
 
 using LinearAlgebra
 using MPI
 using Printf
 
-MPI.Init()
-
 include("../jl/cudistnetwork.jl")
+
+MPI.Init()
 
 function main()
     comm = MPI.COMM_WORLD
