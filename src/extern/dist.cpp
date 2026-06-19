@@ -53,6 +53,25 @@ extern "C"
         }
     }
 
+    void gather_local_v_f64(void *gmap_ptr, void *basis_ptr, const double *local_v, double *global_v)
+    {
+        auto gmap = static_cast<const GlobalMemMap *>(gmap_ptr);
+        auto basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        int64 num_irreps = basis->num_irreps;
+        std::fill(global_v, global_v + basis->dim, 0.0);
+        for (int64 i = 0; i < basis->num_blocks; ++i)
+        {
+            int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
+            if (gmap->block_to_rank[h] == gmap->mpi_rank)
+            {
+                const auto &blk = basis->blocks[i];
+                std::copy(local_v + gmap->block_local_offsets[h],
+                          local_v + gmap->block_local_offsets[h] + blk.num_a * blk.num_b,
+                          global_v + blk.offset);
+            }
+        }
+    }
+
     // ==========================================
     // 2. 分段通信账本 (SubTopology) 接口
     // ==========================================
