@@ -500,8 +500,6 @@ function CuDistributedFunctions(
     d_w     = CUDA.zeros(Float64, w_scalars)
     d_left_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
     d_right_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
-    d_send2 = CUDA.zeros(Float64, send_scalars)
-    d_recv2 = CUDA.zeros(Float64, recv_scalars)
 
     d_local_v = @view d_cache[1:local_dim]
 
@@ -596,7 +594,10 @@ function CuDistributedFunctions(
         for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
             topo = pool_sub_topos[idx][j, p]
             exchange_ghosts!(topo, d_left_cache, d_send, d_recv)
-            exchange_ghosts!(topo, d_right_cache, d_send2, d_recv2)
+            # Reuse d_send/d_recv intentionally: exchange_ghosts! uses blocking
+            # MPI.Alltoallv! and stores received ghost data in the target cache
+            # before returning, so the buffers are safe for the next exchange.
+            exchange_ghosts!(topo, d_right_cache, d_send, d_recv)
             local_grad += @ccall LIB_CUDIST.compute_backgrad_sub_chunk_gpu_f64(
                 cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
                 topo.ptr::Ptr{Cvoid}, θ::Cdouble,
