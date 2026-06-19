@@ -498,8 +498,8 @@ function CuDistributedFunctions(
     d_send  = CUDA.zeros(Float64, send_scalars)
     d_recv  = CUDA.zeros(Float64, recv_scalars)
     d_w     = CUDA.zeros(Float64, w_scalars)
-    d_left_cache = CUDA.zeros(Float64, cache_scalars)
-    d_right_cache = CUDA.zeros(Float64, cache_scalars)
+    d_left_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
+    d_right_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
     d_send2 = CUDA.zeros(Float64, send_scalars)
     d_recv2 = CUDA.zeros(Float64, recv_scalars)
 
@@ -580,6 +580,14 @@ function CuDistributedFunctions(
     _backgrad = (idx, θ, lv::CuVector{Float64}, rv::CuVector{Float64}) -> begin
         n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
+        if d_left_cache_ref[] === nothing
+            d_left_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
+        end
+        if d_right_cache_ref[] === nothing
+            d_right_cache_ref[] = CUDA.zeros(Float64, cache_scalars)
+        end
+        d_left_cache = d_left_cache_ref[]::CuVector{Float64}
+        d_right_cache = d_right_cache_ref[]::CuVector{Float64}
         left_local = @view d_left_cache[1:local_dim]
         right_local = @view d_right_cache[1:local_dim]
         copyto!(left_local, lv)
