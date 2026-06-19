@@ -8,14 +8,14 @@ _ntry   = length(ARGS) >= 7 ? parse(Int, ARGS[7]) : 64
 _phases = length(ARGS) >= 8 ? parse(Int, ARGS[8]) : 2
 
 ENV["OMP_NUM_THREADS"] = _nts
-delete!(ENV, "OMP_PROC_BIND")
+ENV["OMP_PROC_BIND"] = "false"
 delete!(ENV, "OMP_PLACES")
+ENV["OMPI_MCA_btl"] = get(ENV, "OMPI_MCA_btl", "^openib")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
 
-using MPI
-MPI.Init()
-
 include("../jl/cudistnetwork.jl")
+
+MPI.Init()
 
 if abspath(PROGRAM_FILE) == @__FILE__
     comm = MPI.COMM_WORLD

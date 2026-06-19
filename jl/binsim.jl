@@ -11,7 +11,24 @@ using SparseArrays
 using MPI
 
 # 辅助函数：多进程场景下，仅 rank 0 打印诊断信息
-is_rank0_or_serial() = !MPI.Initialized() || MPI.Comm_rank(MPI.COMM_WORLD) == 0
+function _preinit_mpi_rank()
+    for key in (
+        "OMPI_COMM_WORLD_RANK",
+        "PMI_RANK",
+        "PMIX_RANK",
+        "SLURM_PROCID",
+        "MV2_COMM_WORLD_RANK",
+    )
+        if haskey(ENV, key)
+            return parse(Int, ENV[key])
+        end
+    end
+    return 0
+end
+
+function is_rank0_or_serial()
+    return MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) == 0 : _preinit_mpi_rank() == 0
+end
 
 using Random
 using Optim
