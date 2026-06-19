@@ -113,4 +113,28 @@ extern "C"
                                static_cast<const SubTopology *>(topo),
                                chunk_cache, local_w);
     }
+
+    void compute_expm_sub_chunk_f64(void *basis, void *subnet, void *topo, int64_t idx, double theta, const double *input_cache, double *output_local)
+    {
+        compute_expm_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                               static_cast<const Network_OTF<uint32, double> *>(subnet),
+                               static_cast<const SubTopology *>(topo),
+                               idx, theta, input_cache, output_local);
+    }
+
+    double compute_grad_sub_chunk_f64(void *basis, void *subnet, void *topo, int64_t idx, double theta, const double *lv_cache, const double *rv_cache)
+    {
+        return compute_grad_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                                      static_cast<const Network_OTF<uint32, double> *>(subnet),
+                                      static_cast<const SubTopology *>(topo),
+                                      idx, theta, lv_cache, rv_cache);
+    }
+
+    double compute_backgrad_sub_chunk_f64(void *basis, void *subnet, void *topo, int64_t idx, double theta, const double *lv_cache, const double *rv_cache, double *lv_out_local, double *rv_out_local)
+    {
+        return compute_backgrad_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                                          static_cast<const Network_OTF<uint32, double> *>(subnet),
+                                          static_cast<const SubTopology *>(topo),
+                                          idx, theta, lv_cache, rv_cache, lv_out_local, rv_out_local);
+    }
 }

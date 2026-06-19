@@ -2,6 +2,9 @@
 #include "basis.hpp"
 #include "otf.hpp"
 #include "hvec.hpp"
+#include "expm.hpp"
+#include "grad.hpp"
+#include "backgrad.hpp"
 
 
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
@@ -312,6 +315,83 @@ static inline void dispatch_subchunks_by_rank(const BasisView<Ti> &view, const S
     }
 }
 
+
+
+template <typename Ti>
+static inline BasisManager<Ti> make_sub_basis_manager(const BasisManager<Ti> *basis, const SubTopology *topo, std::vector<BlockDesc<Ti>> &virtual_blocks, std::vector<int64> &virtual_block_map)
+{
+    const int64 total_blocks = basis->num_irreps * basis->num_irreps;
+    virtual_blocks.clear();
+    virtual_block_map.assign(total_blocks, -1);
+
+    int64 next_idx = 0;
+    for (int h : topo->target_blocks)
+    {
+        const int64 block_idx = basis->block_map[h];
+        if (block_idx == -1 || topo->block_offsets_in_cache[h] == -1)
+            continue;
+        BlockDesc<Ti> blk = basis->blocks[block_idx];
+        blk.offset = topo->block_offsets_in_cache[h];
+        virtual_blocks.push_back(blk);
+        virtual_block_map[h] = next_idx++;
+    }
+    const int64 num_target_blocks = next_idx;
+
+    for (int64 h = 0; h < total_blocks; ++h)
+    {
+        if (virtual_block_map[h] != -1 || topo->block_offsets_in_cache[h] == -1)
+            continue;
+        const int64 block_idx = basis->block_map[h];
+        if (block_idx == -1)
+            continue;
+        BlockDesc<Ti> blk = basis->blocks[block_idx];
+        blk.offset = topo->block_offsets_in_cache[h];
+        virtual_blocks.push_back(blk);
+        virtual_block_map[h] = next_idx++;
+    }
+
+    BasisManager<Ti> sub_basis = *basis;
+    sub_basis.blocks = virtual_blocks.data();
+    sub_basis.block_map = virtual_block_map.data();
+    sub_basis.num_blocks = num_target_blocks;
+    sub_basis.view = BasisView<Ti>{virtual_blocks.data(), nullptr, num_target_blocks,
+                                   basis->max_a_count, basis->max_b_count,
+                                   virtual_block_map.data(), basis->num_irreps,
+                                   basis->a_idx_map, basis->b_idx_map, nullptr};
+    return sub_basis;
+}
+
+template <typename Ti>
+static inline int64 get_sub_topology_cache_dim(const BasisManager<Ti> *basis, const SubTopology *topo)
+{
+    int64 dim = 0;
+    const int64 total_blocks = basis->num_irreps * basis->num_irreps;
+    for (int64 h = 0; h < total_blocks; ++h)
+    {
+        const int64 offset = topo->block_offsets_in_cache[h];
+        const int64 block_idx = basis->block_map[h];
+        if (offset == -1 || block_idx == -1)
+            continue;
+        const auto &blk = basis->blocks[block_idx];
+        dim = std::max(dim, offset + blk.num_a * blk.num_b);
+    }
+    return dim;
+}
+
+template <typename Ti, typename Tv>
+static inline void copy_sub_topology_targets(const BasisManager<Ti> *basis, const SubTopology *topo, const Tv *src, Tv *dst)
+{
+    for (int h : topo->target_blocks)
+    {
+        const int64 block_idx = basis->block_map[h];
+        if (block_idx == -1)
+            continue;
+        const int64 offset = topo->block_offsets_in_cache[h];
+        const auto &blk = basis->blocks[block_idx];
+        std::copy(src + offset, src + offset + blk.num_a * blk.num_b, dst + offset);
+    }
+}
+
 // =================================================================
 // 4. 最终无状态计算入口：传入完整的 [local_v | 专属 recv_buffer]
 // =================================================================
@@ -351,4 +431,46 @@ void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti,
     dispatch_subchunks_by_rank<1>(view, sub_net->pure_a_groups.data(), sub_net->pure_a_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<2>(view, sub_net->pure_b_groups.data(), sub_net->pure_b_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<3>(view, sub_net->mixed_groups.data(), sub_net->mixed_groups.size(), chunk_cache, local_w);
+}
+
+
+template <typename Ti, typename Tv>
+void compute_expm_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *pool_net, const SubTopology *topo, int64 idx, double theta, const Tv *input_cache, Tv *output_local)
+{
+    std::vector<BlockDesc<Ti>> virtual_blocks;
+    std::vector<int64> virtual_block_map;
+    BasisManager<Ti> sub_basis = make_sub_basis_manager(basis, topo, virtual_blocks, virtual_block_map);
+
+    const int64 cache_dim = get_sub_topology_cache_dim(basis, topo);
+    std::vector<Tv> scratch(input_cache, input_cache + cache_dim);
+
+    expm_svd_network_otf(&sub_basis, pool_net, idx, theta, scratch.data());
+    copy_sub_topology_targets(basis, topo, scratch.data(), output_local);
+}
+
+template <typename Ti, typename Tv>
+Tv compute_grad_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *pool_net, const SubTopology *topo, int64 idx, double theta, const Tv *lv_cache, const Tv *rv_cache)
+{
+    std::vector<BlockDesc<Ti>> virtual_blocks;
+    std::vector<int64> virtual_block_map;
+    BasisManager<Ti> sub_basis = make_sub_basis_manager(basis, topo, virtual_blocks, virtual_block_map);
+
+    return grad_svd_network_otf(&sub_basis, pool_net, idx, theta, lv_cache, rv_cache);
+}
+
+template <typename Ti, typename Tv>
+Tv compute_backgrad_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *pool_net, const SubTopology *topo, int64 idx, double theta, const Tv *lv_cache, const Tv *rv_cache, Tv *lv_out_local, Tv *rv_out_local)
+{
+    std::vector<BlockDesc<Ti>> virtual_blocks;
+    std::vector<int64> virtual_block_map;
+    BasisManager<Ti> sub_basis = make_sub_basis_manager(basis, topo, virtual_blocks, virtual_block_map);
+
+    const int64 cache_dim = get_sub_topology_cache_dim(basis, topo);
+    std::vector<Tv> lv_scratch(lv_cache, lv_cache + cache_dim);
+    std::vector<Tv> rv_scratch(rv_cache, rv_cache + cache_dim);
+
+    const Tv res = backgrad_svd_network_otf(&sub_basis, pool_net, idx, theta, lv_scratch.data(), rv_scratch.data());
+    copy_sub_topology_targets(basis, topo, lv_scratch.data(), lv_out_local);
+    copy_sub_topology_targets(basis, topo, rv_scratch.data(), rv_out_local);
+    return res;
 }
