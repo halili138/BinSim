@@ -194,6 +194,7 @@ function get_reference_state(basis::BasisManager, astrs::Vector{UInt32}, bstrs::
 end
 
 struct SVDGroup{Ti,Tv}
+    original_idx::Int64
     ax::Ti
     bx::Ti
     rank::Int
@@ -288,7 +289,7 @@ function compress_by_svd(A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) wher
         wa[abs.(wa).<1e-12] .= 0
         wb[abs.(wb).<1e-12] .= 0
 
-        svd_groups[g] = SVDGroup{Ti,Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(sub_cs))
+        svd_groups[g] = SVDGroup{Ti,Tv}(Int64(g - 1), ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(sub_cs))
     end
 
     return svd_groups
@@ -343,7 +344,7 @@ function compress_by_svd(pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, tol::Float64=
         wa[abs.(wa).<1e-12] .= 0
         wb[abs.(wb).<1e-12] .= 0
 
-        svd_groups[idx] = SVDGroup{Ti,Tv}(ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(cs))
+        svd_groups[idx] = SVDGroup{Ti,Tv}(Int64(idx - 1), ax, bx, rank, unique_azs, unique_bzs, wa, wb, length(cs))
     end
 
     return svd_groups

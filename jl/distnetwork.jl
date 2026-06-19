@@ -90,6 +90,7 @@ end
 # ==========================================
 function OTF_from_groups(basis::BasisManager, groups::Vector{SVDGroup{Ti,Tv}}) where {Ti,Tv}
     ngs = length(groups)
+    original_idxs = Vector{Int64}(undef, ngs)
     axs = Vector{Ti}(undef, ngs)
     bxs = Vector{Ti}(undef, ngs)
     ranks = Vector{Int64}(undef, ngs)
@@ -101,6 +102,7 @@ function OTF_from_groups(basis::BasisManager, groups::Vector{SVDGroup{Ti,Tv}}) w
     flat_wb = Tv[]
 
     for (g, group) in enumerate(groups)
+        original_idxs[g] = group.original_idx
         axs[g] = group.ax
         bxs[g] = group.bx
         ranks[g] = group.rank
@@ -112,9 +114,9 @@ function OTF_from_groups(basis::BasisManager, groups::Vector{SVDGroup{Ti,Tv}}) w
         append!(flat_wb, vec(group.wb))
     end
 
-    ptr = @ccall LIB_OTF.build_network_otf_f64(
+    ptr = @ccall LIB_DIST.build_network_otf_with_idxs_f64(
         basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
-        axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
+        original_idxs::Ptr{Int64}, axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
         flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv}
     )::Ptr{Cvoid}
 
@@ -349,10 +351,80 @@ function DistributedFunctions(
         return v
     end
 
-    _expm     = (idx, θ, v)           -> error("DistributedFunctions.expm: not yet implemented")
-    _tvec     = (idx, lv, rv)         -> error("DistributedFunctions.tvec: not yet implemented")
-    _grad     = (idx, θ, lv, rv)      -> error("DistributedFunctions.grad: not yet implemented")
-    _backgrad = (idx, θ, lv, rv)      -> error("DistributedFunctions.backgrad: not yet implemented")
+    pool_sub_otfs = ham_sub_otfs
+    pool_sub_topos = ham_sub_topos
+
+    function exchange_into_cache!(src::AbstractVector{Tv}, topo::SubTopology)
+        cache[1:local_dim] .= src
+        if topo.send_dim > 0
+            @ccall LIB_DIST.pack_send_buffer_f64_sub(
+                topo.ptr::Ptr{Cvoid},
+                cache::Ptr{Float64}, send_buf::Ptr{Float64},
+            )::Cvoid
+        end
+        recv_view = @view cache[local_dim+1 : local_dim+topo.recv_dim]
+        MPI.Alltoallv!(MPI.VBuffer(send_buf, topo.send_counts), MPI.VBuffer(recv_view, topo.recv_counts), comm)
+        return cache
+    end
+
+    _expm = (idx, θ, v) -> begin
+        for i in 1:length(pool_sub_otfs), p in 1:effective_num_phases
+            topo = pool_sub_topos[i, p]
+            exchange_into_cache!(v, topo)
+            @ccall LIB_DIST.compute_expm_sub_chunk_f64(
+                basis.ptr::Ptr{Cvoid}, pool_sub_otfs[i].ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid}, (idx - 1)::Int64, θ::Cdouble,
+                cache::Ptr{Float64}, v::Ptr{Float64},
+            )::Cvoid
+        end
+        return nothing
+    end
+
+    _tvec = (idx, lv, rv) -> error("DistributedFunctions.tvec: not yet implemented")
+
+    _grad = (idx, θ, lv, rv) -> begin
+        local_grad = zero(Tv)
+        lv_cache = Vector{Tv}(undef, length(cache))
+        rv_cache = Vector{Tv}(undef, length(cache))
+
+        for i in 1:length(pool_sub_otfs), p in 1:effective_num_phases
+            topo = pool_sub_topos[i, p]
+            exchange_into_cache!(lv, topo)
+            lv_cache .= cache
+            exchange_into_cache!(rv, topo)
+            rv_cache .= cache
+            local_grad += @ccall LIB_DIST.compute_grad_sub_chunk_f64(
+                basis.ptr::Ptr{Cvoid}, pool_sub_otfs[i].ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid}, (idx - 1)::Int64, θ::Cdouble,
+                lv_cache::Ptr{Float64}, rv_cache::Ptr{Float64},
+            )::Cdouble
+        end
+
+        return MPI.Allreduce(local_grad, +, comm)
+    end
+
+    _backgrad = (idx, θ, lv, rv) -> begin
+        _expm(idx, -θ, lv)
+        local_res = zero(Tv)
+        lv_cache = Vector{Tv}(undef, length(cache))
+        rv_cache = Vector{Tv}(undef, length(cache))
+
+        for i in 1:length(pool_sub_otfs), p in 1:effective_num_phases
+            topo = pool_sub_topos[i, p]
+            exchange_into_cache!(lv, topo)
+            lv_cache .= cache
+            exchange_into_cache!(rv, topo)
+            rv_cache .= cache
+            local_res += @ccall LIB_DIST.compute_grad_sub_chunk_f64(
+                basis.ptr::Ptr{Cvoid}, pool_sub_otfs[i].ptr::Ptr{Cvoid},
+                topo.ptr::Ptr{Cvoid}, (idx - 1)::Int64, θ::Cdouble,
+                lv_cache::Ptr{Float64}, rv_cache::Ptr{Float64},
+            )::Cdouble
+        end
+
+        _expm(idx, -θ, rv)
+        return MPI.Allreduce(local_res, +, comm)
+    end
 
     _pool_otf = OTF(C_NULL, 0, 0)
 

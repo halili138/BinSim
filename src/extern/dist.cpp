@@ -92,6 +92,27 @@ extern "C"
             astr, bstr, coeff, local_vec);
     }
 
+
+
+    void *build_network_otf_with_idxs_f64(
+        void *basis_ptr, int64_t norb, int64_t ngs,
+        const int64_t *original_idxs, const uint32_t *axs, const uint32_t *bxs,
+        const int64_t *ranks, const int64_t *num_zas, const int64_t *num_zbs,
+        const uint32_t *flat_zas, const uint32_t *flat_zbs,
+        const double *flat_wa, const double *flat_wb)
+    {
+        auto basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
+        auto net = static_cast<Network_OTF<uint32, double> *>(build_network_otf<uint32, double>(
+            basis, norb, ngs, axs, bxs, ranks, num_zas, num_zbs, flat_zas, flat_zbs, flat_wa, flat_wb));
+
+        for (auto *bucket : {&net->diag_groups, &net->pure_a_groups, &net->pure_b_groups, &net->mixed_groups})
+        {
+            for (auto &g : *bucket)
+                g.original_idx = original_idxs[g.original_idx];
+        }
+        return static_cast<void *>(net);
+    }
+
     // ==========================================
     // 3. 计算与打包核心接口
     // ==========================================
@@ -112,5 +133,21 @@ extern "C"
                                static_cast<const Network_OTF<uint32, double> *>(subnet),
                                static_cast<const SubTopology *>(topo),
                                chunk_cache, local_w);
+    }
+
+    double compute_grad_sub_chunk_f64(void *basis, void *subnet, void *topo, int64_t idx, double theta, const double *lp, const double *rp)
+    {
+        return compute_grad_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                                      static_cast<const Network_OTF<uint32, double> *>(subnet),
+                                      static_cast<const SubTopology *>(topo),
+                                      idx, theta, lp, rp);
+    }
+
+    void compute_expm_sub_chunk_f64(void *basis, void *subnet, void *topo, int64_t idx, double theta, const double *chunk_cache, double *local_v)
+    {
+        compute_expm_sub_chunk(static_cast<const BasisManager<uint32> *>(basis),
+                               static_cast<const Network_OTF<uint32, double> *>(subnet),
+                               static_cast<const SubTopology *>(topo),
+                               idx, theta, chunk_cache, local_v);
     }
 }

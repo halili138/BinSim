@@ -2,6 +2,8 @@
 #include "basis.hpp"
 #include "otf.hpp"
 #include "hvec.hpp"
+#include "grad.hpp"
+#include "expm.hpp"
 
 
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
@@ -309,6 +311,142 @@ static inline void dispatch_subchunks_by_rank(const BasisView<Ti> &view, const S
             }
         }
         start = end;
+    }
+}
+
+
+template <typename Ti>
+struct VirtualBasisManager
+{
+    std::vector<BlockDesc<Ti>> blocks;
+    std::vector<int64> block_map;
+    BasisManager<Ti> basis;
+};
+
+template <typename Ti>
+static inline VirtualBasisManager<Ti> make_virtual_basis_manager(const BasisManager<Ti> *basis, const SubTopology *topo)
+{
+    VirtualBasisManager<Ti> holder;
+    int64 num_irreps = basis->num_irreps;
+    holder.block_map.assign(num_irreps * num_irreps, -1);
+
+    int64 next_idx = 0;
+    for (int h : topo->target_blocks)
+    {
+        BlockDesc<Ti> blk = basis->blocks[basis->block_map[h]];
+        blk.offset = topo->block_offsets_in_cache[h];
+        holder.blocks.push_back(blk);
+        holder.block_map[h] = next_idx++;
+    }
+    for (int h = 0; h < num_irreps * num_irreps; ++h)
+    {
+        if (holder.block_map[h] == -1 && topo->block_offsets_in_cache[h] != -1)
+        {
+            BlockDesc<Ti> blk = basis->blocks[basis->block_map[h]];
+            blk.offset = topo->block_offsets_in_cache[h];
+            holder.blocks.push_back(blk);
+            holder.block_map[h] = next_idx++;
+        }
+    }
+
+    holder.basis = *basis;
+    holder.basis.blocks = holder.blocks.data();
+    holder.basis.block_map = holder.block_map.data();
+    holder.basis.num_blocks = topo->target_blocks.size();
+    return holder;
+}
+
+template <typename Ti, typename Tv>
+static inline bool find_group_by_original_idx(const Network_OTF<Ti, Tv> *net, int64 idx, uint8 &type, int64 &pos)
+{
+    auto find_in = [&](const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, uint8 t) -> bool {
+        for (int64 i = 0; i < (int64)groups.size(); ++i)
+        {
+            if (groups[i].original_idx == idx)
+            {
+                type = t;
+                pos = i;
+                return true;
+            }
+        }
+        return false;
+    };
+    return find_in(net->diag_groups, 0) || find_in(net->pure_a_groups, 1) ||
+           find_in(net->pure_b_groups, 2) || find_in(net->mixed_groups, 3);
+}
+
+template <typename Ti, typename Tv>
+Tv compute_grad_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net,
+                          const SubTopology *topo, int64 idx, double theta, const Tv *lp, const Tv *rp)
+{
+    uint8 type = 0;
+    int64 pos = -1;
+    if (!find_group_by_original_idx(sub_net, idx, type, pos))
+        return {};
+
+    auto view_basis = make_virtual_basis_manager(basis, topo);
+    switch (type)
+    {
+    case 0: {
+        const auto &g = sub_net->diag_groups[pos];
+        return g.rank == 1 ? grad_contract_diag_otf_impl<1>(&view_basis.basis, g, theta, lp, rp) :
+               g.rank == 2 ? grad_contract_diag_otf_impl<2>(&view_basis.basis, g, theta, lp, rp) :
+                             grad_contract_diag_otf_impl<0>(&view_basis.basis, g, theta, lp, rp);
+    }
+    case 1: {
+        const auto &g = sub_net->pure_a_groups[pos];
+        return g.rank == 1 ? grad_contract_pure_a_otf_impl<1>(&view_basis.basis, g, theta, lp, rp) :
+               g.rank == 2 ? grad_contract_pure_a_otf_impl<2>(&view_basis.basis, g, theta, lp, rp) :
+                             grad_contract_pure_a_otf_impl<0>(&view_basis.basis, g, theta, lp, rp);
+    }
+    case 2: {
+        const auto &g = sub_net->pure_b_groups[pos];
+        return g.rank == 1 ? grad_contract_pure_b_otf_impl<1>(&view_basis.basis, g, theta, lp, rp) :
+               g.rank == 2 ? grad_contract_pure_b_otf_impl<2>(&view_basis.basis, g, theta, lp, rp) :
+                             grad_contract_pure_b_otf_impl<0>(&view_basis.basis, g, theta, lp, rp);
+    }
+    default: {
+        const auto &g = sub_net->mixed_groups[pos];
+        return g.rank == 1 ? grad_contract_mixed_otf_impl<1>(&view_basis.basis, g, theta, lp, rp) :
+               g.rank == 2 ? grad_contract_mixed_otf_impl<2>(&view_basis.basis, g, theta, lp, rp) :
+                             grad_contract_mixed_otf_impl<0>(&view_basis.basis, g, theta, lp, rp);
+    }
+    }
+}
+
+template <typename Ti, typename Tv>
+void compute_expm_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *sub_net,
+                            const SubTopology *topo, int64 idx, double theta, const Tv *chunk_cache, Tv *local_v)
+{
+    uint8 type = 0;
+    int64 pos = -1;
+    if (!find_group_by_original_idx(sub_net, idx, type, pos))
+        return;
+
+    int64 scratch_dim = 0;
+    for (int h = 0; h < basis->num_irreps * basis->num_irreps; ++h)
+    {
+        if (topo->block_offsets_in_cache[h] != -1)
+        {
+            const auto &blk = basis->blocks[basis->block_map[h]];
+            scratch_dim = std::max(scratch_dim, topo->block_offsets_in_cache[h] + blk.num_a * blk.num_b);
+        }
+    }
+    std::vector<Tv> scratch(chunk_cache, chunk_cache + scratch_dim);
+    auto view_basis = make_virtual_basis_manager(basis, topo);
+    switch (type)
+    {
+    case 0: { const auto &g = sub_net->diag_groups[pos]; if (g.rank == 1) expm_contract_diag_otf_impl<1>(&view_basis.basis, g, theta, scratch.data()); else if (g.rank == 2) expm_contract_diag_otf_impl<2>(&view_basis.basis, g, theta, scratch.data()); else expm_contract_diag_otf_impl<0>(&view_basis.basis, g, theta, scratch.data()); break; }
+    case 1: { const auto &g = sub_net->pure_a_groups[pos]; if (g.rank == 1) expm_contract_pure_a_otf_impl<1>(&view_basis.basis, g, theta, scratch.data()); else if (g.rank == 2) expm_contract_pure_a_otf_impl<2>(&view_basis.basis, g, theta, scratch.data()); else expm_contract_pure_a_otf_impl<0>(&view_basis.basis, g, theta, scratch.data()); break; }
+    case 2: { const auto &g = sub_net->pure_b_groups[pos]; if (g.rank == 1) expm_contract_pure_b_otf_impl<1>(&view_basis.basis, g, theta, scratch.data()); else if (g.rank == 2) expm_contract_pure_b_otf_impl<2>(&view_basis.basis, g, theta, scratch.data()); else expm_contract_pure_b_otf_impl<0>(&view_basis.basis, g, theta, scratch.data()); break; }
+    default: { const auto &g = sub_net->mixed_groups[pos]; if (g.rank == 1) expm_contract_mixed_otf_impl<1>(&view_basis.basis, g, theta, scratch.data()); else if (g.rank == 2) expm_contract_mixed_otf_impl<2>(&view_basis.basis, g, theta, scratch.data()); else expm_contract_mixed_otf_impl<0>(&view_basis.basis, g, theta, scratch.data()); break; }
+    }
+
+    for (int h : topo->target_blocks)
+    {
+        const auto &blk = basis->blocks[basis->block_map[h]];
+        const int64 off = topo->block_offsets_in_cache[h];
+        std::copy(scratch.data() + off, scratch.data() + off + blk.num_a * blk.num_b, local_v + off);
     }
 }
 
