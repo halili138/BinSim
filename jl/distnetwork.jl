@@ -222,6 +222,8 @@ struct DistributedFunctions{Tv}
     ham_sub_topos::Matrix{SubTopology}
     pool_sub_otfs::Vector{OTF}
     pool_sub_topos::Matrix{SubTopology}
+    pool_global_to_fragment::Vector{Int}
+    pool_fragment_to_global::Vector{Int}
 
     # === 预分配缓冲区 ==============
     cache::Vector{Tv}       # local_dim + max_recv_dim
@@ -242,7 +244,6 @@ struct DistributedFunctions{Tv}
     tvec::Function
     grad::Function
     backgrad::Function
-    pool_otf::OTF
 end
 
 
@@ -282,6 +283,8 @@ function DistributedFunctions(
 
     pool_sub_otfs = build_distributed_otfs(basis, pool, tol)
     n_pool = length(pool_sub_otfs)
+    pool_global_to_fragment = collect(1:n_pool)
+    pool_fragment_to_global = collect(1:n_pool)
     # Exponential rotations must see a simultaneous snapshot of all paired
     # amplitudes.  Keep pool operators in a single communication phase even
     # when hvec uses phased accumulation.
@@ -380,6 +383,7 @@ function DistributedFunctions(
     end
 
     _expm = (idx, θ, v) -> begin
+        n_pool == 0 && error("DistributedFunctions.expm requires an operator pool; construct with DistributedFunctions(basis, ham, pool, comm; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "DistributedFunctions.expm: pool index out of bounds"
         cache[1:local_dim] .= v
 
@@ -412,6 +416,7 @@ function DistributedFunctions(
     _tvec     = (idx, lv, rv)         -> error("DistributedFunctions.tvec: not yet implemented")
     _grad     = (idx, θ, lv, rv)      -> error("DistributedFunctions.grad: not yet implemented")
     _backgrad = (idx, θ, lv, rv) -> begin
+        n_pool == 0 && error("DistributedFunctions.backgrad requires an operator pool; construct with DistributedFunctions(basis, ham, pool, comm; ...) for VQE usage")
         @assert 1 <= idx <= n_pool "DistributedFunctions.backgrad: pool index out of bounds"
         cache[1:local_dim] .= lv
         back_cache[1:local_dim] .= rv
@@ -454,8 +459,6 @@ function DistributedFunctions(
         return MPI.Allreduce(local_grad, +, comm)
     end
 
-    _pool_otf = OTF(C_NULL, 0, 0)
-
     if rank == 0
         println("\nDistributedFunctions built:")
 
@@ -479,9 +482,10 @@ function DistributedFunctions(
     return DistributedFunctions{Tv}(
         comm, rank, size, basis, gmap, local_dim,
         ham_sub_otfs, ham_sub_topos, pool_sub_otfs, pool_sub_topos,
+        pool_global_to_fragment, pool_fragment_to_global,
         cache, back_cache, local_w, send_buf,
         _hvec, _normalize, _zeros, _get_hf, _get_init, _inner,
-        _expm, _tvec, _grad, _backgrad, _pool_otf,
+        _expm, _tvec, _grad, _backgrad,
     )
 end
 
