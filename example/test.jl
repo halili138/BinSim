@@ -12,7 +12,7 @@ mole.ratio = 1.0
 mole.basis = ARGS[2]
 
 build(mole)
-
+mole.orbsym = Int64.(mole.orbsym .% 10)
 # println(mole.orbsym)
 
 # blocks, block_map = get_sym_blocks(mole.norb, mole.nelec, mole.orbsym, 0, UInt32)
@@ -26,15 +26,19 @@ ham   = JW_hamiltonian(mole, spin="aabb")
 ham   = BinaryQubitAABB(ham.axs, ham.bxs, ham.azs, ham.bzs, Tv.(ham.cs))
 
 # # 对角化相关test
-e_fci, v_fci = run_fci(basis, ham, get_hf(basis, mole.nelec, Tv=Tv))
+# e_fci, v_fci = run_fci(basis, ham, get_hf(basis, mole.nelec, Tv=Tv))
 # e_fcis, v_fcis = run_fci(basis, ham, k=3)
 
-# VQE相关test
 orbs = Orbitals()
 kernel(mole, orbs, generalize=false)
 pool = FEB(orbs, Tv=Tv)
+
+# VQE相关test
+orbs = Orbitals()
+kernel(mole, orbs, generalize=true)
+pool = FEB(orbs, Tv=Tv)
 # e_vqe, v_vqe, x_vqe = run_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci)
-run_exact_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci)
+# run_exact_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci)
 # run_adapt_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci, vqe_options=VQE_OPTIONS(ftol=1e-8, gtol=1e-6))
 
 # # 后处理相关test

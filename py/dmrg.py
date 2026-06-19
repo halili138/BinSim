@@ -1,4 +1,12 @@
-import os, sys, math
+import os
+
+# # 在导入任何科学计算库之前设置
+# os.environ["OMP_NUM_THREADS"] = "8"
+# os.environ["MKL_NUM_THREADS"] = "8"
+# os.environ["OPENBLAS_NUM_THREADS"] = "8"
+# os.environ["NUMEXPR_NUM_THREADS"] = "8"
+
+import sys, math
 import shutil
 import numpy as np
 import opt_einsum
@@ -238,14 +246,8 @@ def run_block2_dmrg(
         scratch=scratch,
         symm_type=SymmetryTypes.SU2,
         n_threads=n_threads,
-        stack_mem=int(2 * 1024**3),  # 2 GB；大体系可调到 10-30 GB
+        stack_mem=int(100 * 1024**3),  # 2 GB；大体系可调到 10-30 GB
     )
-    # driver = DMRGDriver(
-    #     scratch=scratch,
-    #     symm_type=SymmetryTypes.SU2,
-    #     n_threads=n_threads,
-    #     stack_mem=int(8 * 1024**3),
-    # )
 
     try:
         # 这里不使用点群对称性，所以 orb_sym=None
@@ -301,16 +303,16 @@ def run_block2_dmrg(
 
 
 def test():
-    geo = mole_geo("c2", 0.5)
+    geo = mole_geo("c2", 1.0)
 
     mol = gto.M(
         atom=geo,
         basis="cc-pvdz",
         spin=0,
-        symmetry=True,
+        symmetry="D2h",
     )
 
-    print(f"Use symmetry. Molecule point group: {mol.topgroup}")
+    print(f"Use symmetry. Molecule point group: {mol.groupname}")
     norb = mol.nao_nr()
     nelec = mol.nelec
 
