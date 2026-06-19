@@ -200,6 +200,11 @@ end
 #   Hv = funcs.zeros()
 #   funcs.hvec(v, Hv)
 #   funcs.normalize(v)
+# First distributed VQE milestone:
+#   supported:     hvec, expm, grad, backgrad
+#   not supported: batchgrad, batchexpm, batchtran, backtran
+# ADAPT-VQE paths that need batchgrad intentionally fail with a clear
+# diagnostic until DistributedFunctions is expanded to match OTF_Functions.
 # ============================================================
 struct DistributedFunctions{Tv}
     # === MPI ======================
@@ -237,10 +242,18 @@ struct DistributedFunctions{Tv}
     pool_otf::OTF
 end
 
+function Base.getproperty(funcs::DistributedFunctions, name::Symbol)
+    if name in (:batchgrad, :batchexpm, :batchtran, :backtran)
+        error("DistributedFunctions.$(name): not supported in the first distributed VQE milestone. Supported operations are hvec, expm, grad, and backgrad; unsupported operations are batchgrad, batchexpm, batchtran, and backtran. ADAPT-VQE requires batchgrad and is not available with DistributedFunctions yet.")
+    end
+    return getfield(funcs, name)
+end
+
 
 function DistributedFunctions(
     basis::BasisManager,
     ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    pool::Vector{BinaryQubitAABB{Ti,Tv,TK,TV}},
     comm::MPI.Comm;
     tol::Float64=1e-12,
     num_phases::Int=1,
@@ -349,15 +362,62 @@ function DistributedFunctions(
         return v
     end
 
-    _expm     = (idx, θ, v)           -> error("DistributedFunctions.expm: not yet implemented")
-    _tvec     = (idx, lv, rv)         -> error("DistributedFunctions.tvec: not yet implemented")
-    _grad     = (idx, θ, lv, rv)      -> error("DistributedFunctions.grad: not yet implemented")
-    _backgrad = (idx, θ, lv, rv)      -> error("DistributedFunctions.backgrad: not yet implemented")
+    _pool_otf = isempty(pool) ? OTF(C_NULL, 0, 0) : OTF(basis, pool)
 
-    _pool_otf = OTF(C_NULL, 0, 0)
+    _gather_global = (local_v::AbstractVector{Tv}) -> begin
+        global_partial = zeros(Tv, basis.dim)
+        global_v = zeros(Tv, basis.dim)
+        @ccall LIB_DIST.gather_local_v_f64(
+            gmap.ptr::Ptr{Cvoid}, basis.ptr::Ptr{Cvoid},
+            local_v::Ptr{Float64}, global_partial::Ptr{Float64},
+        )::Cvoid
+        MPI.Allreduce!(global_partial, global_v, +, comm)
+        return global_v
+    end
+
+    _scatter_global! = (global_v::AbstractVector{Tv}, local_v::AbstractVector{Tv}) -> begin
+        @ccall LIB_DIST.scatter_global_v_f64(
+            gmap.ptr::Ptr{Cvoid}, basis.ptr::Ptr{Cvoid},
+            global_v::Ptr{Float64}, local_v::Ptr{Float64},
+        )::Cvoid
+        return local_v
+    end
+
+    _require_pool = (op::String) -> begin
+        isempty(pool) && error("DistributedFunctions.$(op): requires a non-empty operator pool")
+    end
+
+    # Milestone implementations gather the distributed state, reuse the serial
+    # OTF kernels, and scatter mutated vectors back to each rank. This keeps VQE
+    # objective/gradient code working before distributed pool kernels exist.
+    _expm = (idx, θ, v) -> begin
+        _require_pool("expm")
+        gv = _gather_global(v)
+        expm_svd!(basis, _pool_otf, idx, θ, gv)
+        _scatter_global!(gv, v)
+        return nothing
+    end
+    _tvec = (idx, lv, rv) -> error("DistributedFunctions.tvec: not supported in the first distributed VQE milestone")
+    _grad = (idx, θ, lv, rv) -> begin
+        _require_pool("grad")
+        glv = _gather_global(lv)
+        grv = _gather_global(rv)
+        return grad_svd(basis, _pool_otf, idx, θ, glv, grv)
+    end
+    _backgrad = (idx, θ, lv, rv) -> begin
+        _require_pool("backgrad")
+        glv = _gather_global(lv)
+        grv = _gather_global(rv)
+        g = back_grad_svd!(basis, _pool_otf, idx, θ, glv, grv)
+        _scatter_global!(glv, lv)
+        _scatter_global!(grv, rv)
+        return g
+    end
 
     if rank == 0
         println("\nDistributedFunctions built:")
+        println("  VQE milestone support: hvec, expm, grad, backgrad")
+        println("  Not yet supported:     batchgrad, batchexpm, batchtran, backtran")
 
         @printf("  MPI ranks:               %d\n", size)
         @printf("  Local dim (rank0):       %d\n", local_dim)
@@ -381,6 +441,16 @@ function DistributedFunctions(
         _hvec, _normalize, _zeros, _get_hf, _get_init, _inner,
         _expm, _tvec, _grad, _backgrad, _pool_otf,
     )
+end
+
+function DistributedFunctions(
+    basis::BasisManager,
+    ham::BinaryQubitAABB{Ti,Tv,TK,TV},
+    comm::MPI.Comm;
+    tol::Float64=1e-12,
+    num_phases::Int=1,
+) where {Ti,Tv,TK,TV}
+    return DistributedFunctions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], comm; tol=tol, num_phases=num_phases)
 end
 
 function DistributedFunctions(
