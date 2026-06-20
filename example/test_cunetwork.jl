@@ -6,7 +6,9 @@ _nchunk = length(ARGS) >= 4 ? parse(Int, ARGS[4])    : 4
 ENV["OMP_NUM_THREADS"] = "1"
 ENV["OMP_PROC_BIND"]   = "false"
 
-include("../jl/cudistnetwork.jl")
+include("../jl/cudistribute.jl")
+include("../jl/cudistnetwork_common.jl")
+include("../jl/cudistnetwork_serial.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     mole = Mole()
