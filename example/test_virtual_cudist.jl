@@ -19,7 +19,9 @@ delete!(ENV, "OMP_PLACES")
 ENV["OMPI_MCA_btl"] = get(ENV, "OMPI_MCA_btl", "^openib")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
 
-include("../jl/cudistnetwork.jl")
+include("../jl/binsim.jl")
+include("../jl/cuda_distributed.jl")
+CUDADistributed.load!(@__MODULE__)
 
 if _mode != "serial"
     MPI.Init()

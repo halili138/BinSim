@@ -9,27 +9,6 @@ using Combinatorics
 using SparseArrays
 
 using MPI
-
-# 辅助函数：多进程场景下，仅 rank 0 打印诊断信息
-function _preinit_mpi_rank()
-    for key in (
-        "OMPI_COMM_WORLD_RANK",
-        "PMI_RANK",
-        "PMIX_RANK",
-        "SLURM_PROCID",
-        "MV2_COMM_WORLD_RANK",
-    )
-        if haskey(ENV, key)
-            return parse(Int, ENV[key])
-        end
-    end
-    return 0
-end
-
-function is_rank0_or_serial()
-    return MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) == 0 : _preinit_mpi_rank() == 0
-end
-
 using Random
 using Optim
 using NLSolversBase
@@ -43,39 +22,20 @@ using DifferentialEquations
 using RecursiveArrayTools
 using PyCall
 
-slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
-omp_threads     = get(ENV, "OMP_NUM_THREADS",     "Not Set")
-omp_proc_bind   = get(ENV, "OMP_PROC_BIND",       "Not Set")
-omp_places      = get(ENV, "OMP_PLACES",          "Not Set")
+include("runtime_config.jl")
+using .RuntimeConfig: RuntimeSettings, apply_blas_threads!, is_rank0_or_serial,
+    print_runtime_settings
 
-BLAS.set_num_threads(parse(Int, omp_threads))
+include("native_libraries.jl")
+using .NativeLibraries: jld2path, pypath, libpath, LIB_BASIS, LIB_HAM, LIB_OTF,
+    LIB_DIAG, LIB_DIST, LIB_CUDIST, LIB_CUOTF
 
-if is_rank0_or_serial()
-    println("Sys.CPU_THREADS       $(Sys.CPU_THREADS)"       )
-    println("SLURM_CPUS_PER_TASK   $(slurm_cpus)"            )
-    println("OMP_NUM_THREADS       $(omp_threads)"           )
-    println("OMP_PROC_BIND         $(omp_proc_bind)"         )
-    println("OMP_PLACES            $(omp_places)"            )
-    println("BLAS_NUM_THREADS      $(BLAS.get_num_threads())")
-    println("Threads.nthreads()    $(Threads.nthreads())"    )
-    println("")
-end
+include("tolerances.jl")
+using .Tolerances: eps1, eps2, eps3
 
-const jld2path   = joinpath(@__DIR__, "../jld2file/")
-const pypath     = joinpath(@__DIR__, "../py/")
-const libpath    = joinpath(@__DIR__, "../src/lib/")
-
-const LIB_BASIS  = joinpath(libpath, "libbasis.so"  )
-const LIB_HAM    = joinpath(libpath, "libham.so"    )
-const LIB_OTF    = joinpath(libpath, "libotf.so"    )
-const LIB_DIAG   = joinpath(libpath, "libdiag.so"   )
-const LIB_DIST   = joinpath(libpath, "libdist.so"   )
-const LIB_CUDIST = joinpath(libpath, "libcudist.so" )
-const LIB_CUOTF  = joinpath(libpath, "libcuotf.so"  ) 
-
-const eps1::Float64 = 1e-8
-const eps2::Float64 = 1e-12
-const eps3::Float64 = 1e-16
+const runtime_settings = RuntimeSettings()
+apply_blas_threads!(runtime_settings)
+print_runtime_settings(runtime_settings)
 
 include("integer.jl")
 include("tools.jl")
@@ -93,4 +53,3 @@ include("vqe.jl")
 include("method.jl")
 include("vqite.jl")
 include("vqrte.jl")
-include("distnetwork.jl")

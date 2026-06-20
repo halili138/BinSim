@@ -5,7 +5,9 @@
 ENV["OMP_NUM_THREADS"] = "1"
 ENV["OMP_PROC_BIND"] = "false"
 
-include("../jl/cudistnetwork.jl")
+include("../jl/binsim.jl")
+include("../jl/cuda_distributed.jl")
+CUDADistributed.load!(@__MODULE__)
 
 # 生成欺骗引擎的虚拟全局映射
 function build_virtual_gmap(basis::BasisManager, rank::Int, size::Int)

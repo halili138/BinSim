@@ -13,7 +13,9 @@ delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
 
-include("../jl/cudistnetwork.jl")
+include("../jl/binsim.jl")
+include("../jl/cuda_distributed.jl")
+CUDADistributed.load!(@__MODULE__)
 
 if abspath(PROGRAM_FILE) == @__FILE__
     mole = Mole()

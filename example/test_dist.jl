@@ -12,6 +12,8 @@ _ratio = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
 
 
 include("../jl/binsim.jl")
+include("../jl/cpu_distributed.jl")
+CPUDistributed.load!(@__MODULE__)
 
 function test_real_mpi_simulation(name, ratio, basis_name)
     MPI.Init()

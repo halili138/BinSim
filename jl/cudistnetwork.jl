@@ -1,6 +1,4 @@
-include("cunetwork.jl")
-include("cudistnetwork_common.jl")
-include("cudistnetwork_serial.jl")
-include("cudistnetwork_nvlink.jl")
-include("cudistnetwork_davidson.jl")
-include("cudistnetwork_hybrid.jl")
+include("binsim.jl")
+include("cuda_distributed.jl")
+
+CUDADistributed.load!(@__MODULE__)

@@ -8,7 +8,9 @@ ENV["OMP_NUM_THREADS"] = _nts
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
-include("../jl/cunetwork.jl")
+include("../jl/binsim.jl")
+include("../jl/cuda_network.jl")
+CUDANetwork.load!(@__MODULE__)
 
 function run_euler_ite_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v::T, e_scale::Float64;
     dτ::Float64=0.1, max_step::Int64=5000, tol::Float64=1e-10,

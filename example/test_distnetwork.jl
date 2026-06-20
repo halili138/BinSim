@@ -11,6 +11,8 @@ using MPI
 MPI.Init()
 
 include("../jl/binsim.jl")
+include("../jl/cpu_distributed.jl")
+CPUDistributed.load!(@__MODULE__)
 
 if abspath(PROGRAM_FILE) == @__FILE__
     # MPI.Init() already called above

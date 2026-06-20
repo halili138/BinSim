@@ -1,7 +1,9 @@
 ENV["OMP_NUM_THREADS"] = "1"
 ENV["OMP_PROC_BIND"] = "false"
 
-include("../jl/cudistnetwork.jl")
+include("../jl/binsim.jl")
+include("../jl/cuda_distributed.jl")
+CUDADistributed.load!(@__MODULE__)
 
 # =====================================================================
 # 2. 纯 CPU 内存路由器 (完美平替底层的 MPI.Alltoallv!)

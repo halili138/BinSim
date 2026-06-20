@@ -13,6 +13,8 @@ delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 
 include("../jl/binsim.jl")
+include("../jl/cpu_distributed.jl")
+CPUDistributed.load!(@__MODULE__)
 
 MPI.Init()
 
