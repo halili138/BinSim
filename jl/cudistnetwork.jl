@@ -1,5 +1,4 @@
-include("cudistribute.jl")
-
+include("cunetwork.jl")
 include("cudistnetwork_common.jl")
 include("cudistnetwork_serial.jl")
 include("cudistnetwork_nvlink.jl")

@@ -13,9 +13,7 @@ delete!(ENV, "OMP_PROC_BIND")
 delete!(ENV, "OMP_PLACES")
 ENV["JULIA_CUDA_MEMORY_POOL"] = get(ENV, "JULIA_CUDA_MEMORY_POOL", "none")
 
-include("../jl/cudistribute.jl")
-include("../jl/cudistnetwork_common.jl")
-include("../jl/cudistnetwork_serial.jl")
+include("../jl/cudistnetwork.jl")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     mole = Mole()

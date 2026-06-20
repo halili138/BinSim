@@ -1,7 +1,7 @@
 ENV["OMP_NUM_THREADS"] = "1"
 ENV["OMP_PROC_BIND"] = "false"
 
-include("../jl/cudistribute.jl")
+include("../jl/cudistnetwork.jl")
 
 # =====================================================================
 # 2. 纯 CPU 内存路由器 (完美平替底层的 MPI.Alltoallv!)
