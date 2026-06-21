@@ -2,6 +2,7 @@
 #include "cuda_expm.cuh"
 #include "cuda_grad.cuh"
 #include "cuda_backgrad.cuh"
+#include "cuda_batchgrad.cuh"
 
 extern "C"
 {
@@ -94,5 +95,19 @@ extern "C"
         const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
 
         return backgrad_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, lp, rp);
+    }
+
+    void batchgrad_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        const double *__restrict__ thetas,
+        const double *__restrict__ lp,
+        const double *__restrict__ rp,
+        double *__restrict__ grads)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        cuda_batchgrad<uint32, double>(*basis, *net, thetas, lp, rp, grads);
     }
 }

@@ -184,6 +184,7 @@ struct GroupsSliceDev
     const Ti *flat_zas, *flat_zbs;
     const Tv *flat_wa, *flat_wb;
     const int64 *za_start, *zb_start, *wa_start, *wb_start;
+    const int *original_idx;
 };
 
 template <typename Ti, typename Tv>
@@ -362,5 +363,6 @@ FORCE_INLINE GroupsSliceDev<Ti, Tv> make_groups_slice(const GroupsViewDev<Ti, Tv
     s.zb_start = view.zb_start;
     s.wa_start = view.wa_start;
     s.wb_start = view.wb_start;
+    s.original_idx = view.original_idx;
     return s;
 }
