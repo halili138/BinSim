@@ -89,6 +89,13 @@ function backgrad_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float
     )::Cdouble
 end
 
+function batchgrad_cuda!(basis::CuBasisManager, otf::CuOTF, lv::T1, rv::T2, grads::T3, x::T4) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1},T4<:AbstractArray{Tv,1}}
+    @ccall LIB_CUOTF.batchgrad_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        x::CuPtr{Cdouble}, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble}, grads::CuPtr{Cdouble},
+    )::Cvoid
+end
+
 struct CuOTF_Functions
     hvec::Function
     expm::Function
@@ -144,7 +151,7 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         f_backgrad = (idx, θ, lv, rv) -> return backgrad_cuda!(cu_basis, cu_pool_otf, idx, θ, lv, rv)
         # f_backtran = (idx, θ, lv, rv, tlv) -> return back_tran_svd!(basis, pool_otf, idx, θ, lv, rv, tlv)
         # f_batchexpm = (idx, θ, mat, N, j) -> batch_expm_svd!(basis, pool_otf, idx, θ, mat, N, j)
-        # f_batchgrad = (lv, rv, grads, x) -> return batch_grad_svd(basis, pool_otf, x, lv, rv, grads)
+        f_batchgrad = (lv, rv, grads, x) -> batchgrad_cuda!(cu_basis, cu_pool_otf, lv, rv, grads, x)
         # f_batchtran = (lv, rv, trans) -> return batch_tran_svd(basis, pool_otf, lv, rv, trans)
     end
 
