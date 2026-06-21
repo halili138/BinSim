@@ -184,6 +184,130 @@ function run_adapt_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, poo
 end
 
 
+function run_adapt_vqe2(funcs, lv, rv, v0_idxs, v0_vals, e_scale::Float64, nparams::Int64, amplitudes::Vector{Float64}, selec_idxs::Vector{Int64}, adapt_options::ADAPT_OPTIONS, vqe_options::VQE_OPTIONS)
+    println("Performing ADAPT-VQE ... ")
+    
+    if !isempty(amplitudes)
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+        for (i, t) in zip(selec_idxs, amplitudes)
+            funcs.expm(i, t, lv)
+        end
+    end
+
+    zero_grads  = similar(lv, nparams)
+    _zero_grads = zeros(Float64, nparams)
+    zero_amp    = similar(lv, Float64, nparams)
+    zero_amp   .= 0.0
+    iter        = length(amplitudes)
+    gnorm       = 999.
+    gmax        = 999.
+    e_hist      = Float64[]  
+    converged   = false
+
+    @time while !converged
+        iter += 1
+        
+        funcs.hvec(lv, rv)
+        funcs.batchgrad(lv, rv, zero_grads, zero_amp)
+        copyto!(_zero_grads, zero_grads)
+        @. _zero_grads = real(_zero_grads) * 2
+
+        permarray = sortperm(abs.(_zero_grads), rev=true)
+        gnorm     = norm(_zero_grads)
+        max_idx   = 0
+
+        if length(selec_idxs) == 0
+            max_idx = permarray[1]
+        else
+            for idx in permarray
+                if idx != selec_idxs[end]
+                    max_idx = idx
+                    break
+                end
+            end
+        end
+
+        if max_idx == 0
+            println("Cannot add new operator, ADAPT loop finished!")
+            break
+        end
+
+        gmax = abs(_zero_grads[max_idx])
+
+        push!(amplitudes, 0.0)
+        push!(selec_idxs, max_idx)
+
+        cur_energy   = Ref(0.0)
+        cur_gnorm    = Ref(0.0)
+        cur_variance = Ref(0.0)
+        cur_error    = Ref(0.0)
+
+        obj_func = x -> begin
+            fill!(lv, 0.0)
+            lv[v0_idxs] .= v0_vals
+
+            result = @timed energy_objective(funcs.hvec, funcs.expm, funcs.backgrad, selec_idxs, x, lv, rv)
+
+            cur_energy[], gradient, cur_variance[] = result.value
+            cur_gnorm[] = norm(gradient)
+            cur_error[] = abs(cur_energy[] - e_scale)
+
+            vqe_options.verbose > 1 && show_optimze(cur_energy[], cur_gnorm[], cur_variance[], cur_error[])
+            vqe_options.verbose > 2 && show_time(result)
+
+            return cur_energy[], gradient
+        end
+
+        vqe_options.verbose >= 1 && println("Performing VQE optimization ... ")
+
+        time_ops = @elapsed e_opt, amplitudes = optimze_fg!(amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
+
+        vqe_options.verbose == 1 && @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n", 
+                                             time_ops, cur_energy[], cur_gnorm[], cur_variance[], cur_error[])
+        vqe_options.verbose >= 2 && @printf("Converged in %.4f seconds\n", time_ops)
+
+        if !isempty(adapt_options.save_path)
+            jldopen(adapt_options.save_path, "w") do file
+                file["amplitudes"] = amplitudes
+                file["selec_idxs"] = selec_idxs
+            end
+        end
+
+        push!(e_hist, e_opt)
+
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+
+        for (i, t) in zip(selec_idxs, amplitudes)
+            funcs.expm(i, t, lv)
+        end
+
+        cond1::Bool = iter > adapt_options.maxiter
+        cond2::Bool = (gnorm < adapt_options.Gtol && gmax < adapt_options.gtol && cur_variance[] < adapt_options.htol)
+        cond3::Bool = false
+
+        if length(e_hist) > 5
+            delta_e = maximum(abs.(diff(e_hist[end-4:end])))
+            cond3 = delta_e < adapt_options.Δtol
+            cond3 && @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", delta_e, adapt_options.Δtol)
+        end
+
+        converged = cond1 || cond2 || cond3
+
+        if adapt_options.verbose > 0
+            @printf("\nIteration: %d\n",                            iter)
+            @printf("   E0: %.14f\n",                               e_opt)
+            @printf("  err: %9.3e\n",                               e_opt - e_scale)
+            @printf("  |G|: %9.3e    gmax: %9.3e     δ²H: %9.3e\n", gnorm, gmax, cur_variance[])
+            println("============================================================================")
+        end
+    end
+
+    return amplitudes, selec_idxs
+end
+
+
 function krylov_expmv!(f_matvec!::Function, dst::Vector{Tv}, src::Vector{Tv};
     t::Float64=1.0, krylov_dim::Int=30, tol::Float64=1e-12,
 ) where Tv
