@@ -705,6 +705,7 @@ static inline void dispatch_chunks_by_rank_gpu(
         slice.flat_zbs = groups.flat_zbs;
         slice.flat_wa = groups.flat_wa;
         slice.flat_wb = groups.flat_wb;
+        slice.original_idx = groups.original_idx + start;
 
         int block_size = 256;
         int num_sms = 0;
