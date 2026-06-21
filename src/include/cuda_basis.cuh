@@ -23,6 +23,8 @@ struct BasisViewDev
     const int *block_map = nullptr;       // [num_irreps * num_irreps]
     const int *astr2idx = nullptr;
     const int *bstr2idx = nullptr;
+    std::vector<int> host_block_num_a;
+    std::vector<int> host_block_num_b;
 
     BasisViewDev() = default;
     BasisViewDev(const BasisViewDev &) = delete;
@@ -94,6 +96,8 @@ struct BasisViewDev
             cudaFree(const_cast<int *>(bstr2idx));
             bstr2idx = nullptr;
         }
+        host_block_num_a.clear();
+        host_block_num_b.clear();
     }
 
     ~BasisViewDev() { clear(); }
@@ -137,7 +141,12 @@ struct BasisViewDev
             other.bstrs_start = nullptr;
             other.block_map = nullptr;
             other.astr2idx = nullptr;
+            host_block_num_a = std::move(other.host_block_num_a);
+            host_block_num_b = std::move(other.host_block_num_b);
+
             other.bstr2idx = nullptr;
+            other.host_block_num_a.clear();
+            other.host_block_num_b.clear();
         }
         return *this;
     }
@@ -211,6 +220,9 @@ void *upload_basis(const BasisManager<Ti> *hb)
         hbm[i] = (int)hb->block_map[i];
 
     int ms = 1 << hb->norb;
+
+    db->host_block_num_a = hna;
+    db->host_block_num_b = hnb;
 
     db->block_offsets = up(ho.data(), nb);
     db->block_num_a = up(hna.data(), nb);
