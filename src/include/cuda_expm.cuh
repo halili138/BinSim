@@ -275,6 +275,8 @@ __global__ void expm_single_group_regtile_kernel(
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
     double theta,
+    double cd,
+    double co,
     Tv *__restrict__ vec)
 {
     const int bid = blockIdx.x;
@@ -302,24 +304,17 @@ __global__ void expm_single_group_regtile_kernel(
 
     if constexpr (TypeCode == 0)
     {
-        if constexpr (std::is_arithmetic_v<Tv>)
-            return;
-        else
+        compute_phase_dev<Rank, Ti, Tv>(dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos], groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
+        for (int b_offset = 0; b_offset < cur_b; ++b_offset)
         {
-            compute_phase_dev<Rank, Ti, Tv>(dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos], groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
-            for (int b_offset = 0; b_offset < cur_b; ++b_offset)
-            {
-                compute_phase_dev<Rank, Ti, Tv>(bstrs[b_start + b_offset], groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos], groups.flat_wb + groups.wb_start[pos], pb + b_offset, SINGLE_EXPM_BETA_REG_TILE, rank);
-                const Tv vt = single_expm_coeff_from_reg_pb<Rank, Ti, Tv>(pa, pb, rank, b_offset);
-                const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
-                vec[di] *= fast_diag_exp_dev<Tv>(vt, theta);
-            }
+            compute_phase_dev<Rank, Ti, Tv>(bstrs[b_start + b_offset], groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos], groups.flat_wb + groups.wb_start[pos], pb + b_offset, SINGLE_EXPM_BETA_REG_TILE, rank);
+            const Tv vt = single_expm_coeff_from_reg_pb<Rank, Ti, Tv>(pa, pb, rank, b_offset);
+            const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
+            vec[di] *= fast_diag_exp_dev<Tv>(vt, theta);
         }
     }
     else
     {
-        const double cd = std::cos(theta) - 1.0;
-        const double co = std::sin(theta);
         int src_bid = -1;
         Ti src_astr = dst_astr;
         if constexpr (TypeCode == 1 || TypeCode == 3)
@@ -374,6 +369,8 @@ __global__ void expm_single_group_sharedtile_kernel(
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
     double theta,
+    double cd,
+    double co,
     Tv *__restrict__ vec)
 {
     const int bid = blockIdx.x;
@@ -437,17 +434,12 @@ __global__ void expm_single_group_sharedtile_kernel(
 
     if constexpr (TypeCode == 0)
     {
-        if constexpr (std::is_arithmetic_v<Tv>)
-            return;
-        else
+        compute_phase_dev<Rank, Ti, Tv>(dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos], groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
+        for (int b_offset = 0; b_offset < cur_b; ++b_offset)
         {
-            compute_phase_dev<Rank, Ti, Tv>(dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos], groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
-            for (int b_offset = 0; b_offset < cur_b; ++b_offset)
-            {
-                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
-                const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
-                vec[di] *= fast_diag_exp_dev<Tv>(vt, theta);
-            }
+            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
+            const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
+            vec[di] *= fast_diag_exp_dev<Tv>(vt, theta);
         }
     }
     else
@@ -462,8 +454,6 @@ __global__ void expm_single_group_sharedtile_kernel(
             return;
 
         compute_phase_dev<Rank, Ti, Tv>(src_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos], groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
-        const double cd = std::cos(theta) - 1.0;
-        const double co = std::sin(theta);
         const int src_n_b = basis.block_num_b[src_bid];
         const int64 src_row = basis.block_offsets[src_bid] + (int64)sa * src_n_b;
         const int64 dst_row = basis.block_offsets[bid] + (int64)a * n_b;
@@ -481,55 +471,53 @@ __global__ void expm_single_group_sharedtile_kernel(
 template <int TypeCode, typename Ti, typename Tv, bool UseSharedTile>
 static inline void launch_single_group_expm_tile(
     const BasisViewDev<Ti> &basis,
+    const BasisSliceDev<Ti> &basis_slice,
     const GroupsSliceDev<Ti, Tv> &groups,
     int64 pos,
     double theta,
     Tv *__restrict__ dev_vec,
     int host_rank)
 {
+    if constexpr (TypeCode == 0 && std::is_arithmetic_v<Tv>)
+        return;
+
     const int rank = host_rank;
     const int block_size = 256;
-    const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+    const double cd = std::cos(theta) - 1.0;
+    const double co = std::sin(theta);
     if constexpr (UseSharedTile)
     {
         int max_tasks = 0;
-        if ((int)basis.host_block_num_a.size() == basis.num_blocks &&
-            (int)basis.host_block_num_b.size() == basis.num_blocks)
+        for (int bid = 0; bid < basis.num_blocks; ++bid)
         {
-            for (int bid = 0; bid < basis.num_blocks; ++bid)
-            {
-                const int num_a_tiles = (basis.host_block_num_a[bid] + block_size - 1) / block_size;
-                const int num_b_tiles = (basis.host_block_num_b[bid] + TILE_B - 1) / TILE_B;
-                max_tasks = std::max(max_tasks, num_a_tiles * num_b_tiles);
-            }
+            const int num_a_tiles = (basis.host_block_num_a[bid] + block_size - 1) / block_size;
+            const int num_b_tiles = (basis.host_block_num_b[bid] + TILE_B - 1) / TILE_B;
+            max_tasks = std::max(max_tasks, num_a_tiles * num_b_tiles);
         }
-        else
-        {
-            const int max_a_tiles = (basis_slice.max_a_count + block_size - 1) / block_size;
-            const int max_b_tiles = (basis_slice.max_b_count + TILE_B - 1) / TILE_B;
-            max_tasks = max_a_tiles * max_b_tiles;
-        }
-        if (max_tasks == 0)
-            return;
-        dim3 grid(basis_slice.num_blocks, max_tasks);
+        dim3 grid(basis.num_blocks, max_tasks);
         if (rank == 1)
-            expm_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
         else if (rank == 2)
-            expm_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
         else
-            expm_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
     }
     else
     {
-        const int max_a_tiles = (basis_slice.max_a_count + block_size - 1) / block_size;
-        const int max_b_tiles = (basis_slice.max_b_count + SINGLE_EXPM_BETA_REG_TILE - 1) / SINGLE_EXPM_BETA_REG_TILE;
-        dim3 grid(basis_slice.num_blocks, max_a_tiles, max_b_tiles);
+        int max_a_tiles = 0;
+        int max_b_tiles = 0;
+        for (int bid = 0; bid < basis.num_blocks; ++bid)
+        {
+            max_a_tiles = std::max(max_a_tiles, (basis.host_block_num_a[bid] + block_size - 1) / block_size);
+            max_b_tiles = std::max(max_b_tiles, (basis.host_block_num_b[bid] + SINGLE_EXPM_BETA_REG_TILE - 1) / SINGLE_EXPM_BETA_REG_TILE);
+        }
+        dim3 grid(basis.num_blocks, max_a_tiles, max_b_tiles);
         if (rank == 1)
-            expm_single_group_regtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_regtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
         else if (rank == 2)
-            expm_single_group_regtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_regtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
         else
-            expm_single_group_regtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, dev_vec);
+            expm_single_group_regtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
     }
 }
 
@@ -543,19 +531,21 @@ void expm_svd_network_otf_gpu_tile(
 {
     const uint8 type = net.host_excit_types[idx];
     const int64 pos = net.host_sorted_idxs[idx];
+    BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+
     switch (type)
     {
     case 0:
-        launch_single_group_expm_tile<0, Ti, Tv, UseSharedTile>(basis, make_groups_slice(net.diag_groups), pos, theta, dev_vec, net.diag_groups.host_ranks[pos]);
+        launch_single_group_expm_tile<0, Ti, Tv, UseSharedTile>(basis, basis_slice, make_groups_slice(net.diag_groups), pos, theta, dev_vec, net.diag_groups.host_ranks[pos]);
         break;
     case 1:
-        launch_single_group_expm_tile<1, Ti, Tv, UseSharedTile>(basis, make_groups_slice(net.pure_a_groups), pos, theta, dev_vec, net.pure_a_groups.host_ranks[pos]);
+        launch_single_group_expm_tile<1, Ti, Tv, UseSharedTile>(basis, basis_slice, make_groups_slice(net.pure_a_groups), pos, theta, dev_vec, net.pure_a_groups.host_ranks[pos]);
         break;
     case 2:
-        launch_single_group_expm_tile<2, Ti, Tv, UseSharedTile>(basis, make_groups_slice(net.pure_b_groups), pos, theta, dev_vec, net.pure_b_groups.host_ranks[pos]);
+        launch_single_group_expm_tile<2, Ti, Tv, UseSharedTile>(basis, basis_slice, make_groups_slice(net.pure_b_groups), pos, theta, dev_vec, net.pure_b_groups.host_ranks[pos]);
         break;
     case 3:
-        launch_single_group_expm_tile<3, Ti, Tv, UseSharedTile>(basis, make_groups_slice(net.mixed_groups), pos, theta, dev_vec, net.mixed_groups.host_ranks[pos]);
+        launch_single_group_expm_tile<3, Ti, Tv, UseSharedTile>(basis, basis_slice, make_groups_slice(net.mixed_groups), pos, theta, dev_vec, net.mixed_groups.host_ranks[pos]);
         break;
     default:
         break;
