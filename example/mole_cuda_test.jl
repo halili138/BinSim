@@ -1,10 +1,9 @@
-_nts   = length(ARGS) >= 1 ? ARGS[1] : 4
-_alg   = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1
-_name  = length(ARGS) >= 3 ? ARGS[3] : "h12"
-_basis = length(ARGS) >= 4 ? ARGS[4] : "sto-3g"
-_ratio = length(ARGS) >= 5 ? parse(Float64, ARGS[5]) : 1.0
+_alg   = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 1
+_name  = length(ARGS) >= 2 ? ARGS[2] : "h12"
+_basis = length(ARGS) >= 3 ? ARGS[3] : "sto-3g"
+_ratio = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 1.0
 
-ENV["OMP_NUM_THREADS"] = _nts
+ENV["OMP_NUM_THREADS"] = 1
 ENV["OMP_PROC_BIND"] = "close"
 ENV["OMP_PLACES"] = "cores"
 
@@ -47,7 +46,7 @@ function run_euler_ite_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}
 end
 
 function run_vqe_cuda(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0_idxs::T1, v0_vals::T2, e_scale::Float64;
-    x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(),
+    x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(verbose=3),
 ) where {Ti,Tv,K,V,T1<:AbstractArray{Int64,1},T2<:AbstractArray{Tv,1}}
     funcs    = OTF_Functions(basis, ham, pool)
     cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool)

@@ -1,3 +1,7 @@
+ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", 8)
+ENV["OMP_PROC_BIND"] = get(ENV, "OMP_PROC_BIND", "close")
+ENV["OMP_PLACES"] = get(ENV, "OMP_PLACES", "cores")
+
 include("../jl/binsim.jl")
 
 function run_vqe2(
@@ -88,7 +92,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             gtol      = 1e-6, 
             maxiter   = 9999, 
             verbose   = 3, 
-            save_path = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
+            # save_path = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
         )
     )
 end
