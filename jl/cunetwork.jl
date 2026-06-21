@@ -75,6 +75,20 @@ function expm_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, 
     )::Cvoid
 end
 
+function expm_regtile_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, vec::T) where {Tv,T<:AbstractArray{Tv,1}}
+    @ccall LIB_CUOTF.expm_regtile_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64, θ::Cdouble, vec::CuPtr{Cdouble},
+    )::Cvoid
+end
+
+function expm_sharedtile_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, vec::T) where {Tv,T<:AbstractArray{Tv,1}}
+    @ccall LIB_CUOTF.expm_sharedtile_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        (idx-1)::Int64, θ::Cdouble, vec::CuPtr{Cdouble},
+    )::Cvoid
+end
+
 function grad_cuda(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
     return @ccall LIB_CUOTF.grad_cuda(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -87,6 +101,13 @@ function backgrad_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
     )::Cdouble
+end
+
+function batchgrad_cuda!(basis::CuBasisManager, otf::CuOTF, lv::T1, rv::T2, grads::T3, x::T4) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1},T4<:AbstractArray{Tv,1}}
+    @ccall LIB_CUOTF.batchgrad_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        x::CuPtr{Cdouble}, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble}, grads::CuPtr{Cdouble},
+    )::Cvoid
 end
 
 struct CuOTF_Functions
@@ -144,7 +165,7 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         f_backgrad = (idx, θ, lv, rv) -> return backgrad_cuda!(cu_basis, cu_pool_otf, idx, θ, lv, rv)
         # f_backtran = (idx, θ, lv, rv, tlv) -> return back_tran_svd!(basis, pool_otf, idx, θ, lv, rv, tlv)
         # f_batchexpm = (idx, θ, mat, N, j) -> batch_expm_svd!(basis, pool_otf, idx, θ, mat, N, j)
-        # f_batchgrad = (lv, rv, grads, x) -> return batch_grad_svd(basis, pool_otf, x, lv, rv, grads)
+        f_batchgrad = (lv, rv, grads, x) -> batchgrad_cuda!(cu_basis, cu_pool_otf, lv, rv, grads, x)
         # f_batchtran = (lv, rv, trans) -> return batch_tran_svd(basis, pool_otf, lv, rv, trans)
     end
 
@@ -153,4 +174,39 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         f_backgrad, f_backtran, 
         f_batchexpm, f_batchgrad, f_batchtran, 
         cu_basis, cu_ham_otf, cu_pool_otf)
+end
+
+
+struct CuOTF_Functions_Test
+    hvec::Function
+    expm::Function
+    expm_regtile::Function
+    expm_sharedtile::Function
+    tvec::Function
+    grad::Function
+    backgrad::Function
+    backtran::Function
+    batchexpm::Function
+    batchgrad::Function
+    batchtran::Function
+    basis::CuBasisManager
+    ham::CuOTF
+    pool::CuOTF
+end
+
+function CuOTF_Functions_Test(basis::BasisManager, ham::OTF, pool::OTF; info_print::Bool=true, time_print::Bool=false)
+    funcs = CuOTF_Functions(basis, ham, pool; info_print=info_print, time_print=time_print)
+    f_expm_regtile = (idx, θ, v) -> nothing
+    f_expm_sharedtile = (idx, θ, v) -> nothing
+
+    if funcs.pool.ptr != C_NULL
+        f_expm_regtile = (idx, θ, v) -> expm_regtile_cuda!(funcs.basis, funcs.pool, idx, θ, v)
+        f_expm_sharedtile = (idx, θ, v) -> expm_sharedtile_cuda!(funcs.basis, funcs.pool, idx, θ, v)
+    end
+
+    return CuOTF_Functions_Test(
+        funcs.hvec, funcs.expm, f_expm_regtile, f_expm_sharedtile,
+        funcs.tvec, funcs.grad, funcs.backgrad, funcs.backtran,
+        funcs.batchexpm, funcs.batchgrad, funcs.batchtran,
+        funcs.basis, funcs.ham, funcs.pool)
 end
