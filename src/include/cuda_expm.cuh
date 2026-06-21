@@ -17,6 +17,7 @@ __global__ void expm_single_group_sharedtile_kernel(
     const int bid = blockIdx.x;
     const int task_idx = blockIdx.y;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
+
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
     __shared__ int sh_sb[TILE_B];
 
@@ -24,8 +25,10 @@ __global__ void expm_single_group_sharedtile_kernel(
     const int n_b = basis.block_num_b[bid];
     const int num_b_tiles = (n_b + TILE_B - 1) / TILE_B;
     const int num_a_tiles = (n_a + blockDim.x - 1) / blockDim.x;
+
     if (task_idx >= num_a_tiles * num_b_tiles)
         return;
+
     const int b_tile_idx = task_idx % num_b_tiles;
     const int a_tile_idx = task_idx / num_b_tiles;
     const int b_start = b_tile_idx * TILE_B;
@@ -177,7 +180,6 @@ void expm_svd_network_otf_gpu(
     }
 }
 
-
 template <typename Ti, typename Tv>
 void expm_svd_network_otf_gpu(
     const BasisViewDev<Ti> &basis,
@@ -185,7 +187,7 @@ void expm_svd_network_otf_gpu(
     int64 idx, double theta,
     Tv *__restrict__ dev_vec)
 {
-    BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+    const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
     const int block_size = 256;
     int max_tasks = 0;
     for (int bid = 0; bid < basis.num_blocks; ++bid)
