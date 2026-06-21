@@ -27,8 +27,6 @@ struct BasisViewDev
     const int *block_map = nullptr;       // [num_irreps * num_irreps]
     const int *astr2idx = nullptr;
     const int *bstr2idx = nullptr;
-    std::vector<int> host_block_num_a;
-    std::vector<int> host_block_num_b;
 
     BasisViewDev() = default;
     BasisViewDev(const BasisViewDev &) = delete;
