@@ -219,7 +219,7 @@ template <typename Ti, typename Tv>
 Tv backgrad_svd_sub_chunk_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, const SubTopologyDev &topo, double theta, Tv *lp, Tv *rp)
 {
     BasisSliceDev<Ti> slice = make_dist_virtual_basis_slice(basis, topo);
-    return backgrad_svd_network_otf_gpu<Ti, Tv>(slice, net, 0, theta, lp, rp);
+    return backgrad_svd_network_otf_gpu<Ti, Tv>(slice, net, 0, theta, lp, rp, topo.expm_max_tasks);
 }
 
 // =================================================================
