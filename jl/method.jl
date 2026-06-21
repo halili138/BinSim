@@ -11,6 +11,7 @@ function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vecto
     return e_fci, v_fci
 end
 
+
 function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1) where {Ti,Tv,K,V}
     funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=false)
     hvec_map = LinearMap{Tv}(
@@ -39,6 +40,7 @@ function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1)
 
     return λ_aggs, ϕ_aggs
 end
+
 
 function run_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv}, e_scale::Float64;
     x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(),
@@ -91,6 +93,56 @@ function run_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vec
 
     return e_opt, lv, x_opt
 end
+
+
+function run_vqe2(funcs, lv, rv, v0_idxs, v0_vals, e_scale::Float64, x0::Vector{Float64}, idxs::Vector{Int64}, options::VQE_OPTIONS)
+    energy  = Ref(0.0)
+    gnorm   = Ref(0.0)
+    δ²H     = Ref(0.0)
+    error   = Ref(0.0)
+
+    obj_func = x -> begin
+        if !isempty(options.save_path)
+            jldopen(options.save_path, "w") do file
+                file["x"] = x
+            end
+        end
+
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+
+        result = @timed energy_objective(
+            funcs.hvec, 
+            funcs.expm, 
+            funcs.backgrad, 
+            idxs, x, lv, rv
+            )
+            
+        energy[], grads, δ²H[] = result.value
+        gnorm[] = norm(grads)
+        error[] = abs(energy[] - e_scale)
+        options.verbose > 1 && show_optimze(energy[], gnorm[], δ²H[], error[])
+        options.verbose > 2 && show_time(result)
+
+        return energy[], grads
+    end
+
+    println("Performing VQE optimization ... ")
+    time_ops = @elapsed e_opt, x_opt = optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n",
+            time_ops, energy[], gnorm[], δ²H[], error[])
+    println("\n")
+
+    fill!(lv, 0.0)
+    lv[v0_idxs] .= v0_vals
+
+    for (i, t) in zip(idxs, x_opt)
+        funcs.expm(i, t, lv)
+    end
+
+    return e_opt, lv, x_opt
+end
+
 
 function run_adapt_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv}, e_scale::Float64;
     amplitudes::Vector{Float64}=Float64[], selec_idxs::Vector{Int64}=Int64[], adapt_options::ADAPT_OPTIONS=ADAPT_OPTIONS(), 
@@ -194,6 +246,7 @@ function krylov_expmv!(f_matvec!::Function, dst::Vector{Tv}, src::Vector{Tv};
     return dst
 end
 
+
 function run_exact_vqe_krylov(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv}, e_scale::Float64;
     x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(ftol=1e-10),
     krylov_dim::Int=30, krylov_tol::Float64=1e-12, fd_step::Float64=1e-6,
@@ -267,6 +320,7 @@ function run_exact_vqe_krylov(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,
 
     return e_opt, copy(v_work), x_opt
 end
+
 
 function run_exact_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv}, e_scale::Float64;
     x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(ftol=1e-10), ode_tol::Float64=1e-8, # ODE 积分精度
@@ -351,6 +405,7 @@ function run_exact_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, poo
     return @time optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
 end
 
+
 function run_enpt2(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}, e_scale::Float64;
     ref_tol::Float64=1e-4, level_shift::Float64=0.0
 ) where {Ti,Tv,K,V}
@@ -419,6 +474,7 @@ function run_enpt2(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vec
 
     return E0, E2
 end
+
 
 function run_qse(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv};
     e_scales::Vector{Float64}=[], S_tol::Float64=1e-8, n_states::Int=5,
@@ -509,6 +565,7 @@ function run_qse(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vec
 
     return E_qse, C_qse
 end
+
 
 function run_qeom(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv};
     e_scales::Vector{Float64}=[], S_tol::Float64=1e-8, n_states::Int=5,
@@ -607,6 +664,7 @@ function run_qeom(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Ve
 
     return ΔE_qeom, C_qeom
 end
+
 
 function run_qpe_ode(
     basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, v0::Vector{Tv}; 
