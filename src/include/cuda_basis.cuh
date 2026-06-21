@@ -1,6 +1,8 @@
 #pragma once
 #include "cuda_common.cuh"
 #include "basis.hpp"
+#include <utility>
+#include <vector>
 
 // 1. 显存物理生命周期管理器（禁止拷贝, 支持移动）
 template <typename Ti>
@@ -14,6 +16,8 @@ struct BasisViewDev
     const int64 *block_offsets = nullptr; // [num_blocks]
     const int *block_num_a = nullptr;     // [num_blocks]
     const int *block_num_b = nullptr;     // [num_blocks]
+    std::vector<int> host_block_num_a;    // host mirror of block_num_a [num_blocks]
+    std::vector<int> host_block_num_b;    // host mirror of block_num_b [num_blocks]
     const int *block_asym = nullptr;      // [num_blocks]
     const int *block_bsym = nullptr;      // [num_blocks]
     const Ti *astrs_flat = nullptr;       // [total_astrs]
@@ -51,6 +55,8 @@ struct BasisViewDev
             cudaFree(const_cast<int *>(block_num_b));
             block_num_b = nullptr;
         }
+        host_block_num_a.clear();
+        host_block_num_b.clear();
         if (block_asym)
         {
             cudaFree(const_cast<int *>(block_asym));
@@ -115,6 +121,8 @@ struct BasisViewDev
             block_offsets = other.block_offsets;
             block_num_a = other.block_num_a;
             block_num_b = other.block_num_b;
+            host_block_num_a = std::move(other.host_block_num_a);
+            host_block_num_b = std::move(other.host_block_num_b);
             block_asym = other.block_asym;
             block_bsym = other.block_bsym;
             astrs_flat = other.astrs_flat;
@@ -133,6 +141,8 @@ struct BasisViewDev
             other.block_offsets = nullptr;
             other.block_num_a = nullptr;
             other.block_num_b = nullptr;
+            other.host_block_num_a.clear();
+            other.host_block_num_b.clear();
             other.block_asym = nullptr;
             other.block_bsym = nullptr;
             other.astrs_flat = nullptr;
@@ -225,6 +235,8 @@ void *upload_basis(const BasisManager<Ti> *hb)
     db->host_block_num_b = hnb;
 
     db->block_offsets = up(ho.data(), nb);
+    db->host_block_num_a = hna;
+    db->host_block_num_b = hnb;
     db->block_num_a = up(hna.data(), nb);
     db->block_num_b = up(hnb.data(), nb);
     db->block_asym = up(hasy.data(), nb);
