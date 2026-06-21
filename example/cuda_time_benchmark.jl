@@ -72,14 +72,14 @@ function test_trotter(mole, nsteps)
     d_v0_vals = CuArray{Float64,1,CUDA.DeviceMemory}(h_v0_vals)
 
     funcs    = OTF_Functions(basis, eltype(pool)(), pool, time_print=false)
-    cu_funcs = CuOTF_Functions_Test(basis, funcs.ham, funcs.pool, time_print=false)
+    cu_funcs = CuOTF_Functions(basis, funcs.ham, funcs.pool, time_print=false)
 
     for _ in 1:nsteps
         @time begin
             fill!(d_v, 0.0)
             d_v[d_v0_idxs] .= d_v0_vals
             for i in 1:nparas
-                cu_funcs.expm_sharedtile(i, x[i], d_v)
+                cu_funcs.expm(i, x[i], d_v)
             end
             sync_device!()
         end

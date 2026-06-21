@@ -32,6 +32,7 @@ struct SubTopologyDev
     int *d_virt_block_bsym = nullptr;
     int64 *d_virt_astrs_start = nullptr;
     int64 *d_virt_bstrs_start = nullptr;
+    int expm_max_tasks = 0;
 
     ~SubTopologyDev()
     {
@@ -121,6 +122,8 @@ SubTopologyDev *build_sub_topology_gpu_impl(
     }
 
     d_topo->virt_num_blocks = (int)virtual_physical_bids.size();
+    constexpr int expm_block_size = 256;
+    d_topo->expm_max_tasks = 0;
     std::vector<int64> virt_offsets(d_topo->virt_num_blocks);
     std::vector<int> virt_num_a(d_topo->virt_num_blocks);
     std::vector<int> virt_num_b(d_topo->virt_num_blocks);
@@ -140,6 +143,12 @@ SubTopologyDev *build_sub_topology_gpu_impl(
         virt_bsym[vi] = (int)blk.bsym;
         virt_astrs_start[vi] = 0;
         virt_bstrs_start[vi] = 0;
+        if (vi < num_virtual_targets)
+        {
+            const int num_a_tiles = (virt_num_a[vi] + expm_block_size - 1) / expm_block_size;
+            const int num_b_tiles = (virt_num_b[vi] + TILE_B - 1) / TILE_B;
+            d_topo->expm_max_tasks = std::max(d_topo->expm_max_tasks, num_a_tiles * num_b_tiles);
+        }
         for (int bj = 0; bj < bid; ++bj)
         {
             virt_astrs_start[vi] += basis->blocks[bj].num_a;
@@ -203,7 +212,7 @@ template <typename Ti, typename Tv>
 void expm_svd_sub_chunk_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, const SubTopologyDev &topo, int64 idx, double theta, Tv *dev_vec)
 {
     BasisSliceDev<Ti> slice = make_dist_virtual_basis_slice(basis, topo);
-    expm_svd_network_otf_gpu<Ti, Tv>(slice, net, idx, theta, dev_vec);
+    expm_svd_network_otf_gpu<Ti, Tv>(slice, net, idx, theta, dev_vec, topo.expm_max_tasks);
 }
 
 template <typename Ti, typename Tv>
