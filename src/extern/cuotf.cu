@@ -71,6 +71,30 @@ extern "C"
         expm_svd_network_otf_gpu<uint32, double>(*basis, *net, idx, theta, vec);
     }
 
+    void expm_regtile_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        int64 idx, double theta,
+        double *__restrict__ vec)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        expm_svd_network_otf_gpu_tile<uint32, double, false>(*basis, *net, idx, theta, vec);
+    }
+
+    void expm_sharedtile_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        int64 idx, double theta,
+        double *__restrict__ vec)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        expm_svd_network_otf_gpu_tile<uint32, double, true>(*basis, *net, idx, theta, vec);
+    }
+
     double grad_cuda(
         void *basis_ptr,
         void *net_ptr,
