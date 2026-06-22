@@ -23,8 +23,8 @@ static inline void gather_contract_batched_impl(
     const int *a_idx_map = view.a_idx_map;
     const int *b_idx_map = view.b_idx_map;
 
-    std::vector<int> src_b_idxs(BATCH_SIZE * max_b_count);
-    std::vector<int> dst_b_idxs(BATCH_SIZE * max_b_count);
+    std::vector<int> src_b_idxs(UsesBExcitation ? BATCH_SIZE * max_b_count : 1);
+    std::vector<int> dst_b_idxs(UsesBExcitation ? BATCH_SIZE * max_b_count : 1);
     std::vector<Tv> batch_phase(BATCH_SIZE * shift);
     std::vector<int> valid_b_counts(BATCH_SIZE);
     std::vector<int64> src_block_idxs(BATCH_SIZE);
@@ -62,31 +62,38 @@ static inline void gather_contract_batched_impl(
                     }
 
                     Tv *pb0 = batch_phase.data() + batch_idx * shift;
-                    int *sb_ptr = src_b_idxs.data() + batch_idx * max_b_count;
-                    int *db_ptr = dst_b_idxs.data() + batch_idx * max_b_count;
 
-                    int count = 0;
-                    for (int i = 0; i < dst_block.num_b; ++i)
+                    if constexpr (UsesBExcitation)
                     {
-                        const Ti dst_str_b = dst_block.bstrs[i];
-                        Ti src_str_b = dst_str_b;
-                        int src_b_idx = i;
+                        int *sb_ptr = src_b_idxs.data() + batch_idx * max_b_count;
+                        int *db_ptr = dst_b_idxs.data() + batch_idx * max_b_count;
 
-                        if constexpr (UsesBExcitation)
+                        int count = 0;
+                        for (int i = 0; i < dst_block.num_b; ++i)
                         {
-                            src_str_b = dst_str_b ^ group.bx;
-                            src_b_idx = b_idx_map[src_str_b];
+                            const Ti dst_str_b = dst_block.bstrs[i];
+                            const Ti src_str_b = dst_str_b ^ group.bx;
+                            const int src_b_idx = b_idx_map[src_str_b];
                             if (src_b_idx == -1)
                                 continue;
+
+                            sb_ptr[count] = src_b_idx;
+                            db_ptr[count] = i;
+                            precompute_phase<Rank, Ti, Tv>(src_str_b, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
+                            count++;
                         }
 
-                        sb_ptr[count] = src_b_idx;
-                        db_ptr[count] = i;
-                        precompute_phase<Rank, Ti, Tv>(src_str_b, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
-                        count++;
+                        valid_b_counts[batch_idx] = count;
                     }
+                    else
+                    {
+                        for (int i = 0; i < dst_block.num_b; ++i)
+                        {
+                            precompute_phase<Rank, Ti, Tv>(dst_block.bstrs[i], group.unique_zbs, group.num_zb, group.wb, pb0 + i, max_b_count, group.rank);
+                        }
 
-                    valid_b_counts[batch_idx] = count;
+                        valid_b_counts[batch_idx] = dst_block.num_b;
+                    }
                 }
 
 #pragma omp for schedule(dynamic)
@@ -118,15 +125,27 @@ static inline void gather_contract_batched_impl(
                         const BlockDesc<Ti> &src_block = IsDiagonal ? dst_block : blocks[src_block_idxs[batch_idx]];
                         const int rank = group.rank;
                         const Tv *pb = batch_phase.data() + batch_idx * shift;
-                        const int *si = src_b_idxs.data() + batch_idx * max_b_count;
-                        const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
                         const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
 
-#pragma omp simd
-                        for (int b = 0; b < valid_b_count; ++b)
+                        if constexpr (UsesBExcitation)
                         {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                            hvec_update<Tv>(sa + si[b], da + di[b], vt);
+                            const int *si = src_b_idxs.data() + batch_idx * max_b_count;
+                            const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
+#pragma omp simd
+                            for (int b = 0; b < valid_b_count; ++b)
+                            {
+                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                hvec_update<Tv>(sa + si[b], da + di[b], vt);
+                            }
+                        }
+                        else
+                        {
+#pragma omp simd
+                            for (int b = 0; b < dst_block.num_b; ++b)
+                            {
+                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                hvec_update<Tv>(sa + b, da + b, vt);
+                            }
                         }
                     }
                 }
