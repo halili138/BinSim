@@ -2,81 +2,18 @@
 #include "otf.hpp"
 #include "utils.hpp"
 
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_diag_batched_impl(
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static inline void gather_contract_batched_impl(
     const BasisView<Ti> &view,
     const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
     const Tv *src_vec, Tv *dst_vec)
 {
     constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
+    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool IsDiagonal = TypeCode == 0;
 
-    const int max_a_count = view.max_a_count;
-    const int max_b_count = view.max_b_count;
-    const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = view.blocks;
-    const int64 num_blocks = view.num_blocks;
-
-    std::vector<Tv> phase_b(BATCH_SIZE * shift);
-
-#pragma omp parallel
-    {
-        for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
-        {
-            const BlockDesc<Ti> &block = blocks[block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
-            {
-                const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
-
-#pragma omp for schedule(dynamic)
-                for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                {
-                    const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    Tv *pb0 = phase_b.data() + batch_idx * shift;
-                    for (int i = 0; i < block.num_b; ++i)
-                    {
-                        precompute_phase<Rank, Ti, Tv>(block.bstrs[i], group.unique_zbs, group.num_zb, group.wb, pb0 + i, max_b_count, group.rank);
-                    }
-                }
-
-#pragma omp for schedule(dynamic)
-                for (int a = 0; a < block.num_a; ++a)
-                {
-                    const Ti str_a = block.astrs[a];
-                    const Tv *sa = src_vec + block.offset + a * block.num_b;
-                    Tv *da = dst_vec + block.offset + a * block.num_b;
-                    for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                    {
-                        const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                        const int rank = group.rank;
-                        const Tv *pb = phase_b.data() + batch_idx * shift;
-
-                        Tv pa[MAX_RANK] = {};
-                        precompute_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, pa, 1, rank);
-
-#pragma omp simd
-                        for (int b = 0; b < block.num_b; ++b)
-                        {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                            hvec_update<Tv>(sa + b, da + b, vt);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_pure_a_batched_impl(
-    const BasisView<Ti> &view,
-    const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
-    const Tv *src_vec, Tv *dst_vec)
-{
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    const int max_a_count = view.max_a_count;
     const int max_b_count = view.max_b_count;
     const int shift = max_b_count * MAX_RANK;
     const BlockDesc<Ti> *blocks = view.blocks;
@@ -84,100 +21,105 @@ static inline void gather_contract_pure_a_batched_impl(
     const int64 *block_map = view.block_map;
     const int64 num_irreps = view.num_irreps;
     const int *a_idx_map = view.a_idx_map;
+    const int *b_idx_map = view.b_idx_map;
 
-    std::vector<Tv> phase_b(BATCH_SIZE * shift);
-    std::vector<int> src_block_idxs(BATCH_SIZE);
+    if constexpr (!UsesBExcitation)
+    {
+        std::vector<Tv> phase_b(BATCH_SIZE * shift);
+        std::vector<int64> src_block_idxs(BATCH_SIZE);
 
 #pragma omp parallel
-    {
-        for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
-            const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+            for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
             {
-                const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
+                const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
+                for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
+                {
+                    const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
 
 #pragma omp for schedule(dynamic)
-                for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                {
-                    const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    const int64 h = (dst_block.asym ^ group.asym) * num_irreps + dst_block.bsym;
-                    const int64 src_block_idx = block_map[h];
-                    src_block_idxs[batch_idx] = src_block_idx;
-
-                    if (src_block_idx == -1)
-                        continue;
-
-                    Tv *pb0 = phase_b.data() + batch_idx * shift;
-                    for (int i = 0; i < dst_block.num_b; ++i)
-                    {
-                        precompute_phase<Rank, Ti, Tv>(dst_block.bstrs[i], group.unique_zbs, group.num_zb, group.wb, pb0 + i, max_b_count, group.rank);
-                    }
-                }
-
-#pragma omp for schedule(dynamic)
-                for (int a = 0; a < dst_block.num_a; ++a)
-                {
-                    const Ti dst_str_a = dst_block.astrs[a];
-                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
-                        const int src_block_idx = src_block_idxs[batch_idx];
-
-                        if (src_block_idx == -1)
-                            continue;
-
                         const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                        const Ti src_str_a = dst_str_a ^ group.ax;
-                        const int src_a_idx = a_idx_map[src_str_a];
+                        if constexpr (!IsDiagonal)
+                        {
+                            const int64 h = (dst_block.asym ^ group.asym) * num_irreps + dst_block.bsym;
+                            const int64 src_block_idx = block_map[h];
+                            src_block_idxs[batch_idx] = src_block_idx;
 
-                        if (src_a_idx == -1)
-                            continue;
+                            if (src_block_idx == -1)
+                                continue;
+                        }
 
-                        Tv pa[MAX_RANK] = {};
-                        precompute_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
+                        Tv *pb0 = phase_b.data() + batch_idx * shift;
+                        for (int i = 0; i < dst_block.num_b; ++i)
+                        {
+                            precompute_phase<Rank, Ti, Tv>(dst_block.bstrs[i], group.unique_zbs, group.num_zb, group.wb, pb0 + i, max_b_count, group.rank);
+                        }
+                    }
 
-                        const BlockDesc<Ti> &src_block = blocks[src_block_idx];
-                        const int rank = group.rank;
-                        const Tv *pb = phase_b.data() + batch_idx * shift;
-                        const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
+#pragma omp for schedule(dynamic)
+                    for (int a = 0; a < dst_block.num_a; ++a)
+                    {
+                        const Ti dst_str_a = dst_block.astrs[a];
+                        Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
+                        for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
+                        {
+                            int64 src_block_idx = dst_block_idx;
+                            if constexpr (!IsDiagonal)
+                            {
+                                src_block_idx = src_block_idxs[batch_idx];
+                                if (src_block_idx == -1)
+                                    continue;
+                            }
+
+                            const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
+                            Ti src_str_a = dst_str_a;
+                            int src_a_idx = a;
+
+                            if constexpr (UsesAExcitation)
+                            {
+                                src_str_a = dst_str_a ^ group.ax;
+                                src_a_idx = a_idx_map[src_str_a];
+                                if (src_a_idx == -1)
+                                    continue;
+                            }
+
+                            Tv pa[MAX_RANK] = {};
+                            precompute_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
+
+                            const int rank = group.rank;
+                            const Tv *pb = phase_b.data() + batch_idx * shift;
+                            const Tv *sa;
+                            if constexpr (IsDiagonal)
+                            {
+                                sa = src_vec + dst_block.offset + a * dst_block.num_b;
+                            }
+                            else
+                            {
+                                const BlockDesc<Ti> &src_block = blocks[src_block_idx];
+                                sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
+                            }
 
 #pragma omp simd
-                        for (int b = 0; b < dst_block.num_b; ++b)
-                        {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                            hvec_update<Tv>(sa + b, da + b, vt);
+                            for (int b = 0; b < dst_block.num_b; ++b)
+                            {
+                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                hvec_update<Tv>(sa + b, da + b, vt);
+                            }
                         }
                     }
                 }
             }
         }
+        return;
     }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_pure_b_batched_impl(
-    const BasisView<Ti> &view,
-    const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
-    const Tv *src_vec, Tv *dst_vec)
-{
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    const int max_a_count = view.max_a_count;
-    const int max_b_count = view.max_b_count;
-    const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = view.blocks;
-    const int64 num_blocks = view.num_blocks;
-    const int64 *block_map = view.block_map;
-    const int64 num_irreps = view.num_irreps;
-    const int *b_idx_map = view.b_idx_map;
 
     std::vector<int> src_b_idxs(BATCH_SIZE * max_b_count);
     std::vector<int> dst_b_idxs(BATCH_SIZE * max_b_count);
     std::vector<Tv> batch_phase(BATCH_SIZE * shift);
     std::vector<int> valid_b_counts(BATCH_SIZE);
-    std::vector<int> src_block_idxs(BATCH_SIZE);
+    std::vector<int64> src_block_idxs(BATCH_SIZE);
 
 #pragma omp parallel
     {
@@ -192,10 +134,14 @@ static inline void gather_contract_pure_b_batched_impl(
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                 {
                     const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    const int64 h = dst_block.asym * num_irreps + (dst_block.bsym ^ group.bsym);
+                    int64 h;
+                    if constexpr (TypeCode == 2)
+                        h = dst_block.asym * num_irreps + (dst_block.bsym ^ group.bsym);
+                    else
+                        h = (dst_block.asym ^ group.asym) * num_irreps + (dst_block.bsym ^ group.bsym);
+
                     const int64 src_block_idx = block_map[h];
                     src_block_idxs[batch_idx] = src_block_idx;
-
                     if (src_block_idx == -1)
                     {
                         valid_b_counts[batch_idx] = 0;
@@ -209,129 +155,16 @@ static inline void gather_contract_pure_b_batched_impl(
                     int count = 0;
                     for (int i = 0; i < dst_block.num_b; ++i)
                     {
-                        const Ti dst_str = dst_block.bstrs[i];
-                        const Ti src_str = dst_str ^ group.bx;
-                        const int src_idx = b_idx_map[src_str];
+                        const Ti dst_str_b = dst_block.bstrs[i];
+                        const Ti src_str_b = dst_str_b ^ group.bx;
+                        const int src_b_idx = b_idx_map[src_str_b];
 
-                        if (src_idx == -1)
+                        if (src_b_idx == -1)
                             continue;
 
-                        sb_ptr[count] = src_idx;
+                        sb_ptr[count] = src_b_idx;
                         db_ptr[count] = i;
-
-                        precompute_phase<Rank, Ti, Tv>(src_str, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
-
-                        count++;
-                    }
-
-                    valid_b_counts[batch_idx] = count;
-                }
-
-#pragma omp for schedule(dynamic)
-                for (int a = 0; a < dst_block.num_a; ++a)
-                {
-                    const Ti str_a = dst_block.astrs[a];
-                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
-                    for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                    {
-                        const int valid_b_count = valid_b_counts[batch_idx];
-
-                        if (valid_b_count == 0)
-                            continue;
-
-                        const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-
-                        Tv pa[MAX_RANK] = {};
-                        precompute_phase<Rank, Ti, Tv>(str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
-
-                        const int src_block_idx = src_block_idxs[batch_idx];
-                        const BlockDesc<Ti> &src_block = blocks[src_block_idx];
-                        const int rank = group.rank;
-                        const Tv *pb = batch_phase.data() + batch_idx * shift;
-                        const int *si = src_b_idxs.data() + batch_idx * max_b_count;
-                        const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
-                        const Tv *sa = src_vec + src_block.offset + a * src_block.num_b;
-
-#pragma omp simd
-                        for (int b = 0; b < valid_b_count; ++b)
-                        {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                            hvec_update<Tv>(sa + si[b], da + di[b], vt);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static inline void gather_contract_mixed_batched_impl(
-    const BasisView<Ti> &view,
-    const SVDGroup_OTF<Ti, Tv> *groups, int64 num_groups,
-    const Tv *src_vec, Tv *dst_vec)
-{
-    constexpr int BATCH_SIZE = Rank == 1 ? BATCH_SIZE1 : (Rank == 2 ? BATCH_SIZE2 : BATCH_SIZE3);
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    const int max_a_count = view.max_a_count;
-    const int max_b_count = view.max_b_count;
-    const int shift = max_b_count * MAX_RANK;
-    const BlockDesc<Ti> *blocks = view.blocks;
-    const int64 num_blocks = view.num_blocks;
-    const int64 *block_map = view.block_map;
-    const int64 num_irreps = view.num_irreps;
-    const int *a_idx_map = view.a_idx_map;
-    const int *b_idx_map = view.b_idx_map;
-
-    std::vector<int> src_b_idxs(BATCH_SIZE * max_b_count);
-    std::vector<int> dst_b_idxs(BATCH_SIZE * max_b_count);
-    std::vector<Tv> batch_phase(BATCH_SIZE * shift);
-    std::vector<int> valid_b_counts(BATCH_SIZE);
-    std::vector<int> src_block_idxs(BATCH_SIZE);
-
-#pragma omp parallel
-    {
-        for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
-        {
-            const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            for (int64 batch_start = 0; batch_start < num_groups; batch_start += BATCH_SIZE)
-            {
-                const int64 cur_batch_size = std::min<int64>(BATCH_SIZE, num_groups - batch_start);
-
-#pragma omp for schedule(dynamic)
-                for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                {
-                    const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                    const int64 h = (dst_block.asym ^ group.asym) * num_irreps + (dst_block.bsym ^ group.bsym);
-                    const int64 src_block_idx = block_map[h];
-                    src_block_idxs[batch_idx] = src_block_idx;
-
-                    if (src_block_idx == -1)
-                    {
-                        valid_b_counts[batch_idx] = 0;
-                        continue;
-                    }
-
-                    Tv *pb0 = batch_phase.data() + batch_idx * shift;
-                    int *sb_ptr = src_b_idxs.data() + batch_idx * max_b_count;
-                    int *db_ptr = dst_b_idxs.data() + batch_idx * max_b_count;
-
-                    int count = 0;
-                    for (int i = 0; i < dst_block.num_b; ++i)
-                    {
-                        const Ti dst_str = dst_block.bstrs[i];
-                        const Ti src_str = dst_str ^ group.bx;
-                        const int src_idx = b_idx_map[src_str];
-
-                        if (src_idx == -1)
-                            continue;
-
-                        sb_ptr[count] = src_idx;
-                        db_ptr[count] = i;
-
-                        precompute_phase<Rank, Ti, Tv>(src_str, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
-
+                        precompute_phase<Rank, Ti, Tv>(src_str_b, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
                         count++;
                     }
 
@@ -351,16 +184,22 @@ static inline void gather_contract_mixed_batched_impl(
                             continue;
 
                         const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                        const Ti src_str_a = dst_str_a ^ group.ax;
-                        const int src_a_idx = a_idx_map[src_str_a];
+                        Ti src_str_a = dst_str_a;
+                        int src_a_idx = a;
 
-                        if (src_a_idx == -1)
-                            continue;
+                        if constexpr (UsesAExcitation)
+                        {
+                            src_str_a = dst_str_a ^ group.ax;
+                            src_a_idx = a_idx_map[src_str_a];
+
+                            if (src_a_idx == -1)
+                                continue;
+                        }
 
                         Tv pa[MAX_RANK] = {};
                         precompute_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
 
-                        const int src_block_idx = src_block_idxs[batch_idx];
+                        const int64 src_block_idx = src_block_idxs[batch_idx];
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const int rank = group.rank;
                         const Tv *pb = batch_phase.data() + batch_idx * shift;
@@ -389,14 +228,7 @@ static inline void launch_gather_contract_chunk(
     const Tv *src_vec,
     Tv *dst_vec)
 {
-    if constexpr (TypeCode == 0)
-        gather_contract_diag_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
-    else if constexpr (TypeCode == 1)
-        gather_contract_pure_a_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
-    else if constexpr (TypeCode == 2)
-        gather_contract_pure_b_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
-    else
-        gather_contract_mixed_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
+    gather_contract_batched_impl<Rank, TypeCode>(view, groups, chunk_size, src_vec, dst_vec);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
