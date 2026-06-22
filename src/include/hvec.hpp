@@ -147,13 +147,7 @@ static inline void gather_contract_batched_impl(
                         valid_b_counts[batch_idx] = 0;
                         continue;
                     }
-
-                    Tv *pb0 = batch_phase.data() + batch_idx * shift;
-                    int *sb_ptr = src_b_idxs.data() + batch_idx * max_b_count;
-                    int *db_ptr = dst_b_idxs.data() + batch_idx * max_b_count;
-
-                    int count = 0;
-                    for (int i = 0; i < dst_block.num_b; ++i)
+                    else
                     {
                         const Ti dst_str_b = dst_block.bstrs[i];
                         const Ti src_str_b = dst_str_b ^ group.bx;
@@ -167,8 +161,6 @@ static inline void gather_contract_batched_impl(
                         precompute_phase<Rank, Ti, Tv>(src_str_b, group.unique_zbs, group.num_zb, group.wb, pb0 + count, max_b_count, group.rank);
                         count++;
                     }
-
-                    valid_b_counts[batch_idx] = count;
                 }
 
 #pragma omp for schedule(dynamic)
@@ -179,7 +171,6 @@ static inline void gather_contract_batched_impl(
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
                         const int valid_b_count = valid_b_counts[batch_idx];
-
                         if (valid_b_count == 0)
                             continue;
 
@@ -203,32 +194,33 @@ static inline void gather_contract_batched_impl(
                         const BlockDesc<Ti> &src_block = blocks[src_block_idx];
                         const int rank = group.rank;
                         const Tv *pb = batch_phase.data() + batch_idx * shift;
-                        const int *si = src_b_idxs.data() + batch_idx * max_b_count;
-                        const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
                         const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
 
-#pragma omp simd
-                        for (int b = 0; b < valid_b_count; ++b)
+                        if constexpr (UsesBExcitation)
                         {
-                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                            hvec_update<Tv>(sa + si[b], da + di[b], vt);
+                            const int *si = src_b_idxs.data() + batch_idx * max_b_count;
+                            const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
+#pragma omp simd
+                            for (int b = 0; b < valid_b_count; ++b)
+                            {
+                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                hvec_update<Tv>(sa + si[b], da + di[b], vt);
+                            }
+                        }
+                        else
+                        {
+#pragma omp simd
+                            for (int b = 0; b < dst_block.num_b; ++b)
+                            {
+                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                hvec_update<Tv>(sa + b, da + b, vt);
+                            }
                         }
                     }
                 }
             }
         }
     }
-}
-
-template <int Rank, int TypeCode, typename Ti, typename Tv>
-static inline void launch_gather_contract_chunk(
-    const BasisView<Ti> &view,
-    const SVDGroup_OTF<Ti, Tv> *groups,
-    int64 chunk_size,
-    const Tv *src_vec,
-    Tv *dst_vec)
-{
-    gather_contract_batched_impl<Rank, TypeCode>(view, groups, chunk_size, src_vec, dst_vec);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
@@ -254,13 +246,13 @@ static inline void dispatch_chunks_by_rank(
         switch (dispatch_rank)
         {
         case 1:
-            launch_gather_contract_chunk<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         case 2:
-            launch_gather_contract_chunk<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         default:
-            launch_gather_contract_chunk<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         }
         start = end;
