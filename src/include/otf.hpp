@@ -101,6 +101,49 @@ struct Network_OTF
     }
 };
 
+
+template <typename Ti, typename Tv>
+FORCE_INLINE const std::vector<SVDGroup_OTF<Ti, Tv>> *bucket_by_type(const Network_OTF<Ti, Tv> *net, uint8 type)
+{
+    switch (type)
+    {
+    case 0:
+        return &net->diag_groups;
+    case 1:
+        return &net->pure_a_groups;
+    case 2:
+        return &net->pure_b_groups;
+    case 3:
+        return &net->mixed_groups;
+    default:
+        return nullptr;
+    }
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE const SVDGroup_OTF<Ti, Tv> *group_by_type(const Network_OTF<Ti, Tv> *net, uint8 type, int64 pos)
+{
+    const auto *bucket = bucket_by_type(net, type);
+    return bucket ? &(*bucket)[pos] : nullptr;
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE int normalized_dispatch_rank(const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, int64 idx)
+{
+    const int rank = groups[idx].rank;
+    return (rank == 1 || rank == 2) ? rank : 0;
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE int64 next_rank_chunk_end(const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, int64 start)
+{
+    const int dispatch_rank = normalized_dispatch_rank(groups, start);
+    int64 end = start + 1;
+    while (end < static_cast<int64>(groups.size()) && normalized_dispatch_rank(groups, end) == dispatch_rank)
+        ++end;
+    return end;
+}
+
 template <typename Ti,
           typename Tv>
 void *build_network_otf(

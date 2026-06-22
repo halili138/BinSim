@@ -381,6 +381,24 @@ static inline void gather_contract_mixed_batched_impl(
     }
 }
 
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static inline void launch_gather_contract_chunk(
+    const BasisView<Ti> &view,
+    const SVDGroup_OTF<Ti, Tv> *groups,
+    int64 chunk_size,
+    const Tv *src_vec,
+    Tv *dst_vec)
+{
+    if constexpr (TypeCode == 0)
+        gather_contract_diag_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
+    else if constexpr (TypeCode == 1)
+        gather_contract_pure_a_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
+    else if constexpr (TypeCode == 2)
+        gather_contract_pure_b_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
+    else
+        gather_contract_mixed_batched_impl<Rank>(view, groups, chunk_size, src_vec, dst_vec);
+}
+
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_chunks_by_rank(
     const BasisView<Ti> &view,
@@ -396,81 +414,22 @@ static inline void dispatch_chunks_by_rank(
     int64 start = 0;
     while (start < total_ngs)
     {
-        const int current_rank = groups_ptr[start].rank;
-        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
-
-        int64 end = start + 1;
-        while (end < total_ngs)
-        {
-            const int next_rank = groups_ptr[end].rank;
-            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
-            if (next_dispatch_rank != dispatch_rank)
-                break;
-            end++;
-        }
-
-        const int64 chunk_size = end - start;
+        const int dispatch_rank = normalized_dispatch_rank(groups, start);
+        const int64 end = next_rank_chunk_end(groups, start);
         const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
+        const int64 chunk_size = end - start;
 
-        if constexpr (TypeCode == 0)
+        switch (dispatch_rank)
         {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_diag_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_diag_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_diag_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 1)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_pure_a_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_pure_a_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_pure_a_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 2)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_pure_b_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_pure_b_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_pure_b_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 3)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_mixed_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_mixed_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_mixed_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
+        case 1:
+            launch_gather_contract_chunk<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
+        case 2:
+            launch_gather_contract_chunk<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
+        default:
+            launch_gather_contract_chunk<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
         }
         start = end;
     }

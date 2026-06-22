@@ -453,6 +453,24 @@ static FORCE_INLINE void grad_contract_mixed_batched_impl(
     }
 }
 
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void launch_grad_contract_chunk(
+    const BasisManager<Ti> *basis,
+    const SVDGroup_OTF<Ti, Tv> *groups,
+    int64 chunk_size,
+    const double *thetas,
+    const Tv *lp, const Tv *rp, Tv *grads)
+{
+    if constexpr (TypeCode == 0)
+        grad_contract_diag_batched_impl<Rank>(basis, groups, chunk_size, thetas, lp, rp, grads);
+    else if constexpr (TypeCode == 1)
+        grad_contract_pure_a_batched_impl<Rank>(basis, groups, chunk_size, thetas, lp, rp, grads);
+    else if constexpr (TypeCode == 2)
+        grad_contract_pure_b_batched_impl<Rank>(basis, groups, chunk_size, thetas, lp, rp, grads);
+    else
+        grad_contract_mixed_batched_impl<Rank>(basis, groups, chunk_size, thetas, lp, rp, grads);
+}
+
 template <int TypeCode, typename Ti, typename Tv>
 static FORCE_INLINE void dispatch_grad_chunks_by_rank(
     const BasisManager<Ti> *basis, const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
@@ -468,57 +486,22 @@ static FORCE_INLINE void dispatch_grad_chunks_by_rank(
     int64 start = 0;
     while (start < total_ngs)
     {
-        const int dispatch_rank = groups_ptr[start].rank;
-        const int eff_rank = (dispatch_rank == 1 || dispatch_rank == 2) ? dispatch_rank : 0;
-
-        int64 end = start + 1;
-        while (end < total_ngs)
-        {
-            const int next_rank = groups_ptr[end].rank;
-            const int next_eff_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
-            if (next_eff_rank != eff_rank)
-                break;
-            end++;
-        }
-
+        const int dispatch_rank = normalized_dispatch_rank(groups, start);
+        const int64 end = next_rank_chunk_end(groups, start);
         const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
         const int64 chunk_size = end - start;
 
-        if constexpr (TypeCode == 0)
+        switch (dispatch_rank)
         {
-            if (eff_rank == 1)
-                grad_contract_diag_batched_impl<1>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else if (eff_rank == 2)
-                grad_contract_diag_batched_impl<2>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else
-                grad_contract_diag_batched_impl<0>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 1)
-        {
-            if (eff_rank == 1)
-                grad_contract_pure_a_batched_impl<1>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else if (eff_rank == 2)
-                grad_contract_pure_a_batched_impl<2>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else
-                grad_contract_pure_a_batched_impl<0>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 2)
-        {
-            if (eff_rank == 1)
-                grad_contract_pure_b_batched_impl<1>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else if (eff_rank == 2)
-                grad_contract_pure_b_batched_impl<2>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else
-                grad_contract_pure_b_batched_impl<0>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 3)
-        {
-            if (eff_rank == 1)
-                grad_contract_mixed_batched_impl<1>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else if (eff_rank == 2)
-                grad_contract_mixed_batched_impl<2>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
-            else
-                grad_contract_mixed_batched_impl<0>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+        case 1:
+            launch_grad_contract_chunk<1, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            break;
+        case 2:
+            launch_grad_contract_chunk<2, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            break;
+        default:
+            launch_grad_contract_chunk<0, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            break;
         }
         start = end;
     }

@@ -133,12 +133,33 @@ static inline void launch_single_group_expm_tile(
         return;
 
     dim3 grid(basis_slice.num_blocks, max_tasks);
-    if (rank == 1)
+    switch (rank)
+    {
+    case 1:
         expm_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
-    else if (rank == 2)
+        break;
+    case 2:
         expm_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
-    else
+        break;
+    default:
         expm_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
+        break;
+    }
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static inline void launch_network_expm_group(
+    const BasisSliceDev<Ti> &basis_slice,
+    const GroupsViewDev<Ti, Tv> &groups,
+    int64 pos,
+    double theta,
+    Tv *__restrict__ dev_vec,
+    int max_tasks)
+{
+    if constexpr (TypeCode == 0 && std::is_arithmetic_v<Tv>)
+        return;
+    else
+        launch_single_group_expm_tile<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, theta, dev_vec, groups.host_ranks[pos], max_tasks);
 }
 
 template <typename Ti, typename Tv>
@@ -155,25 +176,16 @@ void expm_svd_network_otf_gpu(
     switch (type)
     {
     case 0:
-    {
-        if constexpr (std::is_arithmetic_v<Tv>)
-        {
-            break;
-        }
-        else
-        {
-            launch_single_group_expm_tile<0, Ti, Tv>(basis_slice, make_groups_slice(net.diag_groups), pos, theta, dev_vec, net.diag_groups.host_ranks[pos], max_tasks);
-            break;
-        }
-    }
+        launch_network_expm_group<0, Ti, Tv>(basis_slice, net.diag_groups, pos, theta, dev_vec, max_tasks);
+        break;
     case 1:
-        launch_single_group_expm_tile<1, Ti, Tv>(basis_slice, make_groups_slice(net.pure_a_groups), pos, theta, dev_vec, net.pure_a_groups.host_ranks[pos], max_tasks);
+        launch_network_expm_group<1, Ti, Tv>(basis_slice, net.pure_a_groups, pos, theta, dev_vec, max_tasks);
         break;
     case 2:
-        launch_single_group_expm_tile<2, Ti, Tv>(basis_slice, make_groups_slice(net.pure_b_groups), pos, theta, dev_vec, net.pure_b_groups.host_ranks[pos], max_tasks);
+        launch_network_expm_group<2, Ti, Tv>(basis_slice, net.pure_b_groups, pos, theta, dev_vec, max_tasks);
         break;
     case 3:
-        launch_single_group_expm_tile<3, Ti, Tv>(basis_slice, make_groups_slice(net.mixed_groups), pos, theta, dev_vec, net.mixed_groups.host_ranks[pos], max_tasks);
+        launch_network_expm_group<3, Ti, Tv>(basis_slice, net.mixed_groups, pos, theta, dev_vec, max_tasks);
         break;
     default:
         break;
