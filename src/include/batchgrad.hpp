@@ -191,17 +191,6 @@ static FORCE_INLINE void grad_contract_batched_impl(
     }
 }
 
-template <int Rank, int TypeCode, typename Ti, typename Tv>
-static FORCE_INLINE void launch_grad_contract_chunk(
-    const BasisManager<Ti> *basis,
-    const SVDGroup_OTF<Ti, Tv> *groups,
-    int64 chunk_size,
-    const double *thetas,
-    const Tv *lp, const Tv *rp, Tv *grads)
-{
-    grad_contract_batched_impl<Rank, TypeCode>(basis, groups, chunk_size, thetas, lp, rp, grads);
-}
-
 template <int TypeCode, typename Ti, typename Tv>
 static FORCE_INLINE void dispatch_grad_chunks_by_rank(
     const BasisManager<Ti> *basis, const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
@@ -225,15 +214,16 @@ static FORCE_INLINE void dispatch_grad_chunks_by_rank(
         switch (dispatch_rank)
         {
         case 1:
-            launch_grad_contract_chunk<1, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            grad_contract_batched_impl<1, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
             break;
         case 2:
-            launch_grad_contract_chunk<2, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            grad_contract_batched_impl<2, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
             break;
         default:
-            launch_grad_contract_chunk<0, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
+            grad_contract_batched_impl<0, TypeCode>(basis, chunk_ptr, chunk_size, thetas, lp, rp, grads);
             break;
         }
+
         start = end;
     }
 }

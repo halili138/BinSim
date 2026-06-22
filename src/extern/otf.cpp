@@ -1,11 +1,6 @@
 #include "otf.hpp"
 #include "hvec.hpp"
-#include "tvec.hpp"
-#include "expm.hpp"
-#include "grad.hpp"
-#include "backgrad.hpp"
-#include "backtran.hpp"
-#include "batchexpm.hpp"
+#include "contract.hpp"
 #include "batchgrad.hpp"
 #include "batchtran.hpp"
 

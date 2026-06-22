@@ -1,6 +1,5 @@
 #include "dist.hpp"
-#include "expm.hpp"
-#include "backgrad.hpp"
+#include "contract.hpp"
 
 extern "C"
 {
