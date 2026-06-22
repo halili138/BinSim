@@ -25,7 +25,7 @@ function test_vqe(mole)
             ftol      = 1e-8, 
             gtol      = 1e-6, 
             maxiter   = 9999, 
-            verbose   = 3, 
+            verbose   = 1, 
             # save_path = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
         )
     )
