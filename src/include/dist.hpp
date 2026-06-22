@@ -248,65 +248,17 @@ static inline void dispatch_subchunks_by_rank(const BasisView<Ti> &view, const S
         const int64 chunk_size = end - start;
         const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
 
-        if constexpr (TypeCode == 0)
+        switch (dispatch_rank)
         {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_diag_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_diag_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_diag_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 1)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_pure_a_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_pure_a_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_pure_a_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 2)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_pure_b_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_pure_b_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_pure_b_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 3)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_contract_mixed_batched_impl<1>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            case 2:
-                gather_contract_mixed_batched_impl<2>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            default:
-                gather_contract_mixed_batched_impl<0>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
-                break;
-            }
+        case 1:
+            gather_contract_batched_impl<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
+        case 2:
+            gather_contract_batched_impl<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
+        default:
+            gather_contract_batched_impl<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            break;
         }
         start = end;
     }
