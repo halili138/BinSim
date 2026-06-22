@@ -3,7 +3,6 @@
 #include "otf.hpp"
 #include "hvec.hpp"
 
-
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
 {
     std::vector<int> counts(gmap->mpi_size, 0);
