@@ -154,17 +154,6 @@ static inline void gather_contract_batched_impl(
     }
 }
 
-template <int Rank, int TypeCode, typename Ti, typename Tv>
-static inline void launch_gather_contract_chunk(
-    const BasisView<Ti> &view,
-    const SVDGroup_OTF<Ti, Tv> *groups,
-    int64 chunk_size,
-    const Tv *src_vec,
-    Tv *dst_vec)
-{
-    gather_contract_batched_impl<Rank, TypeCode>(view, groups, chunk_size, src_vec, dst_vec);
-}
-
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_chunks_by_rank(
     const BasisView<Ti> &view,
@@ -188,13 +177,13 @@ static inline void dispatch_chunks_by_rank(
         switch (dispatch_rank)
         {
         case 1:
-            launch_gather_contract_chunk<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<1, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         case 2:
-            launch_gather_contract_chunk<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<2, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         default:
-            launch_gather_contract_chunk<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
+            gather_contract_batched_impl<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         }
         start = end;
