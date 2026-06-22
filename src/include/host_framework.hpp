@@ -6,7 +6,7 @@ template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 static FORCE_INLINE typename Op::Result otf_contract_single_group_impl(
     const BasisManager<Ti> *basis,
     const SVDGroup_OTF<Ti, Tv> &group,
-    Op op)
+    const Op op)
 {
     constexpr bool IsDiagonal = TypeCode == 0;
     constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
