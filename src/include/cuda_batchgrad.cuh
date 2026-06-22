@@ -260,6 +260,23 @@ __global__ void batchgrad_offdiag_kernel(
     }
 }
 
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static inline void launch_batchgrad_chunk(
+    const BasisSliceDev<Ti> &basis_slice,
+    const GroupsSliceDev<Ti, Tv> &groups_slice,
+    dim3 grid_size,
+    int block_size,
+    const double *__restrict__ thetas,
+    const Tv *__restrict__ lp,
+    const Tv *__restrict__ rp,
+    Tv *__restrict__ grads)
+{
+    if constexpr (TypeCode == 0)
+        batchgrad_diag_kernel<Rank, Ti, Tv><<<grid_size, block_size>>>(basis_slice, groups_slice, thetas, lp, rp, grads);
+    else
+        batchgrad_offdiag_kernel<Rank, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, groups_slice, thetas, lp, rp, grads);
+}
+
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_batchgrad_chunks_by_rank_gpu(
     const BasisSliceDev<Ti> &basis_slice,
@@ -274,80 +291,29 @@ static inline void dispatch_batchgrad_chunks_by_rank_gpu(
     if (total_ngs == 0)
         return;
 
+    int num_sms = 0;
+    cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+    const dim3 grid_size(num_active_blocks, num_sms * 4);
+    constexpr int block_size = 256;
+
     int64 start = 0;
     while (start < total_ngs)
     {
-        const int current_rank = groups.host_ranks[start];
-        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
-        int64 end = start + 1;
-        while (end < total_ngs)
-        {
-            const int next_rank = groups.host_ranks[end];
-            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
-            if (next_dispatch_rank != dispatch_rank)
-                break;
-            ++end;
-        }
+        const int dispatch_rank = normalized_dispatch_rank(groups, start);
+        const int64 end = next_rank_chunk_end(groups, start);
+        const GroupsSliceDev<Ti, Tv> slice = make_groups_slice(groups, start, end - start);
 
-        GroupsSliceDev<Ti, Tv> slice;
-        slice.num_groups = end - start;
-        slice.axs = groups.axs + start;
-        slice.bxs = groups.bxs + start;
-        slice.asyms = groups.asyms + start;
-        slice.bsyms = groups.bsyms + start;
-        slice.ranks = groups.ranks + start;
-        slice.num_zas = groups.num_zas + start;
-        slice.num_zbs = groups.num_zbs + start;
-        slice.za_start = groups.za_start + start;
-        slice.zb_start = groups.zb_start + start;
-        slice.wa_start = groups.wa_start + start;
-        slice.wb_start = groups.wb_start + start;
-        slice.flat_zas = groups.flat_zas;
-        slice.flat_zbs = groups.flat_zbs;
-        slice.flat_wa = groups.flat_wa;
-        slice.flat_wb = groups.flat_wb;
-        slice.original_idx = groups.original_idx + start;
-
-        int num_sms = 0;
-        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-        dim3 grid_size(num_active_blocks, num_sms * 4);
-        constexpr int block_size = 256;
-
-        if constexpr (TypeCode == 0)
+        switch (dispatch_rank)
         {
-            if (dispatch_rank == 1)
-                batchgrad_diag_kernel<1, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else if (dispatch_rank == 2)
-                batchgrad_diag_kernel<2, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else
-                batchgrad_diag_kernel<0, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 1)
-        {
-            if (dispatch_rank == 1)
-                batchgrad_offdiag_kernel<1, 1, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else if (dispatch_rank == 2)
-                batchgrad_offdiag_kernel<2, 1, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else
-                batchgrad_offdiag_kernel<0, 1, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 2)
-        {
-            if (dispatch_rank == 1)
-                batchgrad_offdiag_kernel<1, 2, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else if (dispatch_rank == 2)
-                batchgrad_offdiag_kernel<2, 2, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else
-                batchgrad_offdiag_kernel<0, 2, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-        }
-        else if constexpr (TypeCode == 3)
-        {
-            if (dispatch_rank == 1)
-                batchgrad_offdiag_kernel<1, 3, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else if (dispatch_rank == 2)
-                batchgrad_offdiag_kernel<2, 3, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
-            else
-                batchgrad_offdiag_kernel<0, 3, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, thetas, lp, rp, grads);
+        case 1:
+            launch_batchgrad_chunk<1, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, thetas, lp, rp, grads);
+            break;
+        case 2:
+            launch_batchgrad_chunk<2, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, thetas, lp, rp, grads);
+            break;
+        default:
+            launch_batchgrad_chunk<0, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, thetas, lp, rp, grads);
+            break;
         }
 
         start = end;

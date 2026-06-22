@@ -188,6 +188,56 @@ struct GroupsSliceDev
 };
 
 template <typename Ti, typename Tv>
+FORCE_INLINE GroupsSliceDev<Ti, Tv> make_groups_slice(
+    const GroupsViewDev<Ti, Tv> &groups,
+    int64 start,
+    int64 count)
+{
+    return GroupsSliceDev<Ti, Tv>{
+        static_cast<int>(count),
+        groups.axs + start,
+        groups.bxs + start,
+        groups.asyms + start,
+        groups.bsyms + start,
+        groups.ranks + start,
+        groups.num_zas + start,
+        groups.num_zbs + start,
+        groups.flat_zas,
+        groups.flat_zbs,
+        groups.flat_wa,
+        groups.flat_wb,
+        groups.za_start + start,
+        groups.zb_start + start,
+        groups.wa_start + start,
+        groups.wb_start + start,
+        groups.original_idx + start,
+    };
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE GroupsSliceDev<Ti, Tv> make_groups_slice(const GroupsViewDev<Ti, Tv> &groups)
+{
+    return make_groups_slice(groups, 0, groups.num_groups);
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE int normalized_dispatch_rank(const GroupsViewDev<Ti, Tv> &groups, int64 idx)
+{
+    const int rank = groups.host_ranks[idx];
+    return (rank == 1 || rank == 2) ? rank : 0;
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE int64 next_rank_chunk_end(const GroupsViewDev<Ti, Tv> &groups, int64 start)
+{
+    const int dispatch_rank = normalized_dispatch_rank(groups, start);
+    int64 end = start + 1;
+    while (end < groups.num_groups && normalized_dispatch_rank(groups, end) == dispatch_rank)
+        ++end;
+    return end;
+}
+
+template <typename Ti, typename Tv>
 struct NetworkDev
 {
     GroupsViewDev<Ti, Tv> diag_groups = {};
@@ -341,28 +391,4 @@ void *upload_network(const Network_OTF<Ti, Tv> *hn)
     dn->host_excit_types.assign(hn->excit_types, hn->excit_types + hn->num_groups);
 
     return static_cast<void *>(dn);
-}
-
-template <typename Ti, typename Tv>
-FORCE_INLINE GroupsSliceDev<Ti, Tv> make_groups_slice(const GroupsViewDev<Ti, Tv> &view)
-{
-    GroupsSliceDev<Ti, Tv> s;
-    s.num_groups = view.num_groups;
-    s.axs = view.axs;
-    s.bxs = view.bxs;
-    s.asyms = view.asyms;
-    s.bsyms = view.bsyms;
-    s.ranks = view.ranks;
-    s.num_zas = view.num_zas;
-    s.num_zbs = view.num_zbs;
-    s.flat_zas = view.flat_zas;
-    s.flat_zbs = view.flat_zbs;
-    s.flat_wa = view.flat_wa;
-    s.flat_wb = view.flat_wb;
-    s.za_start = view.za_start;
-    s.zb_start = view.zb_start;
-    s.wa_start = view.wa_start;
-    s.wb_start = view.wb_start;
-    s.original_idx = view.original_idx;
-    return s;
 }

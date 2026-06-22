@@ -369,68 +369,71 @@ static FORCE_INLINE void expm_contract_mixed_otf_impl(
     }
 }
 
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void launch_expm_contract_group(
+    const BasisManager<Ti> *basis,
+    const SVDGroup_OTF<Ti, Tv> &group,
+    double theta,
+    Tv *vec)
+{
+    if constexpr (TypeCode == 0)
+        expm_contract_diag_otf_impl<Rank>(basis, group, theta, vec);
+    else if constexpr (TypeCode == 1)
+        expm_contract_pure_a_otf_impl<Rank>(basis, group, theta, vec);
+    else if constexpr (TypeCode == 2)
+        expm_contract_pure_b_otf_impl<Rank>(basis, group, theta, vec);
+    else
+        expm_contract_mixed_otf_impl<Rank>(basis, group, theta, vec);
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void dispatch_expm_contract_group(
+    const BasisManager<Ti> *basis,
+    const SVDGroup_OTF<Ti, Tv> &group,
+    double theta,
+    Tv *vec)
+{
+    const int rank = (group.rank == 1 || group.rank == 2) ? group.rank : 0;
+    switch (rank)
+    {
+    case 1:
+        launch_expm_contract_group<1, TypeCode>(basis, group, theta, vec);
+        break;
+    case 2:
+        launch_expm_contract_group<2, TypeCode>(basis, group, theta, vec);
+        break;
+    default:
+        launch_expm_contract_group<0, TypeCode>(basis, group, theta, vec);
+        break;
+    }
+}
+
 template <typename Ti, typename Tv>
-void expm_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *vec)
+void expm_svd_network_otf(
+    const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *vec)
 {
     const uint8 type = net->excit_types[idx];
     const int64 pos = net->sorted_idxs[idx];
-
-    const SVDGroup_OTF<Ti, Tv> *group_ptr;
-    switch (type)
+    const SVDGroup_OTF<Ti, Tv> *group = group_by_type(net, type, pos);
+    if (group == nullptr)
     {
-    case 0:
-        group_ptr = &net->diag_groups[pos];
-        break;
-    case 1:
-        group_ptr = &net->pure_a_groups[pos];
-        break;
-    case 2:
-        group_ptr = &net->pure_b_groups[pos];
-        break;
-    case 3:
-        group_ptr = &net->mixed_groups[pos];
-        break;
-    default:
-        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in expm_svd" << std::endl;
+        std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in expm_svd_network_otf" << std::endl;
         return;
     }
 
-    const SVDGroup_OTF<Ti, Tv> &group = *group_ptr;
-    const int rank = group.rank;
-
     switch (type)
     {
     case 0:
-        if (rank == 1)
-            expm_contract_diag_otf_impl<1>(basis, group, theta, vec);
-        else if (rank == 2)
-            expm_contract_diag_otf_impl<2>(basis, group, theta, vec);
-        else
-            expm_contract_diag_otf_impl<0>(basis, group, theta, vec);
+        dispatch_expm_contract_group<0>(basis, *group, theta, vec);
         break;
     case 1:
-        if (rank == 1)
-            expm_contract_pure_a_otf_impl<1>(basis, group, theta, vec);
-        else if (rank == 2)
-            expm_contract_pure_a_otf_impl<2>(basis, group, theta, vec);
-        else
-            expm_contract_pure_a_otf_impl<0>(basis, group, theta, vec);
+        dispatch_expm_contract_group<1>(basis, *group, theta, vec);
         break;
     case 2:
-        if (rank == 1)
-            expm_contract_pure_b_otf_impl<1>(basis, group, theta, vec);
-        else if (rank == 2)
-            expm_contract_pure_b_otf_impl<2>(basis, group, theta, vec);
-        else
-            expm_contract_pure_b_otf_impl<0>(basis, group, theta, vec);
+        dispatch_expm_contract_group<2>(basis, *group, theta, vec);
         break;
     case 3:
-        if (rank == 1)
-            expm_contract_mixed_otf_impl<1>(basis, group, theta, vec);
-        else if (rank == 2)
-            expm_contract_mixed_otf_impl<2>(basis, group, theta, vec);
-        else
-            expm_contract_mixed_otf_impl<0>(basis, group, theta, vec);
+        dispatch_expm_contract_group<3>(basis, *group, theta, vec);
         break;
     }
 }
