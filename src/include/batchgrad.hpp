@@ -153,13 +153,29 @@ static FORCE_INLINE void grad_contract_batched_impl(
                         {
                             const double cd = -std::sin(theta);
                             const double co = std::cos(theta);
-#pragma omp simd reduction(+ : local_res)
-                            for (int b = 0; b < valid_nb; ++b)
+                            if constexpr (UsesBExcitation)
                             {
-                                const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
-                                const int64 si = sa + (UsesBExcitation ? src_b_idxs[batch_idx * max_b_count + b] : b);
-                                const int64 di = da + (UsesBExcitation ? dst_b_idxs[batch_idx * max_b_count + b] : b);
-                                grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                                const int *src_b_ptr = src_b_idxs.data() + batch_idx * max_b_count;
+                                const int *dst_b_ptr = dst_b_idxs.data() + batch_idx * max_b_count;
+#pragma omp simd reduction(+ : local_res)
+                                for (int b = 0; b < valid_nb; ++b)
+                                {
+                                    const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                    const int64 si = sa + src_b_ptr[b];
+                                    const int64 di = da + dst_b_ptr[b];
+                                    grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                                }
+                            }
+                            else
+                            {
+#pragma omp simd reduction(+ : local_res)
+                                for (int b = 0; b < valid_nb; ++b)
+                                {
+                                    const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                                    const int64 si = sa + b;
+                                    const int64 di = da + b;
+                                    grad_update<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                                }
                             }
                         }
                         thread_grads[g] += local_res;

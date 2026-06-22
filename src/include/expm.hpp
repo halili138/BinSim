@@ -125,18 +125,59 @@ static FORCE_INLINE void expm_contract_otf_impl(
             const int64 src_num_b = src_block.num_b;
             const int64 dst_num_b = dst_block.num_b;
 
-#pragma omp for collapse(2) schedule(static) nowait
-            for (int a = 0; a < valid_na; ++a)
+            if constexpr (IsDiagonal)
             {
-                for (int b = 0; b < valid_nb; ++b)
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
                 {
-                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    const int64 si = src_offset + (int64)(UsesAExcitation ? src_a[a] : a) * src_num_b + (UsesBExcitation ? src_b[b] : b);
-                    const int64 di = dst_offset + (int64)(UsesAExcitation ? dst_a[a] : a) * dst_num_b + (UsesBExcitation ? dst_b[b] : b);
-                    if constexpr (IsDiagonal)
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 di = dst_offset + (int64)a * dst_num_b + b;
                         vec[di] *= fast_diag_exp<Tv>(vt, theta);
-                    else
+                    }
+                }
+            }
+            else if constexpr (UsesAExcitation && UsesBExcitation)
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                {
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)src_a[a] * src_num_b + src_b[b];
+                        const int64 di = dst_offset + (int64)dst_a[a] * dst_num_b + dst_b[b];
                         expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+                    }
+                }
+            }
+            else if constexpr (UsesAExcitation)
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                {
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)src_a[a] * src_num_b + b;
+                        const int64 di = dst_offset + (int64)dst_a[a] * dst_num_b + b;
+                        expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+                    }
+                }
+            }
+            else
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                {
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)a * src_num_b + src_b[b];
+                        const int64 di = dst_offset + (int64)a * dst_num_b + dst_b[b];
+                        expm_update<Tv>(vec + si, vec + di, vt, cd, co);
+                    }
                 }
             }
         }
