@@ -64,6 +64,29 @@ static FORCE_INLINE auto dispatch_contract_network(const BasisManager<Ti> *basis
 }
 
 template <typename Tv>
+struct DiagElementsContractOp
+{
+    using Result = Tv;
+    static constexpr bool Accumulates = false;
+
+    Tv *diags;
+
+    FORCE_INLINE void diag(Result &, Tv vt, int64 di) const
+    {
+        diags[di] += vt;
+    }
+
+    FORCE_INLINE void offdiag(Result &, Tv, int64, int64) const {}
+};
+
+template <typename Ti, typename Tv>
+void get_diags_elements(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, Tv *diags)
+{
+    const DiagElementsContractOp<Tv> op{diags};
+    (void)dispatch_contract_group_by_rank<0>(basis, net->diag_groups[0], op);
+}
+
+template <typename Tv>
 struct ExpmContractOp
 {
     using Result = Tv;
