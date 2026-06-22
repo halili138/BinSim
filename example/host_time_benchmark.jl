@@ -10,7 +10,7 @@ function test_hvec(mole, nsteps)
     ham   = JW_hamiltonian(mole)
     v     = get_hf(basis, mole.nelec)
     w     = zeros(Float64, basis.dim)
-    funcs = OTF_Functions(basis, ham, typeof(ham)[])
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=true)
 
     for _ in 1:nsteps
         funcs.hvec(v, w)

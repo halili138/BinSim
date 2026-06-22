@@ -31,9 +31,6 @@ static inline void gather_contract_batched_impl(
 
 #pragma omp parallel
     {
-        std::vector<int> local_src_a_idxs(BATCH_SIZE);
-        std::vector<Tv> local_a_phase(BATCH_SIZE * MAX_RANK);
-
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
@@ -95,14 +92,10 @@ static inline void gather_contract_batched_impl(
 #pragma omp for schedule(dynamic)
                 for (int a = 0; a < dst_block.num_a; ++a)
                 {
-                    constexpr int HOST_TILE_B = 32;
                     const Ti dst_str_a = dst_block.astrs[a];
-                    Tv *da = dst_vec + dst_block.offset + (int64)a * dst_block.num_b;
-                    int active_group_count = 0;
-
+                    Tv *da = dst_vec + dst_block.offset + a * dst_block.num_b;
                     for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
                     {
-                        local_src_a_idxs[batch_idx] = -1;
                         const int valid_b_count = valid_b_counts[batch_idx];
                         if (valid_b_count == 0)
                             continue;
@@ -119,61 +112,21 @@ static inline void gather_contract_batched_impl(
                                 continue;
                         }
 
-                        Tv *pa = local_a_phase.data() + batch_idx * MAX_RANK;
+                        Tv pa[MAX_RANK] = {};
                         precompute_phase<Rank, Ti, Tv>(src_str_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
-                        local_src_a_idxs[batch_idx] = src_a_idx;
-                        ++active_group_count;
-                    }
 
-                    if (active_group_count == 0)
-                        continue;
-
-                    for (int b_tile = 0; b_tile < dst_block.num_b; b_tile += HOST_TILE_B)
-                    {
-                        const int tile_b_count = std::min(HOST_TILE_B, static_cast<int>(dst_block.num_b - b_tile));
-                        Tv accum[HOST_TILE_B] = {};
-
-                        for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
-                        {
-                            const int src_a_idx = local_src_a_idxs[batch_idx];
-                            if (src_a_idx == -1)
-                                continue;
-
-                            const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                            const BlockDesc<Ti> &src_block = IsDiagonal ? dst_block : blocks[src_block_idxs[batch_idx]];
-                            const int rank = group.rank;
-                            const Tv *pa = local_a_phase.data() + batch_idx * MAX_RANK;
-                            const Tv *pb = batch_phase.data() + batch_idx * shift;
-                            const int *si = src_b_idxs.data() + batch_idx * max_b_count;
-                            const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
-                            const Tv *sa = src_vec + src_block.offset + (int64)src_a_idx * src_block.num_b;
-
-                            const int valid_b_count = valid_b_counts[batch_idx];
-                            int b = 0;
-                            while (b < valid_b_count && di[b] < b_tile)
-                                ++b;
+                        const BlockDesc<Ti> &src_block = IsDiagonal ? dst_block : blocks[src_block_idxs[batch_idx]];
+                        const int rank = group.rank;
+                        const Tv *pb = batch_phase.data() + batch_idx * shift;
+                        const int *si = src_b_idxs.data() + batch_idx * max_b_count;
+                        const int *di = dst_b_idxs.data() + batch_idx * max_b_count;
+                        const Tv *sa = src_vec + src_block.offset + src_a_idx * src_block.num_b;
 
 #pragma omp simd
-                            for (int b_offset = 0; b_offset < tile_b_count; ++b_offset)
-                            {
-                                const int dst_b = b_tile + b_offset;
-                                Tv sum = {};
-                                for (int j = b; j < valid_b_count && di[j] < b_tile + tile_b_count; ++j)
-                                {
-                                    if (di[j] == dst_b)
-                                    {
-                                        const Tv vt = compute_coeff<Rank, Tv>(j, pa, pb, max_b_count, rank);
-                                        sum += sa[si[j]] * vt;
-                                    }
-                                }
-                                accum[b_offset] += sum;
-                            }
-                        }
-
-#pragma omp simd
-                        for (int b_offset = 0; b_offset < tile_b_count; ++b_offset)
+                        for (int b = 0; b < valid_b_count; ++b)
                         {
-                            da[b_tile + b_offset] += accum[b_offset];
+                            const Tv vt = compute_coeff<Rank, Tv>(b, pa, pb, max_b_count, rank);
+                            hvec_update<Tv>(sa + si[b], da + di[b], vt);
                         }
                     }
                 }
@@ -214,7 +167,6 @@ static inline void dispatch_chunks_by_rank(
             gather_contract_batched_impl<0, TypeCode>(view, chunk_ptr, chunk_size, src_vec, dst_vec);
             break;
         }
-
         start = end;
     }
 }
