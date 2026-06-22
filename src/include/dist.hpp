@@ -1,7 +1,6 @@
 #pragma once
 #include "basis.hpp"
 #include "otf.hpp"
-#include "hvec.hpp"
 
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
 {
