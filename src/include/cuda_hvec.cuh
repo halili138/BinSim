@@ -210,18 +210,6 @@ __global__ void hvec_gather_kernel(
     }
 }
 
-template <int Rank, int TypeCode, typename Ti, typename Tv>
-static inline void launch_hvec_chunk(
-    const BasisSliceDev<Ti> &basis_slice,
-    const GroupsSliceDev<Ti, Tv> &groups_slice,
-    dim3 grid_size,
-    int block_size,
-    const Tv *__restrict__ src_vec,
-    Tv *__restrict__ dst_vec)
-{
-    hvec_gather_kernel<Rank, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, groups_slice, src_vec, dst_vec);
-}
-
 template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_chunks_by_rank_gpu(
     const BasisSliceDev<Ti> &basis_slice, int num_active_blocks,
@@ -248,13 +236,13 @@ static inline void dispatch_chunks_by_rank_gpu(
         switch (dispatch_rank)
         {
         case 1:
-            launch_hvec_chunk<1, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, src_vec, dst_vec);
+            hvec_gather_kernel<1, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, src_vec, dst_vec);
             break;
         case 2:
-            launch_hvec_chunk<2, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, src_vec, dst_vec);
+            hvec_gather_kernel<2, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, src_vec, dst_vec);
             break;
         default:
-            launch_hvec_chunk<0, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, src_vec, dst_vec);
+            hvec_gather_kernel<0, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, src_vec, dst_vec);
             break;
         }
 
@@ -270,8 +258,8 @@ void cuda_hvec(
     Tv *__restrict__ dst_vec)
 {
     cudaMemset(dst_vec, 0, basis.dim * sizeof(Tv));
-    BasisSliceDev<Ti> slice = make_basis_slice(basis);
-    
+    const BasisSliceDev<Ti> slice = make_basis_slice(basis);
+
     dispatch_chunks_by_rank_gpu<0>(slice, basis.num_blocks, net.diag_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank_gpu<1>(slice, basis.num_blocks, net.pure_a_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank_gpu<2>(slice, basis.num_blocks, net.pure_b_groups, src_vec, dst_vec);
