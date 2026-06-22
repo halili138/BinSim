@@ -22,25 +22,17 @@ static FORCE_INLINE typename Op::Result dispatch_contract_group_by_rank(
     }
 }
 
-template <int TypeCode, typename Ti, typename Tv, typename OpFactory>
-static FORCE_INLINE auto dispatch_contract_group(
-    const BasisManager<Ti> *basis,
-    const SVDGroup_OTF<Ti, Tv> &group,
-    OpFactory make_op)
-{
-    return dispatch_contract_group_by_rank<TypeCode>(basis, group, make_op());
-}
 
-template <int TypeCode, typename Ti, typename Tv, typename OpFactory>
+template <int TypeCode, typename Ti, typename Tv, typename Op>
 static FORCE_INLINE auto dispatch_contract_network(
     const BasisManager<Ti> *basis,
     const Network_OTF<Ti, Tv> *net,
     int64 idx,
-    OpFactory make_op)
+    Op op)
 {
     const int64 pos = net->sorted_idxs[idx];
     const SVDGroup_OTF<Ti, Tv> *group = group_by_type(net, TypeCode, pos);
-    using Result = decltype(dispatch_contract_group<TypeCode>(basis, *group, make_op));
+    using Result = decltype(dispatch_contract_group_by_rank<TypeCode>(basis, *group, op));
     if (group == nullptr)
     {
         std::cerr << "Error: Unexpected type = " << TypeCode << " in dispatch_contract_network" << std::endl;
@@ -50,31 +42,31 @@ static FORCE_INLINE auto dispatch_contract_network(
             return Result{};
     }
 
-    return dispatch_contract_group<TypeCode>(basis, *group, make_op);
+    return dispatch_contract_group_by_rank<TypeCode>(basis, *group, op);
 }
 
-template <typename Ti, typename Tv, typename OpFactory>
+template <typename Ti, typename Tv, typename Op>
 static FORCE_INLINE auto dispatch_contract_network(
     const BasisManager<Ti> *basis,
     const Network_OTF<Ti, Tv> *net,
     int64 idx,
-    OpFactory make_op)
+    Op op)
 {
     const uint8 type = net->excit_types[idx];
 
     switch (type)
     {
     case 0:
-        return dispatch_contract_network<0>(basis, net, idx, make_op);
+        return dispatch_contract_network<0>(basis, net, idx, op);
     case 1:
-        return dispatch_contract_network<1>(basis, net, idx, make_op);
+        return dispatch_contract_network<1>(basis, net, idx, op);
     case 2:
-        return dispatch_contract_network<2>(basis, net, idx, make_op);
+        return dispatch_contract_network<2>(basis, net, idx, op);
     case 3:
-        return dispatch_contract_network<3>(basis, net, idx, make_op);
+        return dispatch_contract_network<3>(basis, net, idx, op);
     default:
     {
-        using Result = decltype(dispatch_contract_network<0>(basis, net, idx, make_op));
+        using Result = decltype(dispatch_contract_network<0>(basis, net, idx, op));
         std::cerr << "Error: Unexpected type = " << static_cast<int>(type) << " in dispatch_contract_network" << std::endl;
         if constexpr (std::is_void_v<Result>)
             return;
@@ -113,24 +105,24 @@ static FORCE_INLINE void dispatch_expm_contract_group(
     double theta,
     Tv *vec)
 {
-    const auto make_op = [=]() { return ExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), vec}; };
-    (void)dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const ExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), vec};
+    (void)dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
 void expm_svd_network_otf(
     const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *vec)
 {
-    const auto make_op = [=]() { return ExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), vec}; };
-    (void)dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const ExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), vec};
+    (void)dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
 void expm_svd_network_otf(
     const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *vec)
 {
-    const auto make_op = [=]() { return ExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), vec}; };
-    (void)dispatch_contract_network(basis, net, idx, make_op);
+    const ExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), vec};
+    (void)dispatch_contract_network(basis, net, idx, op);
 }
 
 template <typename Tv>
@@ -162,22 +154,22 @@ static FORCE_INLINE Tv dispatch_grad_contract_group(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
     double theta, const Tv *lp, const Tv *rp)
 {
-    const auto make_op = [=]() { return GradContractOp<Tv>{theta, -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const GradContractOp<Tv> op{theta, -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
 Tv grad_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, const Tv *lp, const Tv *rp)
 {
-    const auto make_op = [=]() { return GradContractOp<Tv>{theta, -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const GradContractOp<Tv> op{theta, -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
 Tv grad_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, const Tv *lp, const Tv *rp)
 {
-    const auto make_op = [=]() { return GradContractOp<Tv>{theta, -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_network(basis, net, idx, make_op);
+    const GradContractOp<Tv> op{theta, -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_network(basis, net, idx, op);
 }
 
 template <typename Tv>
@@ -205,8 +197,8 @@ static FORCE_INLINE void dispatch_tvec_contract_group(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec, Tv *dst_vec)
 {
-    const auto make_op = [=]() { return TVecContractOp<Tv>{src_vec, dst_vec}; };
-    (void)dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const TVecContractOp<Tv> op{src_vec, dst_vec};
+    (void)dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
@@ -217,8 +209,8 @@ void tvec_svd_network_otf(
     for (int64 i = 0; i < basis->dim; ++i)
         dst_vec[i] = {};
 
-    const auto make_op = [=]() { return TVecContractOp<Tv>{src_vec, dst_vec}; };
-    (void)dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const TVecContractOp<Tv> op{src_vec, dst_vec};
+    (void)dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
@@ -229,8 +221,8 @@ void tvec_svd_network_otf(
     for (int64 i = 0; i < basis->dim; ++i)
         dst_vec[i] = {};
 
-    const auto make_op = [=]() { return TVecContractOp<Tv>{src_vec, dst_vec}; };
-    (void)dispatch_contract_network(basis, net, idx, make_op);
+    const TVecContractOp<Tv> op{src_vec, dst_vec};
+    (void)dispatch_contract_network(basis, net, idx, op);
 }
 
 template <typename Tv>
@@ -267,22 +259,22 @@ static FORCE_INLINE Tv dispatch_backgrad_contract_group(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
     double theta, Tv *lp, Tv *rp)
 {
-    const auto make_op = [=]() { return BackgradContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const BackgradContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
 Tv backgrad_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *lp, Tv *rp)
 {
-    const auto make_op = [=]() { return BackgradContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const BackgradContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
 Tv backgrad_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta, Tv *lp, Tv *rp)
 {
-    const auto make_op = [=]() { return BackgradContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp}; };
-    return dispatch_contract_network(basis, net, idx, make_op);
+    const BackgradContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp};
+    return dispatch_contract_network(basis, net, idx, op);
 }
 
 template <typename Tv>
@@ -317,8 +309,8 @@ static FORCE_INLINE void dispatch_backtran_contract_group(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
     double theta, Tv *lp, Tv *rp, Tv *bp)
 {
-    const auto make_op = [=]() { return BacktranContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp}; };
-    (void)dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const BacktranContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp};
+    (void)dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
@@ -328,8 +320,8 @@ void backtran_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<T
     for (int64 i = 0; i < basis->dim; ++i)
         bp[i] = {};
 
-    const auto make_op = [=]() { return BacktranContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp}; };
-    (void)dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const BacktranContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp};
+    (void)dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
@@ -339,8 +331,8 @@ void backtran_svd_network_otf(const BasisManager<Ti> *basis, const Network_OTF<T
     for (int64 i = 0; i < basis->dim; ++i)
         bp[i] = {};
 
-    const auto make_op = [=]() { return BacktranContractOp<Tv>{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp}; };
-    (void)dispatch_contract_network(basis, net, idx, make_op);
+    const BacktranContractOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), lp, rp, bp};
+    (void)dispatch_contract_network(basis, net, idx, op);
 }
 
 template <typename Tv>
@@ -374,8 +366,8 @@ static FORCE_INLINE void dispatch_expm_batched_contract_group(
     double theta,
     Tv *matrix, int ld, int num_vecs)
 {
-    const auto make_op = [=]() { return BatchedExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs}; };
-    (void)dispatch_contract_group<TypeCode>(basis, group, make_op);
+    const BatchedExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs};
+    (void)dispatch_contract_group_by_rank<TypeCode>(basis, group, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv>
@@ -383,8 +375,8 @@ void expm_svd_batched_network_otf(
     const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta,
     Tv *matrix, int ld, int num_vecs)
 {
-    const auto make_op = [=]() { return BatchedExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs}; };
-    (void)dispatch_contract_network<TypeCode>(basis, net, idx, make_op);
+    const BatchedExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs};
+    (void)dispatch_contract_network<TypeCode>(basis, net, idx, op);
 }
 
 template <typename Ti, typename Tv>
@@ -392,6 +384,6 @@ void expm_svd_batched_network_otf(
     const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, int64 idx, double theta,
     Tv *matrix, int ld, int num_vecs)
 {
-    const auto make_op = [=]() { return BatchedExpmContractOp<Tv>{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs}; };
-    (void)dispatch_contract_network(basis, net, idx, make_op);
+    const BatchedExpmContractOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), matrix, ld, num_vecs};
+    (void)dispatch_contract_network(basis, net, idx, op);
 }
