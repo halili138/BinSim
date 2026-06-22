@@ -1,6 +1,6 @@
 #include "otf.hpp"
 #include "hvec.hpp"
-#include "contract.hpp"
+#include "host_interface.hpp"
 #include "batchgrad.hpp"
 #include "batchtran.hpp"
 

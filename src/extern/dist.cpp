@@ -1,5 +1,5 @@
 #include "dist.hpp"
-#include "contract.hpp"
+#include "host_interface.hpp"
 
 extern "C"
 {
