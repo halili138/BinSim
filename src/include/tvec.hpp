@@ -2,263 +2,15 @@
 #include "otf.hpp"
 #include "utils.hpp"
 
-template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_diag_otf_impl(
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void tvec_contract_otf_impl(
     const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
     const Tv *src_vec, Tv *dst_vec)
 {
-    const int rank = group.rank;
-    const int num_za = group.num_za;
-    const int num_zb = group.num_zb;
-    const Ti *zas = group.unique_zas;
-    const Ti *zbs = group.unique_zbs;
-    const Tv *wa0 = group.wa;
-    const Tv *wb0 = group.wb;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
+    constexpr bool IsDiagonal = TypeCode == 0;
+    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
+    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
 
-#pragma omp parallel
-    {
-        std::vector<Tv> local_a_phase(max_a_count * rank);
-        std::vector<Tv> local_b_phase(max_b_count * rank);
-
-        for (int block_idx = 0; block_idx < num_blocks; ++block_idx)
-        {
-            const BlockDesc<Ti> &block = blocks[block_idx];
-            const Ti *astrs = block.astrs;
-            const Ti *bstrs = block.bstrs;
-            const int a_count = block.num_a;
-            const int b_count = block.num_b;
-            Tv *pa0 = local_a_phase.data();
-            Tv *pb0 = local_b_phase.data();
-
-            for (int i = 0; i < a_count; ++i)
-            {
-                precompute_phase<Rank, Ti, Tv>(astrs[i], zas, num_za, wa0, pa0 + i, max_a_count, rank);
-            }
-
-            for (int i = 0; i < b_count; ++i)
-            {
-                precompute_phase<Rank, Ti, Tv>(bstrs[i], zbs, num_zb, wb0, pb0 + i, max_b_count, rank);
-            }
-
-            const Tv *pa = local_a_phase.data();
-            const Tv *pb = local_b_phase.data();
-            const int64 offset = block.offset;
-
-#pragma omp for collapse(2) schedule(static) nowait
-            for (int a = 0; a < a_count; ++a)
-            {
-                for (int b = 0; b < b_count; ++b)
-                {
-                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    const int64 i = offset + (int64)a * b_count + b;
-                    dst_vec[i] = src_vec[i] * vt;
-                }
-            }
-        }
-    }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_pure_a_otf_impl(
-    const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec, Tv *dst_vec)
-{
-    const int rank = group.rank;
-    const int num_za = group.num_za;
-    const int num_zb = group.num_zb;
-    const Ti *zas = group.unique_zas;
-    const Ti *zbs = group.unique_zbs;
-    const Tv *wa0 = group.wa;
-    const Tv *wb0 = group.wb;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int64 *block_map = basis->block_map;
-    const int64 num_irreps = basis->num_irreps;
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
-    const int *a_idx_map = basis->a_idx_map;
-
-#pragma omp parallel
-    {
-        std::vector<int> src_a(max_a_count);
-        std::vector<int> dst_a(max_a_count);
-        std::vector<Tv> phase_a(max_a_count * rank);
-        std::vector<Tv> phase_b(max_b_count * rank);
-
-        for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
-        {
-            const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 h = (dst_block.asym ^ group.asym) * num_irreps + dst_block.bsym;
-            const int64 src_block_idx = block_map[h];
-
-            if (src_block_idx == -1)
-                continue;
-
-            if (src_block_idx < dst_block_idx)
-                continue;
-
-            const BlockDesc<Ti> &src_block = blocks[src_block_idx];
-            const bool is_same_block = (src_block_idx == dst_block_idx);
-            Tv *pa0 = phase_a.data();
-            Tv *pb0 = phase_b.data();
-
-            int valid_na = 0;
-            for (int i = 0; i < dst_block.num_a; ++i)
-            {
-                const Ti dst_str = dst_block.astrs[i];
-                const Ti src_str = dst_str ^ group.ax;
-                const int src_idx = a_idx_map[src_str];
-
-                if (src_idx == -1)
-                    continue;
-
-                if (is_same_block && src_idx < i)
-                    continue;
-
-                src_a[valid_na] = src_idx;
-                dst_a[valid_na] = i;
-
-                precompute_phase<Rank, Ti, Tv>(src_str, zas, num_za, wa0, pa0 + valid_na, max_a_count, rank);
-
-                valid_na++;
-            }
-
-            if (valid_na == 0)
-                continue;
-
-            for (int i = 0; i < dst_block.num_b; ++i)
-            {
-                precompute_phase<Rank, Ti, Tv>(dst_block.bstrs[i], zbs, num_zb, wb0, pb0 + i, max_b_count, rank);
-            }
-
-            const Tv *pa = phase_a.data();
-            const Tv *pb = phase_b.data();
-            const int64 src_offset = src_block.offset;
-            const int64 dst_offset = dst_block.offset;
-            const int64 src_num_b = src_block.num_b;
-            const int64 dst_num_b = dst_block.num_b;
-
-#pragma omp for collapse(2) schedule(static) nowait
-            for (int a = 0; a < valid_na; ++a)
-            {
-                for (int b = 0; b < dst_num_b; ++b)
-                {
-                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    const int64 si = src_offset + src_a[a] * src_num_b + b;
-                    const int64 di = dst_offset + dst_a[a] * dst_num_b + b;
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
-                }
-            }
-        }
-    }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_pure_b_otf_impl(
-    const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec, Tv *dst_vec)
-{
-    const int rank = group.rank;
-    const int num_za = group.num_za;
-    const int num_zb = group.num_zb;
-    const Ti *zas = group.unique_zas;
-    const Ti *zbs = group.unique_zbs;
-    const Tv *wa0 = group.wa;
-    const Tv *wb0 = group.wb;
-    const BlockDesc<Ti> *blocks = basis->blocks;
-    const int64 num_blocks = basis->num_blocks;
-    const int64 *block_map = basis->block_map;
-    const int64 num_irreps = basis->num_irreps;
-    const int max_a_count = (int)basis->max_a_count;
-    const int max_b_count = (int)basis->max_b_count;
-    const int *b_idx_map = basis->b_idx_map;
-
-#pragma omp parallel
-    {
-        std::vector<Tv> phase_a(max_a_count * rank);
-        std::vector<int> src_b(max_b_count);
-        std::vector<int> dst_b(max_b_count);
-        std::vector<Tv> phase_b(max_b_count * rank);
-
-        for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
-        {
-            const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 h = dst_block.asym * num_irreps + (dst_block.bsym ^ group.bsym);
-            const int64 src_block_idx = block_map[h];
-
-            if (src_block_idx == -1)
-                continue;
-
-            if (src_block_idx < dst_block_idx)
-                continue;
-
-            const BlockDesc<Ti> &src_block = blocks[src_block_idx];
-            const bool is_same_block = (src_block_idx == dst_block_idx);
-            Tv *pa0 = phase_a.data();
-            Tv *pb0 = phase_b.data();
-
-            int valid_nb = 0;
-            for (int i = 0; i < dst_block.num_b; ++i)
-            {
-                const Ti dst_str = dst_block.bstrs[i];
-                const Ti src_str = dst_str ^ group.bx;
-                const int src_idx = b_idx_map[src_str];
-
-                if (src_idx == -1)
-                    continue;
-
-                if (is_same_block && src_idx < i)
-                    continue;
-
-                src_b[valid_nb] = src_idx;
-                dst_b[valid_nb] = i;
-
-                precompute_phase<Rank, Ti, Tv>(src_str, zbs, num_zb, wb0, pb0 + valid_nb, max_b_count, rank);
-
-                valid_nb++;
-            }
-
-            if (valid_nb == 0)
-                continue;
-
-            for (int i = 0; i < dst_block.num_a; ++i)
-            {
-                precompute_phase<Rank, Ti, Tv>(dst_block.astrs[i], zas, num_za, wa0, pa0 + i, max_a_count, rank);
-            }
-
-            const Tv *pa = phase_a.data();
-            const Tv *pb = phase_b.data();
-            const int64 src_offset = src_block.offset;
-            const int64 dst_offset = dst_block.offset;
-            const int64 src_num_b = src_block.num_b;
-            const int64 dst_num_b = dst_block.num_b;
-
-#pragma omp for collapse(2) schedule(static) nowait
-            for (int a = 0; a < dst_block.num_a; ++a)
-            {
-                for (int b = 0; b < valid_nb; ++b)
-                {
-                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    const int64 si = src_offset + a * src_num_b + src_b[b];
-                    const int64 di = dst_offset + a * dst_num_b + dst_b[b];
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
-                }
-            }
-        }
-    }
-}
-
-template <int Rank, typename Ti, typename Tv>
-static FORCE_INLINE void tvec_contract_mixed_otf_impl(
-    const BasisManager<Ti> *basis,
-    const SVDGroup_OTF<Ti, Tv> &group,
-    const Tv *src_vec,
-    Tv *dst_vec)
-{
     const int rank = group.rank;
     const int num_za = group.num_za;
     const int num_zb = group.num_zb;
@@ -277,72 +29,88 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
 
 #pragma omp parallel
     {
-        std::vector<int> src_a(max_a_count);
-        std::vector<int> dst_a(max_a_count);
+        std::vector<int> src_a(UsesAExcitation ? max_a_count : 1);
+        std::vector<int> dst_a(UsesAExcitation ? max_a_count : 1);
         std::vector<Tv> phase_a(max_a_count * rank);
-        std::vector<int> src_b(max_b_count);
-        std::vector<int> dst_b(max_b_count);
+        std::vector<int> src_b(UsesBExcitation ? max_b_count : 1);
+        std::vector<int> dst_b(UsesBExcitation ? max_b_count : 1);
         std::vector<Tv> phase_b(max_b_count * rank);
 
         for (int dst_block_idx = 0; dst_block_idx < num_blocks; ++dst_block_idx)
         {
             const BlockDesc<Ti> &dst_block = blocks[dst_block_idx];
-            const int64 h = (dst_block.asym ^ group.asym) * num_irreps + (dst_block.bsym ^ group.bsym);
-            const int64 src_block_idx = block_map[h];
-
-            if (src_block_idx == -1)
-                continue;
-
-            if (src_block_idx < dst_block_idx)
-                continue;
+            int64 src_block_idx = dst_block_idx;
+            if constexpr (!IsDiagonal)
+            {
+                int64 h;
+                if constexpr (TypeCode == 1)
+                    h = (dst_block.asym ^ group.asym) * num_irreps + dst_block.bsym;
+                else if constexpr (TypeCode == 2)
+                    h = dst_block.asym * num_irreps + (dst_block.bsym ^ group.bsym);
+                else
+                    h = (dst_block.asym ^ group.asym) * num_irreps + (dst_block.bsym ^ group.bsym);
+                src_block_idx = block_map[h];
+                if (src_block_idx == -1 || src_block_idx < dst_block_idx)
+                    continue;
+            }
 
             const BlockDesc<Ti> &src_block = blocks[src_block_idx];
             const bool is_same_block = (src_block_idx == dst_block_idx);
             Tv *pa0 = phase_a.data();
             Tv *pb0 = phase_b.data();
 
-            int valid_na = 0;
-            for (int i = 0; i < dst_block.num_a; ++i)
+            int valid_na = dst_block.num_a;
+            if constexpr (UsesAExcitation)
             {
-                const Ti dst_str = dst_block.astrs[i];
-                const Ti src_str = dst_str ^ group.ax;
-                const int src_idx = a_idx_map[src_str];
-
-                if (src_idx == -1)
-                    continue;
-
-                if (is_same_block && src_idx < i)
-                    continue;
-
-                src_a[valid_na] = src_idx;
-                dst_a[valid_na] = i;
-
-                precompute_phase<Rank, Ti, Tv>(src_str, zas, num_za, wa0, pa0 + valid_na, max_a_count, rank);
-
-                valid_na++;
+                valid_na = 0;
+                for (int i = 0; i < dst_block.num_a; ++i)
+                {
+                    const Ti dst_str = dst_block.astrs[i];
+                    const Ti src_str = dst_str ^ group.ax;
+                    const int src_idx = a_idx_map[src_str];
+                    if (src_idx == -1 || (is_same_block && src_idx < i))
+                        continue;
+                    src_a[valid_na] = src_idx;
+                    dst_a[valid_na] = i;
+                    precompute_phase<Rank, Ti, Tv>(src_str, zas, num_za, wa0, pa0 + valid_na, max_a_count, rank);
+                    valid_na++;
+                }
             }
-
+            else
+            {
+                for (int i = 0; i < dst_block.num_a; ++i)
+                    precompute_phase<Rank, Ti, Tv>(dst_block.astrs[i], zas, num_za, wa0, pa0 + i, max_a_count, rank);
+            }
             if (valid_na == 0)
                 continue;
 
-            int valid_nb = 0;
-            for (int i = 0; i < dst_block.num_b; ++i)
+            int valid_nb = dst_block.num_b;
+            if constexpr (UsesBExcitation)
             {
-                const Ti dst_str = dst_block.bstrs[i];
-                const Ti src_str = dst_str ^ group.bx;
-                const int src_idx = b_idx_map[src_str];
-
-                if (src_idx == -1)
-                    continue;
-
-                src_b[valid_nb] = src_idx;
-                dst_b[valid_nb] = i;
-
-                precompute_phase<Rank, Ti, Tv>(src_str, zbs, num_zb, wb0, pb0 + valid_nb, max_b_count, rank);
-
-                valid_nb++;
+                valid_nb = 0;
+                for (int i = 0; i < dst_block.num_b; ++i)
+                {
+                    const Ti dst_str = dst_block.bstrs[i];
+                    const Ti src_str = dst_str ^ group.bx;
+                    const int src_idx = b_idx_map[src_str];
+                    if (src_idx == -1)
+                        continue;
+                    if constexpr (TypeCode == 2)
+                    {
+                        if (is_same_block && src_idx < i)
+                            continue;
+                    }
+                    src_b[valid_nb] = src_idx;
+                    dst_b[valid_nb] = i;
+                    precompute_phase<Rank, Ti, Tv>(src_str, zbs, num_zb, wb0, pb0 + valid_nb, max_b_count, rank);
+                    valid_nb++;
+                }
             }
-
+            else
+            {
+                for (int i = 0; i < dst_block.num_b; ++i)
+                    precompute_phase<Rank, Ti, Tv>(dst_block.bstrs[i], zbs, num_zb, wb0, pb0 + i, max_b_count, rank);
+            }
             if (valid_nb == 0)
                 continue;
 
@@ -353,18 +121,82 @@ static FORCE_INLINE void tvec_contract_mixed_otf_impl(
             const int64 src_num_b = src_block.num_b;
             const int64 dst_num_b = dst_block.num_b;
 
-#pragma omp for collapse(2) schedule(static) nowait
-            for (int a = 0; a < valid_na; ++a)
+            if constexpr (IsDiagonal)
             {
-                for (int b = 0; b < valid_nb; ++b)
-                {
-                    const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
-                    const int64 si = src_offset + src_a[a] * src_num_b + src_b[b];
-                    const int64 di = dst_offset + dst_a[a] * dst_num_b + dst_b[b];
-                    tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
-                }
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 i = dst_offset + (int64)a * dst_num_b + b;
+                        dst_vec[i] = src_vec[i] * vt;
+                    }
+            }
+            else if constexpr (UsesAExcitation && UsesBExcitation)
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)src_a[a] * src_num_b + src_b[b];
+                        const int64 di = dst_offset + (int64)dst_a[a] * dst_num_b + dst_b[b];
+                        tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    }
+            }
+            else if constexpr (UsesAExcitation)
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)src_a[a] * src_num_b + b;
+                        const int64 di = dst_offset + (int64)dst_a[a] * dst_num_b + b;
+                        tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    }
+            }
+            else
+            {
+#pragma omp for collapse(2) schedule(static) nowait
+                for (int a = 0; a < valid_na; ++a)
+                    for (int b = 0; b < valid_nb; ++b)
+                    {
+                        const Tv vt = compute_coeff<Rank, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
+                        const int64 si = src_offset + (int64)a * src_num_b + src_b[b];
+                        const int64 di = dst_offset + (int64)a * dst_num_b + dst_b[b];
+                        tvec_update<Tv>(src_vec + si, src_vec + di, dst_vec + si, dst_vec + di, vt);
+                    }
             }
         }
+    }
+}
+
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void launch_tvec_contract_group(
+    const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
+    const Tv *src_vec, Tv *dst_vec)
+{
+    tvec_contract_otf_impl<Rank, TypeCode>(basis, group, src_vec, dst_vec);
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static FORCE_INLINE void dispatch_tvec_contract_group(
+    const BasisManager<Ti> *basis, const SVDGroup_OTF<Ti, Tv> &group,
+    const Tv *src_vec, Tv *dst_vec)
+{
+    const int rank = (group.rank == 1 || group.rank == 2) ? group.rank : 0;
+    switch (rank)
+    {
+    case 1:
+        launch_tvec_contract_group<1, TypeCode>(basis, group, src_vec, dst_vec);
+        break;
+    case 2:
+        launch_tvec_contract_group<2, TypeCode>(basis, group, src_vec, dst_vec);
+        break;
+    default:
+        launch_tvec_contract_group<0, TypeCode>(basis, group, src_vec, dst_vec);
+        break;
     }
 }
 
@@ -397,8 +229,6 @@ void tvec_svd_network_otf(
     }
 
     const SVDGroup_OTF<Ti, Tv> &group = *group_ptr;
-    const int rank = group.rank;
-
 #pragma omp parallel for schedule(static)
     for (int64 i = 0; i < basis->dim; ++i)
     {
@@ -408,36 +238,16 @@ void tvec_svd_network_otf(
     switch (type)
     {
     case 0:
-        if (rank == 1)
-            tvec_contract_diag_otf_impl<1>(basis, group, src_vec, dst_vec);
-        else if (rank == 2)
-            tvec_contract_diag_otf_impl<2>(basis, group, src_vec, dst_vec);
-        else
-            tvec_contract_diag_otf_impl<0>(basis, group, src_vec, dst_vec);
+        dispatch_tvec_contract_group<0>(basis, group, src_vec, dst_vec);
         break;
     case 1:
-        if (rank == 1)
-            tvec_contract_pure_a_otf_impl<1>(basis, group, src_vec, dst_vec);
-        else if (rank == 2)
-            tvec_contract_pure_a_otf_impl<2>(basis, group, src_vec, dst_vec);
-        else
-            tvec_contract_pure_a_otf_impl<0>(basis, group, src_vec, dst_vec);
+        dispatch_tvec_contract_group<1>(basis, group, src_vec, dst_vec);
         break;
     case 2:
-        if (rank == 1)
-            tvec_contract_pure_b_otf_impl<1>(basis, group, src_vec, dst_vec);
-        else if (rank == 2)
-            tvec_contract_pure_b_otf_impl<2>(basis, group, src_vec, dst_vec);
-        else
-            tvec_contract_pure_b_otf_impl<0>(basis, group, src_vec, dst_vec);
+        dispatch_tvec_contract_group<2>(basis, group, src_vec, dst_vec);
         break;
     case 3:
-        if (rank == 1)
-            tvec_contract_mixed_otf_impl<1>(basis, group, src_vec, dst_vec);
-        else if (rank == 2)
-            tvec_contract_mixed_otf_impl<2>(basis, group, src_vec, dst_vec);
-        else
-            tvec_contract_mixed_otf_impl<0>(basis, group, src_vec, dst_vec);
+        dispatch_tvec_contract_group<3>(basis, group, src_vec, dst_vec);
         break;
     }
 }
