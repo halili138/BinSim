@@ -605,13 +605,13 @@ function batch_expm_svd!(basis::BasisManager, otf::OTF, idx::Int64, θ::Float64,
         @ccall LIB_OTF.batch_expm_contract_otf_c64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         (idx - 1)::Int64, θ::Cdouble, mat::Ptr{Tv},
-        ncols::Int64, valid_ncols::Int64
+        Cint(ncols)::Cint, Cint(valid_ncols)::Cint
     )::Cvoid
     ) : (
         @ccall LIB_OTF.batch_expm_contract_otf_f64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         (idx - 1)::Int64, θ::Cdouble, mat::Ptr{Tv},
-        ncols::Int64, valid_ncols::Int64
+        Cint(ncols)::Cint, Cint(valid_ncols)::Cint
     )::Cvoid
     )
 end
