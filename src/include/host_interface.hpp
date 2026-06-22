@@ -82,6 +82,9 @@ struct DiagElementsContractOp
 template <typename Ti, typename Tv>
 void get_diags_elements(const BasisManager<Ti> *basis, const Network_OTF<Ti, Tv> *net, Tv *diags)
 {
+    if (net->diag_groups.empty())
+        return;
+
     const DiagElementsContractOp<Tv> op{diags};
     (void)dispatch_contract_group_by_rank<0>(basis, net->diag_groups[0], op);
 }
