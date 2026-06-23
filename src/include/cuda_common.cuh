@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <type_traits>
 #include <utility>
-#include "common.hpp"
+#include "host_common.hpp"
 
 inline constexpr int TILE_A = 256;
 inline constexpr int TILE_B = 32;

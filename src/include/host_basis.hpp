@@ -1,5 +1,5 @@
 #pragma once
-#include "common.hpp"
+#include "host_common.hpp"
 
 template <typename T>
 struct BlockDesc

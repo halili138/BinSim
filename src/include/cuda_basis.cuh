@@ -1,6 +1,6 @@
 #pragma once
 #include "cuda_common.cuh"
-#include "basis.hpp"
+#include "host_basis.hpp"
 #include <utility>
 #include <vector>
 

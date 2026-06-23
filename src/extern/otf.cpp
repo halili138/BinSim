@@ -1,4 +1,4 @@
-#include "otf.hpp"
+#include "host_otf.hpp"
 #include "host_interface.hpp"
 
 extern "C"

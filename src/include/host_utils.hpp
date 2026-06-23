@@ -1,5 +1,5 @@
 #pragma once
-#include "common.hpp"
+#include "host_common.hpp"
 
 template <typename Tv>
 FORCE_INLINE Tv fast_diag_exp(const Tv &vt, double theta)

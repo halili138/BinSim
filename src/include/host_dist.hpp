@@ -1,6 +1,6 @@
 #pragma once
-#include "basis.hpp"
-#include "otf.hpp"
+#include "host_basis.hpp"
+#include "host_otf.hpp"
 
 inline std::vector<int> get_rank_block_counts(const GlobalMemMap *gmap)
 {
@@ -296,7 +296,7 @@ void compute_hvec_sub_chunk(const BasisManager<Ti> *basis, const Network_OTF<Ti,
     view.block_map = virtual_block_map.data();
     view.num_blocks = topo->target_blocks.size();
 
-    // 在这个阶段，子 OTF 的算子完全保持着 otf.hpp 原生的高效 rank 排序！
+    // 在这个阶段，子 OTF 的算子完全保持着 host_otf.hpp 原生的高效 rank 排序！
     dispatch_subchunks_by_rank<0>(view, sub_net->diag_groups.data(), sub_net->diag_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<1>(view, sub_net->pure_a_groups.data(), sub_net->pure_a_groups.size(), chunk_cache, local_w);
     dispatch_subchunks_by_rank<2>(view, sub_net->pure_b_groups.data(), sub_net->pure_b_groups.size(), chunk_cache, local_w);

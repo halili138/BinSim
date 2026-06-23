@@ -1,6 +1,6 @@
 #pragma once
 #include "cuda_common.cuh"
-#include "otf.hpp"
+#include "host_otf.hpp"
 
 template <typename Ti, typename Tv>
 struct GroupsViewDev

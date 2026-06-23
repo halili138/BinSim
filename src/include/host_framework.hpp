@@ -1,6 +1,6 @@
 #pragma once
-#include "otf.hpp"
-#include "utils.hpp"
+#include "host_otf.hpp"
+#include "host_utils.hpp"
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 static FORCE_INLINE typename Op::Result otf_contract_single_group_impl(
