@@ -52,10 +52,12 @@ extern "C"
         slice.block_offsets = topo->d_topo_offsets;
         slice.target_bids = topo->d_target_bids;
 
-        dispatch_chunks_by_rank_gpu<0>(slice, topo->num_targets, subnet->diag_groups, d_chunk_cache, d_local_w);
-        dispatch_chunks_by_rank_gpu<1>(slice, topo->num_targets, subnet->pure_a_groups, d_chunk_cache, d_local_w);
-        dispatch_chunks_by_rank_gpu<2>(slice, topo->num_targets, subnet->pure_b_groups, d_chunk_cache, d_local_w);
-        dispatch_chunks_by_rank_gpu<3>(slice, topo->num_targets, subnet->mixed_groups, d_chunk_cache, d_local_w);
+        const CudaHVecMultiGroupOp<double> op{d_chunk_cache, d_local_w};
+        
+        dispatch_cuda_multi_group_chunks_by_rank<0>(slice, topo->num_targets, subnet->diag_groups, op);
+        dispatch_cuda_multi_group_chunks_by_rank<1>(slice, topo->num_targets, subnet->pure_a_groups, op);
+        dispatch_cuda_multi_group_chunks_by_rank<2>(slice, topo->num_targets, subnet->pure_b_groups, op);
+        dispatch_cuda_multi_group_chunks_by_rank<3>(slice, topo->num_targets, subnet->mixed_groups, op);
     }
 
 
