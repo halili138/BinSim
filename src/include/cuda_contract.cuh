@@ -321,7 +321,7 @@ struct CudaHVecMultiGroupOp
         accum[b_offset] += __ldg(src_vec + di) * vt;
     }
 
-    __device__ __forceinline__ void offdiag(Tv (&accum)[TILE_B], Tv &, Tv vt, int64 si, int64, int b_offset) const
+    __device__ __forceinline__ void offdiag(Tv (&accum)[TILE_B], Tv &, Tv vt, int64 si, int64, int, int b_offset) const
     {
         accum[b_offset] += __ldg(src_vec + si) * vt;
     }
