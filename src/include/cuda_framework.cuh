@@ -40,6 +40,18 @@ struct SourceBlockStorageTag;
 struct ValidGroupStorageTag;
 struct GroupRankStorageTag;
 
+template <typename Tv, int PhaseMemSize, int IdxMemSize, bool UsesBExcitation>
+struct SingleGroupSharedTileStorage
+    : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>
+{
+    Tv sh_pb[PhaseMemSize];
+
+    __device__ __forceinline__ StaticSharedStorage<int, IdxMemSize> &sh_sb()
+    {
+        return OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>::data;
+    }
+};
+
 template <typename Tv, int PhaseMemSize, int IdxMemSize, int GroupMemSize, bool UsesBExcitation, bool IsDiagonal>
 struct MultiGroupTileSharedStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>,
@@ -79,10 +91,11 @@ __global__ void cuda_single_group_sharedtile_kernel(
 {
     const int bid = blockIdx.x;
     const int task_idx = blockIdx.y;
+    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
+    constexpr int IDX_MEM_SIZE = UsesBExcitation ? TILE_B : 0;
 
-    __shared__ Tv sh_pb[SHARED_MEM_SIZE];
-    __shared__ int sh_sb[TILE_B];
+    __shared__ SingleGroupSharedTileStorage<Tv, SHARED_MEM_SIZE, IDX_MEM_SIZE, UsesBExcitation> sh;
 
     const int n_a = basis.block_num_a[bid];
     const int n_b = basis.block_num_b[bid];
@@ -120,20 +133,21 @@ __global__ void cuda_single_group_sharedtile_kernel(
     {
         Ti src_bstr = bstrs[b_start + b_offset];
         int sb = b_start + b_offset;
-        if constexpr (TypeCode == 2 || TypeCode == 3)
+        if constexpr (UsesBExcitation)
         {
             src_bstr ^= groups.bxs[pos];
             sb = basis.bstr2idx[src_bstr];
         }
-        sh_sb[b_offset] = sb;
+        if constexpr (UsesBExcitation)
+            sh.sh_sb()[b_offset] = sb;
         if constexpr (TypeCode == 0)
             compute_phase_dev<Rank, Ti, Tv>(
                 src_bstr, groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos],
-                groups.flat_wb + groups.wb_start[pos], sh_pb + b_offset, TILE_B, rank);
+                groups.flat_wb + groups.wb_start[pos], sh.sh_pb + b_offset, TILE_B, rank);
         else if (src_bid != -1 && src_bid >= bid && sb != -1)
             compute_phase_dev<Rank, Ti, Tv>(
                 src_bstr, groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos],
-                groups.flat_wb + groups.wb_start[pos], sh_pb + b_offset, TILE_B, rank);
+                groups.flat_wb + groups.wb_start[pos], sh.sh_pb + b_offset, TILE_B, rank);
     }
     __syncthreads();
 
@@ -151,7 +165,7 @@ __global__ void cuda_single_group_sharedtile_kernel(
 
             for (int b_offset = 0; b_offset < cur_b; ++b_offset)
             {
-                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
+                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
                 const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
                 op.diag(local_res, vt, di);
             }
@@ -173,10 +187,14 @@ __global__ void cuda_single_group_sharedtile_kernel(
                 const int64 dst_row = basis.block_offsets[bid] + (int64)a * n_b;
                 for (int b_offset = 0; b_offset < cur_b; ++b_offset)
                 {
-                    const int sb = sh_sb[b_offset];
+                    int sb;
+                    if constexpr (UsesBExcitation)
+                        sb = sh.sh_sb()[b_offset];
+                    else
+                        sb = b_start + b_offset;
                     if (sb == -1 || (src_bid == bid && sa == a && sb < b_start + b_offset))
                         continue;
-                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
+                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
                     op.offdiag(local_res, vt, src_row + sb, dst_row + b_start + b_offset);
                 }
             }
