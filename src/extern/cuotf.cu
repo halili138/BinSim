@@ -1,8 +1,4 @@
-#include "cuda_hvec.cuh"
-#include "cuda_expm.cuh"
-#include "cuda_grad.cuh"
-#include "cuda_backgrad.cuh"
-#include "cuda_batchgrad.cuh"
+#include "cuda_interface.cuh"
 
 extern "C"
 {

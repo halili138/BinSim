@@ -1,10 +1,6 @@
 #pragma once
-#include <vector>
-#include <algorithm>
 #include "dist.hpp"
-#include "cuda_hvec.cuh"
-#include "cuda_expm.cuh"
-#include "cuda_backgrad.cuh"
+#include "cuda_interface.cuh"
 
 struct SubTopologyDev
 {
