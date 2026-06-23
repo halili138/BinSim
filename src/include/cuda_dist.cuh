@@ -1,5 +1,5 @@
 #pragma once
-#include "dist.hpp"
+#include "host_dist.hpp"
 #include "cuda_interface.cuh"
 
 struct SubTopologyDev
