@@ -24,6 +24,45 @@ struct StaticSharedStorage<T, 0>
 {
 };
 
+template <typename Tag, typename T, int Size, bool Enabled>
+struct OptionalStaticSharedStorage
+{
+};
+
+template <typename Tag, typename T, int Size>
+struct OptionalStaticSharedStorage<Tag, T, Size, true>
+{
+    StaticSharedStorage<T, Size> data;
+};
+
+struct BExcitationStorageTag;
+struct SourceBlockStorageTag;
+struct ValidGroupStorageTag;
+
+template <typename Tv, int PhaseMemSize, int IdxMemSize, int GroupMemSize, bool UsesBExcitation, bool IsDiagonal>
+struct MultiGroupTileSharedStorage
+    : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>,
+      OptionalStaticSharedStorage<SourceBlockStorageTag, int, GroupMemSize, !IsDiagonal>,
+      OptionalStaticSharedStorage<ValidGroupStorageTag, int, GroupMemSize, !IsDiagonal>
+{
+    Tv sh_pb[PhaseMemSize];
+
+    __device__ __forceinline__ StaticSharedStorage<int, IdxMemSize> &sh_sb()
+    {
+        return OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>::data;
+    }
+
+    __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_src_bid()
+    {
+        return OptionalStaticSharedStorage<SourceBlockStorageTag, int, GroupMemSize, !IsDiagonal>::data;
+    }
+
+    __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_valid_group()
+    {
+        return OptionalStaticSharedStorage<ValidGroupStorageTag, int, GroupMemSize, !IsDiagonal>::data;
+    }
+};
+
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 __global__ void cuda_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
@@ -151,10 +190,7 @@ __global__ void cuda_multi_group_tile_kernel(
     constexpr int GROUP_MEM_SIZE = IsDiagonal ? 0 : BATCH_SIZE;
     constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : KERNEL_MAX_RANK);
 
-    __shared__ Tv sh_pb[SHARED_MEM_SIZE];
-    __shared__ StaticSharedStorage<int, IDX_MEM_SIZE> sh_sb;
-    __shared__ StaticSharedStorage<int, GROUP_MEM_SIZE> sh_src_bid;
-    __shared__ StaticSharedStorage<int, GROUP_MEM_SIZE> sh_valid_group;
+    __shared__ MultiGroupTileSharedStorage<Tv, SHARED_MEM_SIZE, IDX_MEM_SIZE, GROUP_MEM_SIZE, UsesBExcitation, IsDiagonal> sh;
 
     const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
@@ -209,8 +245,8 @@ __global__ void cuda_multi_group_tile_kernel(
                         h = (asym ^ groups.asyms[g]) * nirp + (bsym ^ groups.bsyms[g]);
 
                     const int src_bid = basis.block_map[h];
-                    sh_src_bid[g_offset] = src_bid;
-                    sh_valid_group[g_offset] = (src_bid != -1 && (!Op::SkipLowerBlocks || src_bid >= bid)) ? 1 : 0;
+                    sh.sh_src_bid()[g_offset] = src_bid;
+                    sh.sh_valid_group()[g_offset] = (src_bid != -1 && (!Op::SkipLowerBlocks || src_bid >= bid)) ? 1 : 0;
                 }
                 __syncthreads();
             }
@@ -224,10 +260,10 @@ __global__ void cuda_multi_group_tile_kernel(
 
                 if constexpr (!IsDiagonal)
                 {
-                    if (sh_valid_group[g_offset] == 0)
+                    if (sh.sh_valid_group()[g_offset] == 0)
                     {
                         if constexpr (UsesBExcitation)
-                            sh_sb[sh_flat_offset] = -1;
+                            sh.sh_sb()[sh_flat_offset] = -1;
                         continue;
                     }
                 }
@@ -239,14 +275,14 @@ __global__ void cuda_multi_group_tile_kernel(
                 {
                     src_bstr ^= groups.bxs[g];
                     sb = b_idx_map[src_bstr];
-                    sh_sb[sh_flat_offset] = sb;
+                    sh.sh_sb()[sh_flat_offset] = sb;
                     if (sb == -1)
                         continue;
                 }
 
                 compute_phase_dev<Rank, Ti, Tv>(
                     src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g],
-                    groups.flat_wb + groups.wb_start[g], sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
+                    groups.flat_wb + groups.wb_start[g], sh.sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
             }
             __syncthreads();
 
@@ -256,14 +292,14 @@ __global__ void cuda_multi_group_tile_kernel(
                 {
                     if constexpr (!IsDiagonal)
                     {
-                        if (sh_valid_group[g_offset] == 0)
+                        if (sh.sh_valid_group()[g_offset] == 0)
                             continue;
                     }
 
                     const int g = chunk_start_g + g_offset;
                     int src_bid = bid;
                     if constexpr (!IsDiagonal)
-                        src_bid = sh_src_bid[g_offset];
+                        src_bid = sh.sh_src_bid()[g_offset];
                     Ti src_astr = dst_astr;
                     int sa = a;
                     if constexpr (UsesAExcitation)
@@ -282,7 +318,7 @@ __global__ void cuda_multi_group_tile_kernel(
 
                     const int src_n_b = IsDiagonal ? n_b : basis.block_num_b[src_bid];
                     const int64 src_row = IsDiagonal ? dst_row : basis.block_offsets[src_bid] + (int64)sa * src_n_b;
-                    const Tv *pb = sh_pb + (g_offset * TILE_B);
+                    const Tv *pb = sh.sh_pb + (g_offset * TILE_B);
                     const int original_idx = groups.original_idx[g];
                     Tv local_res = {};
 
@@ -290,7 +326,7 @@ __global__ void cuda_multi_group_tile_kernel(
                     {
                         int sb = b_tile_start + b_offset;
                         if constexpr (UsesBExcitation)
-                            sb = sh_sb[g_offset * TILE_B + b_offset];
+                            sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
                         if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
                             continue;
 
