@@ -298,3 +298,319 @@ static inline int cuda_single_group_max_tasks(const BasisViewDev<Ti> &basis)
     }
     return max_tasks;
 }
+
+template <typename Tv>
+struct CudaHVecMultiGroupOp
+{
+    static constexpr bool SkipRealDiagonal = false;
+    static constexpr bool SkipLowerBlocks = false;
+    static constexpr bool SkipSameBlockReverse = false;
+
+    const Tv *src_vec;
+    Tv *dst_vec;
+
+    __device__ __forceinline__ void init_tile(Tv (&accum)[TILE_B]) const
+    {
+#pragma unroll
+        for (int i = 0; i < TILE_B; ++i)
+            accum[i] = {};
+    }
+
+    __device__ __forceinline__ void diag(Tv (&accum)[TILE_B], Tv &, Tv vt, int64 di, int, int b_offset) const
+    {
+        accum[b_offset] += __ldg(src_vec + di) * vt;
+    }
+
+    __device__ __forceinline__ void offdiag(Tv (&accum)[TILE_B], Tv &, Tv vt, int64 si, int64, int b_offset) const
+    {
+        accum[b_offset] += __ldg(src_vec + si) * vt;
+    }
+
+    __device__ __forceinline__ void finish_group(Tv &, int) const {}
+
+    template <typename Ti>
+    __device__ __forceinline__ void finish_tile(
+        const BasisSliceDev<Ti> &basis, int64 dst_row, int64, int b_tile_start, int current_tile_b, bool valid_a,
+        Tv (&accum)[TILE_B]) const
+    {
+        if (!valid_a)
+            return;
+        Tv *dst_row_ptr = dst_vec + dst_row;
+        for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+            dst_row_ptr[b_tile_start + b_offset] += accum[b_offset];
+    }
+};
+
+template <typename Tv>
+struct CudaBatchGradMultiGroupOp
+{
+    static constexpr bool SkipRealDiagonal = true;
+    static constexpr bool SkipLowerBlocks = true;
+    static constexpr bool SkipSameBlockReverse = true;
+
+    const double *thetas;
+    const Tv *lp;
+    const Tv *rp;
+    Tv *grads;
+
+    __device__ __forceinline__ void init_tile(Tv (&accum)[TILE_B]) const
+    {
+        (void)accum;
+    }
+
+    __device__ __forceinline__ void diag(Tv (&)[TILE_B], Tv &local_res, Tv vt, int64 di, int original_idx, int) const
+    {
+        const double theta = thetas[original_idx];
+        const Tv du = fast_diag_grad_dev<Tv>(vt, theta);
+        local_res += dev_conj(lp[di] * du) * rp[di];
+    }
+
+    __device__ __forceinline__ void offdiag(Tv (&)[TILE_B], Tv &local_res, Tv vt, int64 si, int64 di, int original_idx, int) const
+    {
+        const double theta = thetas[original_idx];
+        grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, -std::sin(theta), std::cos(theta));
+    }
+
+    __device__ __forceinline__ void finish_group(Tv &local_res, int original_idx) const
+    {
+        atomicAdd_Tv(grads + original_idx, local_res);
+    }
+
+    template <typename Ti>
+    __device__ __forceinline__ void finish_tile(
+        const BasisSliceDev<Ti> &, int64, int64, int, int, bool,
+        Tv (&)[TILE_B]) const {}
+};
+
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+__global__ void cuda_multi_group_tile_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    Op op)
+{
+    constexpr bool IsDiagonal = TypeCode == 0;
+    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
+    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr int BATCH_SIZE =
+        Rank == 1   ? BATCH_SIZE_SH1
+        : Rank == 2 ? BATCH_SIZE_SH2
+                    : BATCH_SIZE_SH3;
+    constexpr int SHARED_MEM_SIZE =
+        Rank == 1   ? BATCH_SIZE_SH1 * TILE_B
+        : Rank == 2 ? BATCH_SIZE_SH2 * TILE_B * 2
+                    : BATCH_SIZE_SH3 * TILE_B * KERNEL_MAX_RANK;
+    constexpr int IDX_MEM_SIZE = UsesBExcitation ? BATCH_SIZE * TILE_B : 1;
+    constexpr int GROUP_MEM_SIZE = IsDiagonal ? 1 : BATCH_SIZE;
+    constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : KERNEL_MAX_RANK);
+
+    __shared__ Tv sh_pb[SHARED_MEM_SIZE];
+    __shared__ int sh_sb[IDX_MEM_SIZE];
+    __shared__ int sh_src_bid[GROUP_MEM_SIZE];
+    __shared__ int sh_valid_group[GROUP_MEM_SIZE];
+
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
+    const int total_groups = groups.num_groups;
+    const int num_chunks = (total_groups + BATCH_SIZE - 1) / BATCH_SIZE;
+    const int n_a = basis.block_num_a[bid];
+    const int n_b = basis.block_num_b[bid];
+    const int asym = basis.block_asym[bid];
+    const int bsym = basis.block_bsym[bid];
+    const int nirp = basis.num_irreps;
+    const int num_b_tiles = (n_b + TILE_B - 1) / TILE_B;
+    const int num_a_tiles = (n_a + TILE_A - 1) / TILE_A;
+    const int total_tiles = num_b_tiles * num_a_tiles;
+    const Ti *astrs = basis.astrs_flat + basis.astrs_start[bid];
+    const Ti *bstrs = basis.bstrs_flat + basis.bstrs_start[bid];
+    const int *a_idx_map = basis.astr2idx;
+    const int *b_idx_map = basis.bstr2idx;
+    const int64 dst_block_offset = basis.block_offsets[bid];
+
+    for (int task_idx = blockIdx.y; task_idx < total_tiles; task_idx += gridDim.y)
+    {
+        const int b_tile_idx = task_idx % num_b_tiles;
+        const int a_tile_idx = task_idx / num_b_tiles;
+        const int b_tile_start = b_tile_idx * TILE_B;
+        const int current_tile_b = min(TILE_B, n_b - b_tile_start);
+        const Ti *bstrs_tile_start = bstrs + b_tile_start;
+        const int a_tile_start = a_tile_idx * TILE_A;
+        const int a_tile_end = min(n_a, a_tile_start + TILE_A);
+        const int a = a_tile_start + threadIdx.x;
+        const bool valid_a = a < a_tile_end;
+        const Ti dst_astr = valid_a ? astrs[a] : 0;
+        const int64 dst_row = dst_block_offset + (int64)a * n_b;
+
+        Tv accum[TILE_B];
+        op.init_tile(accum);
+
+        for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx)
+        {
+            const int chunk_start_g = chunk_idx * BATCH_SIZE;
+            const int current_chunk_groups = min(BATCH_SIZE, total_groups - chunk_start_g);
+
+            if constexpr (!IsDiagonal)
+            {
+                for (int g_offset = threadIdx.x; g_offset < current_chunk_groups; g_offset += blockDim.x)
+                {
+                    const int g = chunk_start_g + g_offset;
+                    int h;
+                    if constexpr (TypeCode == 1)
+                        h = (asym ^ groups.asyms[g]) * nirp + bsym;
+                    else if constexpr (TypeCode == 2)
+                        h = asym * nirp + (bsym ^ groups.bsyms[g]);
+                    else
+                        h = (asym ^ groups.asyms[g]) * nirp + (bsym ^ groups.bsyms[g]);
+
+                    const int src_bid = basis.block_map[h];
+                    sh_src_bid[g_offset] = src_bid;
+                    sh_valid_group[g_offset] = (src_bid != -1 && (!Op::SkipLowerBlocks || src_bid >= bid)) ? 1 : 0;
+                }
+                __syncthreads();
+            }
+
+            const int total_sh_elements = current_chunk_groups * current_tile_b;
+            for (int sh_idx = threadIdx.x; sh_idx < total_sh_elements; sh_idx += blockDim.x)
+            {
+                const int g_offset = sh_idx / current_tile_b;
+                const int b_offset = sh_idx % current_tile_b;
+                const int sh_flat_offset = g_offset * TILE_B + b_offset;
+
+                if constexpr (!IsDiagonal)
+                {
+                    if (sh_valid_group[g_offset] == 0)
+                    {
+                        if constexpr (UsesBExcitation)
+                            sh_sb[sh_flat_offset] = -1;
+                        continue;
+                    }
+                }
+
+                const int g = chunk_start_g + g_offset;
+                Ti src_bstr = bstrs_tile_start[b_offset];
+                int sb = b_tile_start + b_offset;
+                if constexpr (UsesBExcitation)
+                {
+                    src_bstr ^= groups.bxs[g];
+                    sb = b_idx_map[src_bstr];
+                    sh_sb[sh_flat_offset] = sb;
+                    if (sb == -1)
+                        continue;
+                }
+
+                compute_phase_dev<Rank, Ti, Tv>(
+                    src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g],
+                    groups.flat_wb + groups.wb_start[g], sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
+            }
+            __syncthreads();
+
+            if (valid_a)
+            {
+                for (int g_offset = 0; g_offset < current_chunk_groups; ++g_offset)
+                {
+                    if constexpr (!IsDiagonal)
+                    {
+                        if (sh_valid_group[g_offset] == 0)
+                            continue;
+                    }
+
+                    const int g = chunk_start_g + g_offset;
+                    const int src_bid = IsDiagonal ? bid : sh_src_bid[g_offset];
+                    Ti src_astr = dst_astr;
+                    int sa = a;
+                    if constexpr (UsesAExcitation)
+                    {
+                        src_astr ^= groups.axs[g];
+                        sa = a_idx_map[src_astr];
+                    }
+                    if (sa == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa < a))
+                        continue;
+
+                    Tv pa[STACK_SIZE] = {};
+                    const int rank = groups.ranks[g];
+                    compute_phase_dev<Rank, Ti, Tv>(
+                        src_astr, groups.flat_zas + groups.za_start[g], groups.num_zas[g],
+                        groups.flat_wa + groups.wa_start[g], pa, 1, rank);
+
+                    const int src_n_b = IsDiagonal ? n_b : basis.block_num_b[src_bid];
+                    const int64 src_row = IsDiagonal ? dst_row : basis.block_offsets[src_bid] + (int64)sa * src_n_b;
+                    const Tv *pb = sh_pb + (g_offset * TILE_B);
+                    const int original_idx = groups.original_idx[g];
+                    Tv local_res = {};
+
+                    for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                    {
+                        int sb = b_tile_start + b_offset;
+                        if constexpr (UsesBExcitation)
+                            sb = sh_sb[g_offset * TILE_B + b_offset];
+                        if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                            continue;
+
+                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                        const int64 si = src_row + sb;
+                        const int64 di = dst_row + b_tile_start + b_offset;
+                        if constexpr (IsDiagonal)
+                            op.diag(accum, local_res, vt, di, original_idx, b_offset);
+                        else
+                            op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                    }
+                    op.finish_group(local_res, original_idx);
+                }
+            }
+            __syncthreads();
+        }
+
+        op.finish_tile(basis, dst_row, dst_block_offset, b_tile_start, current_tile_b, valid_a, accum);
+    }
+}
+
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+static inline void launch_cuda_multi_group_rank(
+    const BasisSliceDev<Ti> &basis_slice,
+    const GroupsSliceDev<Ti, Tv> &groups,
+    dim3 grid_size,
+    int block_size,
+    Op op)
+{
+    if constexpr (TypeCode == 0 && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
+        return;
+    cuda_multi_group_tile_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid_size, block_size>>>(basis_slice, groups, op);
+}
+
+template <int TypeCode, typename Ti, typename Tv, typename Op>
+static inline void dispatch_cuda_multi_group_chunks_by_rank(
+    const BasisSliceDev<Ti> &basis_slice,
+    int num_active_blocks,
+    const GroupsViewDev<Ti, Tv> &groups,
+    Op op)
+{
+    const int64 total_ngs = groups.num_groups;
+    if (total_ngs == 0)
+        return;
+
+    int num_sms = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
+    constexpr int block_size = 256;
+    const dim3 grid_size(num_active_blocks, num_sms * 4);
+
+    int64 start = 0;
+    while (start < total_ngs)
+    {
+        const int dispatch_rank = normalized_dispatch_rank(groups, start);
+        const int64 end = next_rank_chunk_end(groups, start);
+        const GroupsSliceDev<Ti, Tv> slice = make_groups_slice(groups, start, end - start);
+
+        switch (dispatch_rank)
+        {
+        case 1:
+            launch_cuda_multi_group_rank<1, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            break;
+        case 2:
+            launch_cuda_multi_group_rank<2, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            break;
+        default:
+            launch_cuda_multi_group_rank<0, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            break;
+        }
+
+        start = end;
+    }
+}
