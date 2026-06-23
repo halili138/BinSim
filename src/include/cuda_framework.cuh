@@ -37,6 +37,8 @@ struct OptionalStaticSharedStorage<Tag, T, Size, true>
 
 struct BExcitationStorageTag;
 struct SourceBlockStorageTag;
+struct SourceBlockNumBStorageTag;
+struct SourceBlockOffsetStorageTag;
 struct ValidGroupStorageTag;
 struct GroupRankStorageTag;
 
@@ -44,6 +46,8 @@ template <typename Tv, int PhaseMemSize, int IdxMemSize, int GroupMemSize, bool 
 struct MultiGroupTileSharedStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>,
       OptionalStaticSharedStorage<SourceBlockStorageTag, int, GroupMemSize, !IsDiagonal>,
+      OptionalStaticSharedStorage<SourceBlockNumBStorageTag, int, GroupMemSize, !IsDiagonal>,
+      OptionalStaticSharedStorage<SourceBlockOffsetStorageTag, int64, GroupMemSize, !IsDiagonal>,
       OptionalStaticSharedStorage<ValidGroupStorageTag, int, GroupMemSize, !IsDiagonal>,
       OptionalStaticSharedStorage<GroupRankStorageTag, int, GroupMemSize, true>
 {
@@ -57,6 +61,16 @@ struct MultiGroupTileSharedStorage
     __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_src_bid()
     {
         return OptionalStaticSharedStorage<SourceBlockStorageTag, int, GroupMemSize, !IsDiagonal>::data;
+    }
+
+    __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_src_n_b()
+    {
+        return OptionalStaticSharedStorage<SourceBlockNumBStorageTag, int, GroupMemSize, !IsDiagonal>::data;
+    }
+
+    __device__ __forceinline__ StaticSharedStorage<int64, GroupMemSize> &sh_src_block_offset()
+    {
+        return OptionalStaticSharedStorage<SourceBlockOffsetStorageTag, int64, GroupMemSize, !IsDiagonal>::data;
     }
 
     __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_valid_group()
@@ -255,8 +269,14 @@ __global__ void cuda_multi_group_tile_kernel(
                         h = (asym ^ groups.asyms[g]) * nirp + (bsym ^ groups.bsyms[g]);
 
                     const int src_bid = basis.block_map[h];
+                    const int valid_group = (src_bid != -1 && (!Op::SkipLowerBlocks || src_bid >= bid)) ? 1 : 0;
                     sh.sh_src_bid()[g_offset] = src_bid;
-                    sh.sh_valid_group()[g_offset] = (src_bid != -1 && (!Op::SkipLowerBlocks || src_bid >= bid)) ? 1 : 0;
+                    sh.sh_valid_group()[g_offset] = valid_group;
+                    if (valid_group)
+                    {
+                        sh.sh_src_n_b()[g_offset] = basis.block_num_b[src_bid];
+                        sh.sh_src_block_offset()[g_offset] = basis.block_offsets[src_bid];
+                    }
                 }
             }
             __syncthreads();
@@ -365,8 +385,13 @@ __global__ void cuda_multi_group_tile_kernel(
                         src_astr, groups.flat_zas + groups.za_start[g], groups.num_zas[g],
                         groups.flat_wa + groups.wa_start[g], pa, 1, rank);
 
-                    const int src_n_b = IsDiagonal ? n_b : basis.block_num_b[src_bid];
-                    const int64 src_row = IsDiagonal ? dst_row : basis.block_offsets[src_bid] + (int64)sa * src_n_b;
+                    int src_n_b = n_b;
+                    int64 src_row = dst_row;
+                    if constexpr (!IsDiagonal)
+                    {
+                        src_n_b = sh.sh_src_n_b()[g_offset];
+                        src_row = sh.sh_src_block_offset()[g_offset] + (int64)sa * src_n_b;
+                    }
                     const Tv *pb = sh.sh_pb + (g_offset * TILE_B);
                     const int original_idx = groups.original_idx[g];
                     Tv local_res = {};
