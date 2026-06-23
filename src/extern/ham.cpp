@@ -187,7 +187,16 @@ void stage1_allocate_and_scan(
     size_t N3 = N2 * N1;
     size_t N4 = N3 * N1;
 
-    size_t revsize = (N4 / (nthreads * nblocks)) * 0.1 + 10;
+    size_t revsize = static_cast<size_t>(static_cast<double>(N4) /
+                                         (nthreads * nblocks) * 0.1) +
+                     10;
+
+    const Ti ONE = get_one<Ti>();
+    std::vector<Ti> orbital_masks(norbs);
+    for (int i = 0; i < norbs; ++i)
+    {
+        orbital_masks[i] = ONE << i;
+    }
 
     for (int t = 0; t < nthreads; ++t)
     {
@@ -200,7 +209,6 @@ void stage1_allocate_and_scan(
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        Ti ONE = get_one<Ti>();
 #pragma omp for schedule(static) collapse(2)
         for (int q = 0; q < norbs; ++q)
         {
@@ -213,7 +221,7 @@ void stage1_allocate_and_scan(
 
                 if (std::abs(val) > tol)
                 {
-                    Ti mask = (ONE << p) ^ (ONE << q);
+                    Ti mask = orbital_masks[p] ^ orbital_masks[q];
                     uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                     (*local_single)[tid][bucket_idx].push_back({p, q, val});
                 }
@@ -237,8 +245,8 @@ void stage1_allocate_and_scan(
 
                         if (std::abs(val) > tol)
                         {
-                            Ti mask = (ONE << p) ^ (ONE << q) ^
-                                      (ONE << r) ^ (ONE << s);
+                            Ti mask = orbital_masks[p] ^ orbital_masks[q] ^
+                                      orbital_masks[r] ^ orbital_masks[s];
                             uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                             (*local_double)[tid][bucket_idx].push_back({p, q, r, s, val});
                         }
@@ -259,7 +267,13 @@ void stage1_allocate_and_scan_twopass(
     size_t N1 = static_cast<size_t>(norbs);
     size_t N2 = N1 * N1;
     size_t N3 = N2 * N1;
-    size_t N4 = N3 * N1;
+
+    const Ti ONE = get_one<Ti>();
+    std::vector<Ti> orbital_masks(norbs);
+    for (int i = 0; i < norbs; ++i)
+    {
+        orbital_masks[i] = ONE << i;
+    }
 
     std::vector<std::vector<size_t>> count_single(nthreads, std::vector<size_t>(nblocks, 0));
     std::vector<std::vector<size_t>> count_double(nthreads, std::vector<size_t>(nblocks, 0));
@@ -267,7 +281,6 @@ void stage1_allocate_and_scan_twopass(
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        Ti ONE = get_one<Ti>();
 #pragma omp for schedule(static) collapse(2)
         for (int q = 0; q < norbs; ++q)
         {
@@ -277,7 +290,7 @@ void stage1_allocate_and_scan_twopass(
                              static_cast<size_t>(q) * N1;
                 if (std::abs(one_body_mo[idx]) > tol)
                 {
-                    Ti mask = (ONE << p) ^ (ONE << q);
+                    Ti mask = orbital_masks[p] ^ orbital_masks[q];
                     uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                     count_single[tid][bucket_idx]++;
                 }
@@ -297,8 +310,8 @@ void stage1_allocate_and_scan_twopass(
                                      static_cast<size_t>(r) * N2 + static_cast<size_t>(s) * N3;
                         if (std::abs(two_body_mo[idx]) > tol)
                         {
-                            Ti mask = (ONE << p) ^ (ONE << q) ^
-                                      (ONE << r) ^ (ONE << s);
+                            Ti mask = orbital_masks[p] ^ orbital_masks[q] ^
+                                      orbital_masks[r] ^ orbital_masks[s];
                             uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                             count_double[tid][bucket_idx]++;
                         }
@@ -323,7 +336,6 @@ void stage1_allocate_and_scan_twopass(
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        Ti ONE = get_one<Ti>();
 #pragma omp for schedule(static) collapse(2)
         for (int q = 0; q < norbs; ++q)
         {
@@ -336,7 +348,7 @@ void stage1_allocate_and_scan_twopass(
 
                 if (std::abs(val) > tol)
                 {
-                    Ti mask = (ONE << p) ^ (ONE << q);
+                    Ti mask = orbital_masks[p] ^ orbital_masks[q];
                     uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                     (*local_single)[tid][bucket_idx].push_back({p, q, val});
                 }
@@ -359,8 +371,8 @@ void stage1_allocate_and_scan_twopass(
 
                         if (std::abs(val) > tol)
                         {
-                            Ti mask = (ONE << p) ^ (ONE << q) ^
-                                      (ONE << r) ^ (ONE << s);
+                            Ti mask = orbital_masks[p] ^ orbital_masks[q] ^
+                                      orbital_masks[r] ^ orbital_masks[s];
                             uint32_t bucket_idx = mix_hash(fold_for_hash(mask)) % nblocks;
                             (*local_double)[tid][bucket_idx].push_back(
                                 {p, q, r, s, val});
