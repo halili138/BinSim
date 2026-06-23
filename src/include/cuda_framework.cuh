@@ -3,6 +3,27 @@
 #include "cuda_otf.cuh"
 #include "cuda_utils.cuh"
 
+template <typename T, int Size>
+struct StaticSharedStorage
+{
+    T data[Size];
+
+    __device__ __forceinline__ T &operator[](int idx)
+    {
+        return data[idx];
+    }
+
+    __device__ __forceinline__ const T &operator[](int idx) const
+    {
+        return data[idx];
+    }
+};
+
+template <typename T>
+struct StaticSharedStorage<T, 0>
+{
+};
+
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 __global__ void cuda_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
@@ -126,14 +147,14 @@ __global__ void cuda_multi_group_tile_kernel(
         Rank == 1   ? BATCH_SIZE_SH1 * TILE_B
         : Rank == 2 ? BATCH_SIZE_SH2 * TILE_B * 2
                     : BATCH_SIZE_SH3 * TILE_B * KERNEL_MAX_RANK;
-    constexpr int IDX_MEM_SIZE = UsesBExcitation ? BATCH_SIZE * TILE_B : 1;
-    constexpr int GROUP_MEM_SIZE = IsDiagonal ? 1 : BATCH_SIZE;
+    constexpr int IDX_MEM_SIZE = UsesBExcitation ? BATCH_SIZE * TILE_B : 0;
+    constexpr int GROUP_MEM_SIZE = IsDiagonal ? 0 : BATCH_SIZE;
     constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : KERNEL_MAX_RANK);
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
-    __shared__ int sh_sb[IDX_MEM_SIZE];
-    __shared__ int sh_src_bid[GROUP_MEM_SIZE];
-    __shared__ int sh_valid_group[GROUP_MEM_SIZE];
+    __shared__ StaticSharedStorage<int, IDX_MEM_SIZE> sh_sb;
+    __shared__ StaticSharedStorage<int, GROUP_MEM_SIZE> sh_src_bid;
+    __shared__ StaticSharedStorage<int, GROUP_MEM_SIZE> sh_valid_group;
 
     const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
@@ -240,7 +261,9 @@ __global__ void cuda_multi_group_tile_kernel(
                     }
 
                     const int g = chunk_start_g + g_offset;
-                    const int src_bid = IsDiagonal ? bid : sh_src_bid[g_offset];
+                    int src_bid = bid;
+                    if constexpr (!IsDiagonal)
+                        src_bid = sh_src_bid[g_offset];
                     Ti src_astr = dst_astr;
                     int sa = a;
                     if constexpr (UsesAExcitation)
