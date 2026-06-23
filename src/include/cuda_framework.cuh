@@ -215,6 +215,7 @@ __global__ void cuda_multi_group_tile_kernel(
         const int a_tile_idx = task_idx / num_b_tiles;
         const int b_tile_start = b_tile_idx * TILE_B;
         const int current_tile_b = min(TILE_B, n_b - b_tile_start);
+        const bool full_b_tile = current_tile_b == TILE_B;
         const Ti *bstrs_tile_start = bstrs + b_tile_start;
         const int a_tile_start = a_tile_idx * TILE_A;
         const int a_tile_end = min(n_a, a_tile_start + TILE_A);
@@ -251,38 +252,77 @@ __global__ void cuda_multi_group_tile_kernel(
                 __syncthreads();
             }
 
-            const int total_sh_elements = current_chunk_groups * current_tile_b;
-            for (int sh_idx = threadIdx.x; sh_idx < total_sh_elements; sh_idx += blockDim.x)
+            if (full_b_tile)
             {
-                const int g_offset = sh_idx / current_tile_b;
-                const int b_offset = sh_idx % current_tile_b;
-                const int sh_flat_offset = g_offset * TILE_B + b_offset;
-
-                if constexpr (!IsDiagonal)
+                const int total_sh_elements = current_chunk_groups * TILE_B;
+                for (int sh_idx = threadIdx.x; sh_idx < total_sh_elements; sh_idx += blockDim.x)
                 {
-                    if (sh.sh_valid_group()[g_offset] == 0)
+                    const int g_offset = sh_idx / TILE_B;
+                    const int b_offset = sh_idx % TILE_B;
+                    const int sh_flat_offset = g_offset * TILE_B + b_offset;
+
+                    if constexpr (!IsDiagonal)
                     {
-                        if constexpr (UsesBExcitation)
-                            sh.sh_sb()[sh_flat_offset] = -1;
-                        continue;
+                        if (sh.sh_valid_group()[g_offset] == 0)
+                        {
+                            if constexpr (UsesBExcitation)
+                                sh.sh_sb()[sh_flat_offset] = -1;
+                            continue;
+                        }
                     }
-                }
 
-                const int g = chunk_start_g + g_offset;
-                Ti src_bstr = bstrs_tile_start[b_offset];
-                int sb = b_tile_start + b_offset;
-                if constexpr (UsesBExcitation)
+                    const int g = chunk_start_g + g_offset;
+                    Ti src_bstr = bstrs_tile_start[b_offset];
+                    int sb = b_tile_start + b_offset;
+                    if constexpr (UsesBExcitation)
+                    {
+                        src_bstr ^= groups.bxs[g];
+                        sb = b_idx_map[src_bstr];
+                        sh.sh_sb()[sh_flat_offset] = sb;
+                        if (sb == -1)
+                            continue;
+                    }
+
+                    compute_phase_dev<Rank, Ti, Tv>(
+                        src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g],
+                        groups.flat_wb + groups.wb_start[g], sh.sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
+                }
+            }
+            else
+            {
+                const int total_sh_elements = current_chunk_groups * current_tile_b;
+                for (int sh_idx = threadIdx.x; sh_idx < total_sh_elements; sh_idx += blockDim.x)
                 {
-                    src_bstr ^= groups.bxs[g];
-                    sb = b_idx_map[src_bstr];
-                    sh.sh_sb()[sh_flat_offset] = sb;
-                    if (sb == -1)
-                        continue;
-                }
+                    const int g_offset = sh_idx / current_tile_b;
+                    const int b_offset = sh_idx % current_tile_b;
+                    const int sh_flat_offset = g_offset * TILE_B + b_offset;
 
-                compute_phase_dev<Rank, Ti, Tv>(
-                    src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g],
-                    groups.flat_wb + groups.wb_start[g], sh.sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
+                    if constexpr (!IsDiagonal)
+                    {
+                        if (sh.sh_valid_group()[g_offset] == 0)
+                        {
+                            if constexpr (UsesBExcitation)
+                                sh.sh_sb()[sh_flat_offset] = -1;
+                            continue;
+                        }
+                    }
+
+                    const int g = chunk_start_g + g_offset;
+                    Ti src_bstr = bstrs_tile_start[b_offset];
+                    int sb = b_tile_start + b_offset;
+                    if constexpr (UsesBExcitation)
+                    {
+                        src_bstr ^= groups.bxs[g];
+                        sb = b_idx_map[src_bstr];
+                        sh.sh_sb()[sh_flat_offset] = sb;
+                        if (sb == -1)
+                            continue;
+                    }
+
+                    compute_phase_dev<Rank, Ti, Tv>(
+                        src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g],
+                        groups.flat_wb + groups.wb_start[g], sh.sh_pb + sh_flat_offset, BATCH_SIZE * TILE_B, groups.ranks[g]);
+                }
             }
             __syncthreads();
 
