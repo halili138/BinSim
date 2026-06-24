@@ -1,5 +1,9 @@
 #pragma once
 #include "cuda_framework.cuh"
+#include <algorithm>
+#include <limits>
+#include <utility>
+#include <vector>
 
 template <typename Tv>
 __device__ __forceinline__ void cuda_block_reduce_atomic_add(Tv local_res, Tv *d_res)
@@ -23,6 +27,88 @@ __device__ __forceinline__ void cuda_block_reduce_atomic_add(Tv local_res, Tv *d
     }
 }
 
+
+struct CudaSingleGroupSchedule
+{
+    int max_tasks = 0;
+    int64 total_tasks = 0;
+    int64 rectangular_tasks = 0;
+    CudaSingleGroupTask *dev_tasks = nullptr;
+
+    CudaSingleGroupSchedule() = default;
+    CudaSingleGroupSchedule(const CudaSingleGroupSchedule &) = delete;
+    CudaSingleGroupSchedule &operator=(const CudaSingleGroupSchedule &) = delete;
+
+    CudaSingleGroupSchedule(CudaSingleGroupSchedule &&other) noexcept
+    {
+        *this = std::move(other);
+    }
+
+    CudaSingleGroupSchedule &operator=(CudaSingleGroupSchedule &&other) noexcept
+    {
+        if (this != &other)
+        {
+            clear();
+            max_tasks = other.max_tasks;
+            total_tasks = other.total_tasks;
+            rectangular_tasks = other.rectangular_tasks;
+            dev_tasks = other.dev_tasks;
+            other.max_tasks = 0;
+            other.total_tasks = 0;
+            other.rectangular_tasks = 0;
+            other.dev_tasks = nullptr;
+        }
+        return *this;
+    }
+
+    ~CudaSingleGroupSchedule() { clear(); }
+
+    void clear()
+    {
+        if (dev_tasks)
+        {
+            cudaFree(dev_tasks);
+            dev_tasks = nullptr;
+        }
+    }
+
+    bool compact_enabled() const { return dev_tasks != nullptr && total_tasks > 0; }
+
+    double early_return_rate() const
+    {
+        return rectangular_tasks == 0 ? 0.0 : double(rectangular_tasks - total_tasks) / double(rectangular_tasks);
+    }
+};
+
+template <typename Ti>
+static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisViewDev<Ti> &basis)
+{
+    constexpr int block_size = 256;
+    CudaSingleGroupSchedule schedule;
+    std::vector<CudaSingleGroupTask> host_tasks;
+
+    for (int bid = 0; bid < basis.num_blocks; ++bid)
+    {
+        const int num_a_tiles = (basis.host_block_num_a[bid] + block_size - 1) / block_size;
+        const int num_b_tiles = (basis.host_block_num_b[bid] + TILE_B - 1) / TILE_B;
+        const int block_tasks = num_a_tiles * num_b_tiles;
+        schedule.max_tasks = std::max(schedule.max_tasks, block_tasks);
+        for (int task_idx = 0; task_idx < block_tasks; ++task_idx)
+            host_tasks.push_back(CudaSingleGroupTask{bid, task_idx});
+    }
+
+    schedule.total_tasks = static_cast<int64>(host_tasks.size());
+    schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * schedule.max_tasks;
+
+    if (!host_tasks.empty() && schedule.total_tasks < schedule.rectangular_tasks)
+    {
+        CUDA_CHECK(cudaMalloc(&schedule.dev_tasks, host_tasks.size() * sizeof(CudaSingleGroupTask)));
+        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks, host_tasks.data(), host_tasks.size() * sizeof(CudaSingleGroupTask), cudaMemcpyHostToDevice));
+    }
+
+    return schedule;
+}
+
 template <typename Ti>
 static inline int cuda_single_group_max_tasks(const BasisViewDev<Ti> &basis)
 {
@@ -38,32 +124,43 @@ static inline int cuda_single_group_max_tasks(const BasisViewDev<Ti> &basis)
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
-static inline void launch_cuda_single_group_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int max_tasks)
+static inline void launch_cuda_single_group_rank(
+    const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int max_tasks,
+    const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     constexpr int block_size = 256;
     if (max_tasks <= 0)
         return;
+
+    if (compact_tasks && compact_num_tasks > 0 && compact_num_tasks <= std::numeric_limits<unsigned int>::max())
+    {
+        dim3 grid(static_cast<unsigned int>(compact_num_tasks));
+        cuda_single_group_sharedtile_compact_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op, compact_tasks);
+        return;
+    }
 
     dim3 grid(basis_slice.num_blocks, max_tasks);
     cuda_single_group_sharedtile_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv, typename Op>
-static inline void launch_cuda_single_group_by_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int host_rank, int max_tasks)
+static inline void launch_cuda_single_group_by_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int host_rank, int max_tasks, const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     if constexpr (TypeCode == 0 && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
 
     if (host_rank == 1)
-        launch_cuda_single_group_rank<1, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks);
+        launch_cuda_single_group_rank<1, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks, compact_tasks, compact_num_tasks);
     else if (host_rank == 2)
-        launch_cuda_single_group_rank<2, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks);
+        launch_cuda_single_group_rank<2, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks, compact_tasks, compact_num_tasks);
     else
-        launch_cuda_single_group_rank<0, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks);
+        launch_cuda_single_group_rank<0, TypeCode, Ti, Tv>(basis_slice, groups, pos, op, max_tasks, compact_tasks, compact_num_tasks);
 }
 
 template <typename Ti, typename Tv, typename Launcher>
-static inline void dispatch_cuda_network_group(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, int max_tasks, Launcher launcher)
+static inline void dispatch_cuda_network_group(
+    const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, int max_tasks, Launcher launcher,
+    const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     const uint8 type = net.host_excit_types[idx];
     const int64 pos = net.host_sorted_idxs[idx];
@@ -71,16 +168,16 @@ static inline void dispatch_cuda_network_group(const BasisSliceDev<Ti> &basis_sl
     switch (type)
     {
     case 0:
-        launcher.template operator()<0>(basis_slice, net.diag_groups, pos, max_tasks);
+        launcher.template operator()<0>(basis_slice, net.diag_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
     case 1:
-        launcher.template operator()<1>(basis_slice, net.pure_a_groups, pos, max_tasks);
+        launcher.template operator()<1>(basis_slice, net.pure_a_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
     case 2:
-        launcher.template operator()<2>(basis_slice, net.pure_b_groups, pos, max_tasks);
+        launcher.template operator()<2>(basis_slice, net.pure_b_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
     case 3:
-        launcher.template operator()<3>(basis_slice, net.mixed_groups, pos, max_tasks);
+        launcher.template operator()<3>(basis_slice, net.mixed_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
     default:
         break;
@@ -118,25 +215,30 @@ struct CudaExpmLauncher
     Tv *dev_vec;
 
     template <int TypeCode>
-    void operator()(const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks) const
+    void operator()(
+        const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
+        const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
         CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec, nullptr};
-        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks);
+        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
 
 template <typename Ti, typename Tv>
-void expm_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *dev_vec, int max_tasks)
+void expm_svd_network_otf_gpu(
+    const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *dev_vec, int max_tasks,
+    const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     const CudaExpmLauncher<Ti, Tv> launcher{theta, dev_vec};
-    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher);
+    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher, compact_tasks, compact_num_tasks);
 }
 
 template <typename Ti, typename Tv>
 void expm_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *dev_vec)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    expm_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, dev_vec, cuda_single_group_max_tasks(basis));
+    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
+    expm_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, dev_vec, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
 }
 
 template <typename Tv>
@@ -176,15 +278,17 @@ struct CudaGradLauncher
     Tv *d_res;
 
     template <int TypeCode>
-    void operator()(const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks) const
+    void operator()(
+        const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
+        const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
         CudaGradSingleGroupOp<Tv> op{theta, -std::sin(theta), std::cos(theta), lp, rp, d_res};
-        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks);
+        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
 
 template <typename Ti, typename Tv>
-Tv grad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, const Tv *lp, const Tv *rp, int max_tasks)
+Tv grad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, const Tv *lp, const Tv *rp, int max_tasks, const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     Tv h_res = {};
     Tv *d_res = nullptr;
@@ -192,7 +296,7 @@ Tv grad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkD
     CUDA_CHECK(cudaMemset(d_res, 0, sizeof(Tv)));
 
     const CudaGradLauncher<Ti, Tv> launcher{theta, lp, rp, d_res};
-    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher);
+    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher, compact_tasks, compact_num_tasks);
 
     CUDA_CHECK(cudaMemcpy(&h_res, d_res, sizeof(Tv), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(d_res));
@@ -203,7 +307,8 @@ template <typename Ti, typename Tv>
 Tv grad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, const Tv *lp, const Tv *rp)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    return grad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, cuda_single_group_max_tasks(basis));
+    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
+    return grad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
 }
 
 template <typename Tv>
@@ -249,15 +354,17 @@ struct CudaBackgradLauncher
     Tv *d_res;
 
     template <int TypeCode>
-    void operator()(const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks) const
+    void operator()(
+        const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
+        const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
         CudaBackgradSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp, d_res};
-        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks);
+        launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
 
 template <typename Ti, typename Tv>
-Tv backgrad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *lp, Tv *rp, int max_tasks)
+Tv backgrad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *lp, Tv *rp, int max_tasks, const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     Tv h_res = {};
     Tv *d_res = nullptr;
@@ -265,7 +372,7 @@ Tv backgrad_svd_network_otf_gpu(const BasisSliceDev<Ti> &basis_slice, const Netw
     CUDA_CHECK(cudaMemset(d_res, 0, sizeof(Tv)));
 
     const CudaBackgradLauncher<Ti, Tv> launcher{theta, lp, rp, d_res};
-    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher);
+    dispatch_cuda_network_group<Ti, Tv>(basis_slice, net, idx, max_tasks, launcher, compact_tasks, compact_num_tasks);
 
     CUDA_CHECK(cudaMemcpy(&h_res, d_res, sizeof(Tv), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(d_res));
@@ -276,7 +383,8 @@ template <typename Ti, typename Tv>
 Tv backgrad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *lp, Tv *rp)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, cuda_single_group_max_tasks(basis));
+    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
+    return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>

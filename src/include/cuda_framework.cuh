@@ -40,6 +40,12 @@ struct SourceBlockStorageTag;
 struct ValidGroupStorageTag;
 struct GroupRankStorageTag;
 
+struct CudaSingleGroupTask
+{
+    int bid;
+    int task_idx;
+};
+
 template <typename Tv, int PhaseMemSize, int IdxMemSize, bool UsesBExcitation>
 struct SingleGroupSharedTileStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>
@@ -82,15 +88,29 @@ struct MultiGroupTileSharedStorage
     }
 };
 
+__device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int &task_idx)
+{
+    bid = blockIdx.x;
+    task_idx = blockIdx.y;
+}
+
+__device__ __forceinline__ void cuda_single_group_decode_compact_task(
+    const CudaSingleGroupTask *__restrict__ tasks, int &bid, int &task_idx)
+{
+    const CudaSingleGroupTask task = tasks[blockIdx.x];
+    bid = task.bid;
+    task_idx = task.task_idx;
+}
+
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
-__global__ void cuda_single_group_sharedtile_kernel(
+__device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
-    Op op)
+    Op op,
+    int bid,
+    int task_idx)
 {
-    const int bid = blockIdx.x;
-    const int task_idx = blockIdx.y;
     constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
     constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
@@ -228,6 +248,35 @@ __global__ void cuda_single_group_sharedtile_kernel(
     }
 
     op.finish_block(local_res);
+}
+
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+__global__ void cuda_single_group_sharedtile_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    int pos,
+    Op op)
+{
+    int bid;
+    int task_idx;
+    cuda_single_group_decode_rect_task(bid, task_idx);
+    cuda_single_group_sharedtile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, pos, op, bid, task_idx);
+}
+
+// Compact scheduler variant: each CUDA block corresponds to one valid (basis block, tile task)
+// pair, so imbalanced layouts avoid launching rectangular-grid blocks that immediately return.
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+__global__ void cuda_single_group_sharedtile_compact_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    int pos,
+    Op op,
+    const CudaSingleGroupTask *__restrict__ tasks)
+{
+    int bid;
+    int task_idx;
+    cuda_single_group_decode_compact_task(tasks, bid, task_idx);
+    cuda_single_group_sharedtile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, pos, op, bid, task_idx);
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
