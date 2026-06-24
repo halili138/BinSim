@@ -46,6 +46,12 @@ struct CudaSingleGroupTask
     int task_idx;
 };
 
+struct CudaMultiGroupTask
+{
+    int active_block_idx;
+    int tile_idx;
+};
+
 template <typename Tv, int PhaseMemSize, int IdxMemSize, bool UsesBExcitation>
 struct SingleGroupSharedTileStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>
@@ -100,6 +106,22 @@ __device__ __forceinline__ void cuda_single_group_decode_compact_task(
     const CudaSingleGroupTask task = tasks[blockIdx.x];
     bid = task.bid;
     task_idx = task.task_idx;
+}
+
+__device__ __forceinline__ void cuda_multi_group_decode_rect_task(int &active_block_idx, int &task_idx, int &task_stride)
+{
+    active_block_idx = blockIdx.x;
+    task_idx = blockIdx.y;
+    task_stride = gridDim.y;
+}
+
+__device__ __forceinline__ void cuda_multi_group_decode_compact_task(
+    const CudaMultiGroupTask *__restrict__ tasks, int &active_block_idx, int &task_idx, int &task_stride)
+{
+    const CudaMultiGroupTask task = tasks[blockIdx.x];
+    active_block_idx = task.active_block_idx;
+    task_idx = task.tile_idx;
+    task_stride = 0;
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
@@ -280,10 +302,13 @@ __global__ void cuda_single_group_sharedtile_compact_kernel(
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
-__global__ void cuda_multi_group_tile_kernel(
+__device__ __forceinline__ void cuda_multi_group_tile_impl(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
-    Op op)
+    Op op,
+    int active_block_idx,
+    int first_task_idx,
+    int task_stride)
 {
     constexpr bool IsDiagonal = TypeCode == 0;
     constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
@@ -302,7 +327,7 @@ __global__ void cuda_multi_group_tile_kernel(
 
     __shared__ MultiGroupTileSharedStorage<Tv, SHARED_MEM_SIZE, IDX_MEM_SIZE, GROUP_MEM_SIZE, UsesBExcitation, IsDiagonal> sh;
 
-    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[active_block_idx] : active_block_idx;
     const int total_groups = groups.num_groups;
     const int num_chunks = (total_groups + BATCH_SIZE - 1) / BATCH_SIZE;
     const int n_a = basis.block_num_a[bid];
@@ -319,7 +344,7 @@ __global__ void cuda_multi_group_tile_kernel(
     const int *b_idx_map = basis.bstr2idx;
     const int64 dst_block_offset = basis.block_offsets[bid];
 
-    for (int task_idx = blockIdx.y; task_idx < total_tiles; task_idx += gridDim.y)
+    for (int task_idx = first_task_idx; task_idx < total_tiles; task_idx += task_stride)
     {
         const int b_tile_idx = task_idx % num_b_tiles;
         const int a_tile_idx = task_idx / num_b_tiles;
@@ -497,5 +522,34 @@ __global__ void cuda_multi_group_tile_kernel(
         }
 
         op.finish_tile(basis, dst_row, dst_block_offset, b_tile_start, current_tile_b, valid_a, accum);
+        if (task_stride <= 0)
+            break;
     }
+}
+
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+__global__ void cuda_multi_group_tile_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    Op op)
+{
+    int active_block_idx;
+    int task_idx;
+    int task_stride;
+    cuda_multi_group_decode_rect_task(active_block_idx, task_idx, task_stride);
+    cuda_multi_group_tile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, op, active_block_idx, task_idx, task_stride);
+}
+
+template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
+__global__ void cuda_multi_group_tile_compact_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    Op op,
+    const CudaMultiGroupTask *__restrict__ tasks)
+{
+    int active_block_idx;
+    int task_idx;
+    int task_stride;
+    cuda_multi_group_decode_compact_task(tasks, active_block_idx, task_idx, task_stride);
+    cuda_multi_group_tile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, op, active_block_idx, task_idx, task_stride);
 }
