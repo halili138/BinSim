@@ -49,7 +49,6 @@ struct CudaExpmSingleGroupOp
     double cd;
     double co;
     Tv *vec;
-    Tv *d_res;
 
     __device__ __forceinline__ void diag(Tv &, Tv vt, int64 di) const
     {
@@ -75,7 +74,7 @@ struct CudaExpmLauncher
         const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
         const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
-        CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec, nullptr};
+        CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec};
         launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
