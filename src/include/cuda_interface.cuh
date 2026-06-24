@@ -80,6 +80,80 @@ struct CudaSingleGroupSchedule
     }
 };
 
+struct CudaMultiGroupSchedule
+{
+    int64 total_tiles = 0;
+    int64 rectangular_tasks = 0;
+    CudaMultiGroupTask *dev_tasks = nullptr;
+
+    CudaMultiGroupSchedule() = default;
+    CudaMultiGroupSchedule(const CudaMultiGroupSchedule &) = delete;
+    CudaMultiGroupSchedule &operator=(const CudaMultiGroupSchedule &) = delete;
+
+    CudaMultiGroupSchedule(CudaMultiGroupSchedule &&other) noexcept
+    {
+        *this = std::move(other);
+    }
+
+    CudaMultiGroupSchedule &operator=(CudaMultiGroupSchedule &&other) noexcept
+    {
+        if (this != &other)
+        {
+            clear();
+            total_tiles = other.total_tiles;
+            rectangular_tasks = other.rectangular_tasks;
+            dev_tasks = other.dev_tasks;
+            other.total_tiles = 0;
+            other.rectangular_tasks = 0;
+            other.dev_tasks = nullptr;
+        }
+        return *this;
+    }
+
+    ~CudaMultiGroupSchedule() { clear(); }
+
+    void clear()
+    {
+        if (dev_tasks)
+        {
+            cudaFree(dev_tasks);
+            dev_tasks = nullptr;
+        }
+    }
+
+    bool compact_enabled() const { return dev_tasks != nullptr && total_tiles > 0; }
+};
+
+template <typename Ti>
+static inline CudaMultiGroupSchedule cuda_multi_group_schedule(const BasisViewDev<Ti> &basis, int num_sms)
+{
+    CudaMultiGroupSchedule schedule;
+    std::vector<CudaMultiGroupTask> host_tasks;
+
+    for (int active_block_idx = 0; active_block_idx < basis.num_blocks; ++active_block_idx)
+    {
+        const int num_a_tiles = (basis.host_block_num_a[active_block_idx] + TILE_A - 1) / TILE_A;
+        const int num_b_tiles = (basis.host_block_num_b[active_block_idx] + TILE_B - 1) / TILE_B;
+        const int block_tiles = num_a_tiles * num_b_tiles;
+        for (int tile_idx = 0; tile_idx < block_tiles; ++tile_idx)
+            host_tasks.push_back(CudaMultiGroupTask{active_block_idx, tile_idx});
+    }
+
+    schedule.total_tiles = static_cast<int64>(host_tasks.size());
+    schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * num_sms * 4;
+
+    const bool grid_fits = schedule.total_tiles <= std::numeric_limits<unsigned int>::max();
+    const bool compact_is_smaller = schedule.total_tiles < schedule.rectangular_tasks;
+    const bool high_idle = schedule.rectangular_tasks > 0 && schedule.total_tiles * 2 < schedule.rectangular_tasks;
+    if (!host_tasks.empty() && grid_fits && compact_is_smaller && high_idle)
+    {
+        CUDA_CHECK(cudaMalloc(&schedule.dev_tasks, host_tasks.size() * sizeof(CudaMultiGroupTask)));
+        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks, host_tasks.data(), host_tasks.size() * sizeof(CudaMultiGroupTask), cudaMemcpyHostToDevice));
+    }
+
+    return schedule;
+}
+
 template <typename Ti>
 static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisViewDev<Ti> &basis)
 {
@@ -388,15 +462,25 @@ Tv backgrad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
-static inline void launch_cuda_multi_group_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, dim3 grid_size, int block_size, Op op)
+static inline void launch_cuda_multi_group_rank(
+    const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, dim3 grid_size, int block_size, Op op,
+    const CudaMultiGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
     if constexpr (TypeCode == 0 && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
+    if (compact_tasks && compact_num_tasks > 0 && compact_num_tasks <= std::numeric_limits<unsigned int>::max())
+    {
+        dim3 compact_grid(static_cast<unsigned int>(compact_num_tasks));
+        cuda_multi_group_tile_compact_kernel<Rank, TypeCode, Ti, Tv, Op><<<compact_grid, block_size>>>(basis_slice, groups, op, compact_tasks);
+        return;
+    }
     cuda_multi_group_tile_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid_size, block_size>>>(basis_slice, groups, op);
 }
 
 template <int TypeCode, typename Ti, typename Tv, typename Op>
-static inline void dispatch_cuda_multi_group_chunks_by_rank(const BasisSliceDev<Ti> &basis_slice, int num_active_blocks, const GroupsViewDev<Ti, Tv> &groups, Op op)
+static inline void dispatch_cuda_multi_group_chunks_by_rank(
+    const BasisSliceDev<Ti> &basis_slice, int num_active_blocks, const GroupsViewDev<Ti, Tv> &groups, Op op,
+    const CudaMultiGroupSchedule *schedule = nullptr)
 {
     const int64 total_ngs = groups.num_groups;
     if (total_ngs == 0)
@@ -406,6 +490,8 @@ static inline void dispatch_cuda_multi_group_chunks_by_rank(const BasisSliceDev<
     CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
     constexpr int block_size = 256;
     const dim3 grid_size(num_active_blocks, num_sms * 4);
+    const CudaMultiGroupTask *compact_tasks = (schedule && schedule->compact_enabled()) ? schedule->dev_tasks : nullptr;
+    const int64 compact_num_tasks = compact_tasks ? schedule->total_tiles : 0;
 
     int64 start = 0;
     while (start < total_ngs)
@@ -417,18 +503,29 @@ static inline void dispatch_cuda_multi_group_chunks_by_rank(const BasisSliceDev<
         switch (dispatch_rank)
         {
         case 1:
-            launch_cuda_multi_group_rank<1, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            launch_cuda_multi_group_rank<1, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op, compact_tasks, compact_num_tasks);
             break;
         case 2:
-            launch_cuda_multi_group_rank<2, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            launch_cuda_multi_group_rank<2, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op, compact_tasks, compact_num_tasks);
             break;
         default:
-            launch_cuda_multi_group_rank<0, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op);
+            launch_cuda_multi_group_rank<0, TypeCode, Ti, Tv>(basis_slice, slice, grid_size, block_size, op, compact_tasks, compact_num_tasks);
             break;
         }
 
         start = end;
     }
+}
+
+template <int TypeCode, typename Ti, typename Tv, typename Op>
+static inline void dispatch_cuda_multi_group_chunks_by_rank(
+    const BasisViewDev<Ti> &basis, const GroupsViewDev<Ti, Tv> &groups, Op op)
+{
+    int num_sms = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
+    CudaMultiGroupSchedule schedule = cuda_multi_group_schedule(basis, num_sms);
+    const BasisSliceDev<Ti> slice = make_basis_slice(basis);
+    dispatch_cuda_multi_group_chunks_by_rank<TypeCode>(slice, basis.num_blocks, groups, op, &schedule);
 }
 
 template <typename Tv>
@@ -477,13 +574,12 @@ template <typename Ti, typename Tv>
 void cuda_hvec(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, const Tv *src_vec, Tv *dst_vec)
 {
     CUDA_CHECK(cudaMemset(dst_vec, 0, basis.dim * sizeof(Tv)));
-    const BasisSliceDev<Ti> slice = make_basis_slice(basis);
     const CudaHVecMultiGroupOp<Tv> op{src_vec, dst_vec};
 
-    dispatch_cuda_multi_group_chunks_by_rank<0>(slice, basis.num_blocks, net.diag_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<1>(slice, basis.num_blocks, net.pure_a_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<2>(slice, basis.num_blocks, net.pure_b_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<3>(slice, basis.num_blocks, net.mixed_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<0>(basis, net.diag_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<1>(basis, net.pure_a_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<2>(basis, net.pure_b_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<3>(basis, net.mixed_groups, op);
 }
 
 template <typename Tv>
@@ -531,11 +627,10 @@ template <typename Ti, typename Tv>
 void cuda_batchgrad(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, const double *thetas, const Tv *lp, const Tv *rp, Tv *grads)
 {
     CUDA_CHECK(cudaMemset(grads, 0, net.host_sorted_idxs.size() * sizeof(Tv)));
-    const BasisSliceDev<Ti> slice = make_basis_slice(basis);
     const CudaBatchGradMultiGroupOp<Tv> op{thetas, lp, rp, grads};
 
-    dispatch_cuda_multi_group_chunks_by_rank<0>(slice, basis.num_blocks, net.diag_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<1>(slice, basis.num_blocks, net.pure_a_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<2>(slice, basis.num_blocks, net.pure_b_groups, op);
-    dispatch_cuda_multi_group_chunks_by_rank<3>(slice, basis.num_blocks, net.mixed_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<0>(basis, net.diag_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<1>(basis, net.pure_a_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<2>(basis, net.pure_b_groups, op);
+    dispatch_cuda_multi_group_chunks_by_rank<3>(basis, net.mixed_groups, op);
 }
