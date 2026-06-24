@@ -25,6 +25,21 @@ __device__ __forceinline__ void cuda_block_reduce_atomic_add(Tv local_res, Tv *d
 }
 
 
+// Single-group operations are used by launch_cuda_single_group_by_rank() to
+// apply one sorted network group at a time. A conforming op type must provide:
+//   - static constexpr bool SkipRealDiagonal
+//       When true, diagonal real-valued groups are skipped at launch time.
+//   - __device__ void diag(Tv &local_res, Tv vt, int64 di) const
+//       Handles a diagonal matrix element for destination index di.
+//   - __device__ void offdiag(Tv &local_res, Tv vt, int64 si, int64 di) const
+//       Handles an off-diagonal matrix element from source si to destination di.
+//   - __device__ void finish_block(Tv &local_res) const
+//       Flushes the per-thread/per-block scalar accumulator after the tile is
+//       processed. Ops without scalar output can leave this as a no-op.
+//
+// The local_res argument is a scalar accumulator private to the current CUDA
+// thread. It is intended for reductions such as gradients that are finalized by
+// finish_block(), and is distinct from multi-group tile accumulators below.
 template <typename Tv>
 struct CudaExpmSingleGroupOp
 {
@@ -228,6 +243,40 @@ Tv backgrad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<
     return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, schedule.max_tasks, schedule.dev_tasks.get(), schedule.total_tasks);
 }
 
+// Multi-group operations are used by dispatch_cuda_multi_group_chunks_by_rank()
+// to process chunks of sorted network groups over an A/B tile. A conforming op
+// type must provide:
+//   - static constexpr bool SkipRealDiagonal
+//       When true, diagonal real-valued groups are skipped at launch time.
+//   - static constexpr bool SkipLowerBlocks
+//       When true, off-diagonal source blocks lower than the destination block
+//       are skipped.
+//   - static constexpr bool SkipSameBlockReverse
+//       When true, reverse pairs within the same block are skipped so symmetric
+//       contributions are visited once.
+//   - __device__ void init_tile(Tv (&accum)[TILE_B]) const
+//       Initializes the per-thread B-tile accumulator array before group chunks.
+//   - __device__ void diag(Tv (&accum)[TILE_B], Tv &local_res, Tv vt,
+//                          int64 di, int original_idx, int b_offset) const
+//       Handles a diagonal matrix element in the current tile.
+//   - __device__ void offdiag(Tv (&accum)[TILE_B], Tv &local_res, Tv vt,
+//                             int64 si, int64 di, int original_idx,
+//                             int b_offset) const
+//       Handles an off-diagonal matrix element in the current tile.
+//   - __device__ void finish_group(Tv &local_res, int original_idx) const
+//       Flushes the scalar accumulator after one group has been processed.
+//   - template <typename Ti>
+//     __device__ void finish_tile(const BasisSliceDev<Ti> &basis,
+//                                 int64 dst_row, int64 dst_block_offset,
+//                                 int b_tile_start, int current_tile_b,
+//                                 bool valid_a, Tv (&accum)[TILE_B]) const
+//       Flushes per-tile vector accumulations after all group chunks complete.
+//
+// Tv (&accum)[TILE_B] stores one per-B-column value for the current thread's
+// destination row and tile. Use it when contributions from many groups should be
+// accumulated and written once per tile, such as hvec output updates. local_res
+// is a scalar per-thread accumulator reset for each group; use it for group-wise
+// reductions such as gradient sums that finish_group() atomically combines.
 template <typename Tv>
 struct CudaHVecMultiGroupOp
 {

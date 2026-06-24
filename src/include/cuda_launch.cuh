@@ -2,6 +2,42 @@
 #include "cuda_schedule.cuh"
 #include <limits>
 #include <type_traits>
+#include <utility>
+
+namespace cuda_op_requirements_detail
+{
+template <typename, typename Tv, typename = void>
+struct has_single_group_interface : std::false_type
+{
+};
+
+template <typename Op, typename Tv>
+struct has_single_group_interface<Op, Tv, std::void_t<
+    decltype(Op::SkipRealDiagonal),
+    decltype(std::declval<const Op &>().diag(std::declval<Tv &>(), std::declval<Tv>(), std::declval<int64>())),
+    decltype(std::declval<const Op &>().offdiag(std::declval<Tv &>(), std::declval<Tv>(), std::declval<int64>(), std::declval<int64>())),
+    decltype(std::declval<const Op &>().finish_block(std::declval<Tv &>()))>> : std::true_type
+{
+};
+
+template <typename, typename Ti, typename Tv, typename = void>
+struct has_multi_group_interface : std::false_type
+{
+};
+
+template <typename Op, typename Ti, typename Tv>
+struct has_multi_group_interface<Op, Ti, Tv, std::void_t<
+    decltype(Op::SkipRealDiagonal),
+    decltype(Op::SkipLowerBlocks),
+    decltype(Op::SkipSameBlockReverse),
+    decltype(std::declval<const Op &>().init_tile(std::declval<Tv (&)[TILE_B]>())),
+    decltype(std::declval<const Op &>().diag(std::declval<Tv (&)[TILE_B]>(), std::declval<Tv &>(), std::declval<Tv>(), std::declval<int64>(), std::declval<int>(), std::declval<int>())),
+    decltype(std::declval<const Op &>().offdiag(std::declval<Tv (&)[TILE_B]>(), std::declval<Tv &>(), std::declval<Tv>(), std::declval<int64>(), std::declval<int64>(), std::declval<int>(), std::declval<int>())),
+    decltype(std::declval<const Op &>().finish_group(std::declval<Tv &>(), std::declval<int>())),
+    decltype(std::declval<const Op &>().finish_tile(std::declval<const BasisSliceDev<Ti> &>(), std::declval<int64>(), std::declval<int64>(), std::declval<int>(), std::declval<int>(), std::declval<bool>(), std::declval<Tv (&)[TILE_B]>()))>> : std::true_type
+{
+};
+} // namespace cuda_op_requirements_detail
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 static inline void launch_cuda_single_group_rank(
@@ -26,6 +62,10 @@ static inline void launch_cuda_single_group_rank(
 template <int TypeCode, typename Ti, typename Tv, typename Op>
 static inline void launch_cuda_single_group_by_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int host_rank, int max_tasks, const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
+    static_assert(cuda_op_requirements_detail::has_single_group_interface<Op, Tv>::value,
+        "CUDA single-group Op must provide: static constexpr bool SkipRealDiagonal; "
+        "diag(Tv&, Tv, int64); offdiag(Tv&, Tv, int64, int64); finish_block(Tv&).");
+
     if constexpr (is_diagonal_type<TypeCode>() && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
 
@@ -71,6 +111,12 @@ static inline void launch_cuda_multi_group_rank(
     const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, dim3 grid_size, int block_size, Op op,
     const CudaMultiGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
+    static_assert(cuda_op_requirements_detail::has_multi_group_interface<Op, Ti, Tv>::value,
+        "CUDA multi-group Op must provide: static constexpr bool SkipRealDiagonal, SkipLowerBlocks, "
+        "SkipSameBlockReverse; init_tile(Tv (&)[TILE_B]); diag(Tv (&)[TILE_B], Tv&, Tv, int64, int, int); "
+        "offdiag(Tv (&)[TILE_B], Tv&, Tv, int64, int64, int, int); finish_group(Tv&, int); "
+        "finish_tile(const BasisSliceDev<Ti>&, int64, int64, int, int, bool, Tv (&)[TILE_B]).");
+
     if constexpr (is_diagonal_type<TypeCode>() && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
     if (compact_tasks && compact_num_tasks > 0 && compact_num_tasks <= std::numeric_limits<unsigned int>::max())
@@ -132,4 +178,3 @@ static inline void dispatch_cuda_multi_group_chunks_by_rank(
     const BasisSliceDev<Ti> slice = make_basis_slice(basis);
     dispatch_cuda_multi_group_chunks_by_rank<TypeCode>(slice, basis.num_blocks, groups, op, &schedule);
 }
-
