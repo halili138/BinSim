@@ -68,6 +68,15 @@ struct CudaDeviceTaskBuffer
     int64 size() const noexcept { return count; }
 };
 
+static inline bool should_use_compact_schedule(int64 total_tasks, int64 rectangular_tasks, bool grid_fits, double idle_threshold)
+{
+    if (!grid_fits || total_tasks <= 0 || rectangular_tasks <= 0 || total_tasks >= rectangular_tasks)
+        return false;
+
+    const double idle_rate = double(rectangular_tasks - total_tasks) / double(rectangular_tasks);
+    return idle_rate > idle_threshold;
+}
+
 struct CudaSingleGroupSchedule
 {
     int max_tasks = 0;
@@ -81,11 +90,13 @@ struct CudaSingleGroupSchedule
     CudaSingleGroupSchedule(CudaSingleGroupSchedule &&) noexcept = default;
     CudaSingleGroupSchedule &operator=(CudaSingleGroupSchedule &&) noexcept = default;
 
-    bool compact_enabled() const { return dev_tasks.get() != nullptr && total_tasks > 0; }
+    int64 compact_task_count() const { return total_tasks; }
+    int64 rectangular_task_count() const { return rectangular_tasks; }
+    bool compact_enabled() const { return dev_tasks.get() != nullptr && compact_task_count() > 0; }
 
     double early_return_rate() const
     {
-        return rectangular_tasks == 0 ? 0.0 : double(rectangular_tasks - total_tasks) / double(rectangular_tasks);
+        return rectangular_task_count() == 0 ? 0.0 : double(rectangular_task_count() - compact_task_count()) / double(rectangular_task_count());
     }
 };
 
@@ -101,7 +112,9 @@ struct CudaMultiGroupSchedule
     CudaMultiGroupSchedule(CudaMultiGroupSchedule &&) noexcept = default;
     CudaMultiGroupSchedule &operator=(CudaMultiGroupSchedule &&) noexcept = default;
 
-    bool compact_enabled() const { return dev_tasks.get() != nullptr && total_tiles > 0; }
+    int64 compact_task_count() const { return total_tiles; }
+    int64 rectangular_task_count() const { return rectangular_tasks; }
+    bool compact_enabled() const { return dev_tasks.get() != nullptr && compact_task_count() > 0; }
 };
 
 template <typename Ti>
@@ -122,10 +135,9 @@ static inline CudaMultiGroupSchedule cuda_multi_group_schedule(const BasisViewDe
     schedule.total_tiles = static_cast<int64>(host_tasks.size());
     schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * num_sms * kBlocksPerSmForRectangularGrid;
 
-    const bool grid_fits = schedule.total_tiles <= std::numeric_limits<unsigned int>::max();
-    const bool compact_is_smaller = schedule.total_tiles < schedule.rectangular_tasks;
-    const bool high_idle = schedule.rectangular_tasks > 0 && schedule.total_tiles * 2 < schedule.rectangular_tasks;
-    if (!host_tasks.empty() && grid_fits && compact_is_smaller && high_idle)
+    constexpr double kCompactIdleThreshold = 0.5;
+    const bool grid_fits = schedule.compact_task_count() <= std::numeric_limits<unsigned int>::max();
+    if (should_use_compact_schedule(schedule.compact_task_count(), schedule.rectangular_task_count(), grid_fits, kCompactIdleThreshold))
     {
         CudaMultiGroupTask *dev_tasks = nullptr;
         CUDA_CHECK(cudaMalloc(&dev_tasks, host_tasks.size() * sizeof(CudaMultiGroupTask)));
@@ -156,7 +168,9 @@ static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisView
     schedule.total_tasks = static_cast<int64>(host_tasks.size());
     schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * schedule.max_tasks;
 
-    if (!host_tasks.empty() && schedule.total_tasks < schedule.rectangular_tasks)
+    constexpr double kCompactIdleThreshold = 0.0;
+    const bool grid_fits = schedule.compact_task_count() <= std::numeric_limits<unsigned int>::max();
+    if (should_use_compact_schedule(schedule.compact_task_count(), schedule.rectangular_task_count(), grid_fits, kCompactIdleThreshold))
     {
         CudaSingleGroupTask *dev_tasks = nullptr;
         CUDA_CHECK(cudaMalloc(&dev_tasks, host_tasks.size() * sizeof(CudaSingleGroupTask)));
