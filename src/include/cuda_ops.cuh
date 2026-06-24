@@ -2,6 +2,33 @@
 #include "cuda_launch.cuh"
 #include <cmath>
 
+struct CudaTrigParams
+{
+    double cd;
+    double co;
+};
+
+struct CudaBackgradTrigParams
+{
+    CudaTrigParams expm;
+    CudaTrigParams grad;
+};
+
+inline CudaTrigParams make_expm_params(double theta)
+{
+    return CudaTrigParams{std::cos(theta) - 1.0, std::sin(theta)};
+}
+
+inline CudaTrigParams make_grad_params(double theta)
+{
+    return CudaTrigParams{-std::sin(theta), std::cos(theta)};
+}
+
+inline CudaBackgradTrigParams make_backgrad_params(double theta)
+{
+    return CudaBackgradTrigParams{make_expm_params(theta), make_grad_params(theta)};
+}
+
 template <typename Tv>
 __device__ __forceinline__ void cuda_block_reduce_atomic_add(Tv local_res, Tv *d_res)
 {
@@ -74,7 +101,8 @@ struct CudaExpmLauncher
         const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
         const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
-        CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec};
+        const auto params = make_expm_params(theta);
+        CudaExpmSingleGroupOp<Tv> op{theta, params.cd, params.co, dev_vec};
         launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
@@ -137,7 +165,8 @@ struct CudaGradLauncher
         const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
         const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
-        CudaGradSingleGroupOp<Tv> op{theta, -std::sin(theta), std::cos(theta), lp, rp, d_res};
+        const auto params = make_grad_params(theta);
+        CudaGradSingleGroupOp<Tv> op{theta, params.cd, params.co, lp, rp, d_res};
         launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
@@ -213,7 +242,9 @@ struct CudaBackgradLauncher
         const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
         const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
-        CudaBackgradSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, -std::sin(theta), -std::sin(theta), std::cos(theta), lp, rp, d_res};
+        const auto params = make_backgrad_params(theta);
+        CudaBackgradSingleGroupOp<Tv> op{
+            theta, params.expm.cd, params.expm.co, params.grad.cd, params.grad.co, lp, rp, d_res};
         launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
