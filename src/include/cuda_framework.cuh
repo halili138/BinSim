@@ -91,6 +91,7 @@ __global__ void cuda_single_group_sharedtile_kernel(
 {
     const int bid = blockIdx.x;
     const int task_idx = blockIdx.y;
+    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
     constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
     constexpr int IDX_MEM_SIZE = UsesBExcitation ? TILE_B : 0;
@@ -114,18 +115,43 @@ __global__ void cuda_single_group_sharedtile_kernel(
     const bool valid_a = a < n_a;
     const Ti *astrs = basis.astrs_flat + basis.astrs_start[bid];
     const Ti *bstrs = basis.bstrs_flat + basis.bstrs_start[bid];
+
     const int rank = groups.ranks[pos];
+    const int num_zas = groups.num_zas[pos];
+    const int num_zbs = groups.num_zbs[pos];
+    const int za_start = groups.za_start[pos];
+    const int zb_start = groups.zb_start[pos];
+    const int wa_start = groups.wa_start[pos];
+    const int wb_start = groups.wb_start[pos];
+    const auto *group_zas = groups.flat_zas + za_start;
+    const auto *group_zbs = groups.flat_zbs + zb_start;
+    const auto *group_wa = groups.flat_wa + wa_start;
+    const auto *group_wb = groups.flat_wb + wb_start;
+
+    Ti ax = {};
+    if constexpr (UsesAExcitation)
+        ax = groups.axs[pos];
+    Ti bx = {};
+    if constexpr (UsesBExcitation)
+        bx = groups.bxs[pos];
+
+    int asym = 0;
+    if constexpr (TypeCode == 1 || TypeCode == 3)
+        asym = groups.asyms[pos];
+    int bsym = 0;
+    if constexpr (TypeCode == 2 || TypeCode == 3)
+        bsym = groups.bsyms[pos];
 
     int src_bid = bid;
     if constexpr (TypeCode != 0)
     {
         int h;
         if constexpr (TypeCode == 1)
-            h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + basis.block_bsym[bid];
+            h = (basis.block_asym[bid] ^ asym) * basis.num_irreps + basis.block_bsym[bid];
         else if constexpr (TypeCode == 2)
-            h = basis.block_asym[bid] * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
+            h = basis.block_asym[bid] * basis.num_irreps + (basis.block_bsym[bid] ^ bsym);
         else
-            h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
+            h = (basis.block_asym[bid] ^ asym) * basis.num_irreps + (basis.block_bsym[bid] ^ bsym);
         src_bid = basis.block_map[h];
     }
 
@@ -135,19 +161,19 @@ __global__ void cuda_single_group_sharedtile_kernel(
         int sb = b_start + b_offset;
         if constexpr (UsesBExcitation)
         {
-            src_bstr ^= groups.bxs[pos];
+            src_bstr ^= bx;
             sb = basis.bstr2idx[src_bstr];
         }
         if constexpr (UsesBExcitation)
             sh.sh_sb()[b_offset] = sb;
         if constexpr (TypeCode == 0)
             compute_phase_dev<Rank, Ti, Tv>(
-                src_bstr, groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos],
-                groups.flat_wb + groups.wb_start[pos], sh.sh_pb + b_offset, TILE_B, rank);
+                src_bstr, group_zbs, num_zbs,
+                group_wb, sh.sh_pb + b_offset, TILE_B, rank);
         else if (src_bid != -1 && src_bid >= bid && sb != -1)
             compute_phase_dev<Rank, Ti, Tv>(
-                src_bstr, groups.flat_zbs + groups.zb_start[pos], groups.num_zbs[pos],
-                groups.flat_wb + groups.wb_start[pos], sh.sh_pb + b_offset, TILE_B, rank);
+                src_bstr, group_zbs, num_zbs,
+                group_wb, sh.sh_pb + b_offset, TILE_B, rank);
     }
     __syncthreads();
 
@@ -160,8 +186,8 @@ __global__ void cuda_single_group_sharedtile_kernel(
         if constexpr (TypeCode == 0)
         {
             compute_phase_dev<Rank, Ti, Tv>(
-                dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos],
-                groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
+                dst_astr, group_zas, num_zas,
+                group_wa, pa, 1, rank);
 
             for (int b_offset = 0; b_offset < cur_b; ++b_offset)
             {
@@ -174,13 +200,13 @@ __global__ void cuda_single_group_sharedtile_kernel(
         {
             Ti src_astr = dst_astr;
             if constexpr (TypeCode == 1 || TypeCode == 3)
-                src_astr ^= groups.axs[pos];
+                src_astr ^= ax;
             const int sa = (TypeCode == 2) ? a : basis.astr2idx[src_astr];
             if (sa != -1 && !(src_bid == bid && sa < a))
             {
                 compute_phase_dev<Rank, Ti, Tv>(
-                    src_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos],
-                    groups.flat_wa + groups.wa_start[pos], pa, 1, rank);
+                    src_astr, group_zas, num_zas,
+                    group_wa, pa, 1, rank);
 
                 const int src_n_b = basis.block_num_b[src_bid];
                 const int64 src_row = basis.block_offsets[src_bid] + (int64)sa * src_n_b;
