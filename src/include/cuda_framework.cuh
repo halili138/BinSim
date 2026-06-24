@@ -143,6 +143,10 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     const int n_a = basis.block_num_a[bid];
     const int n_b = basis.block_num_b[bid];
     const int num_b_tiles = (n_b + TILE_B - 1) / TILE_B;
+    // The single-group launcher owns the tile width through its selected CUDA
+    // block size (currently dispatched as 128 or 256 threads).  Keep deriving
+    // the number of A tiles from blockDim.x so the kernel and host-side
+    // schedules stay in lockstep when a non-default launch is profiled.
     const int num_a_tiles = (n_a + blockDim.x - 1) / blockDim.x;
 
     Tv local_res = {};
