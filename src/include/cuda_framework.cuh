@@ -3,6 +3,32 @@
 #include "cuda_otf.cuh"
 #include "cuda_utils.cuh"
 
+// Semantic names for CUDA excitation type codes. Keep TypeCode template
+// parameters as int to avoid changing existing template instantiations.
+inline constexpr int kDiagType = 0;
+inline constexpr int kPureAType = 1;
+inline constexpr int kPureBType = 2;
+inline constexpr int kMixedType = 3;
+
+template <int TypeCode>
+__host__ __device__ constexpr bool uses_a_excitation()
+{
+    return TypeCode == kPureAType || TypeCode == kMixedType;
+}
+
+template <int TypeCode>
+__host__ __device__ constexpr bool uses_b_excitation()
+{
+    return TypeCode == kPureBType || TypeCode == kMixedType;
+}
+
+template <int TypeCode>
+__host__ __device__ constexpr bool is_diagonal_type()
+{
+    return TypeCode == kDiagType;
+}
+
+
 template <typename T, int Size>
 struct StaticSharedStorage
 {
@@ -132,16 +158,16 @@ __device__ __forceinline__ int resolve_source_block(
     int bid,
     int group_idx)
 {
-    if constexpr (TypeCode == 0)
+    if constexpr (is_diagonal_type<TypeCode>())
     {
         return bid;
     }
     else
     {
         int h;
-        if constexpr (TypeCode == 1)
+        if constexpr (TypeCode == kPureAType)
             h = (basis.block_asym[bid] ^ groups.asyms[group_idx]) * basis.num_irreps + basis.block_bsym[bid];
-        else if constexpr (TypeCode == 2)
+        else if constexpr (TypeCode == kPureBType)
             h = basis.block_asym[bid] * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[group_idx]);
         else
             h = (basis.block_asym[bid] ^ groups.asyms[group_idx]) * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[group_idx]);
@@ -161,7 +187,7 @@ __device__ __forceinline__ void load_single_group_b_tile_phases(
     int b_start,
     int cur_b)
 {
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     const int rank = groups.ranks[pos];
     const auto *group_zbs = groups.flat_zbs + groups.zb_start[pos];
     const auto *group_wb = groups.flat_wb + groups.wb_start[pos];
@@ -179,7 +205,7 @@ __device__ __forceinline__ void load_single_group_b_tile_phases(
             sb = basis.bstr2idx[src_bstr];
             sh.sh_sb()[b_offset] = sb;
         }
-        if constexpr (TypeCode == 0)
+        if constexpr (is_diagonal_type<TypeCode>())
             compute_phase_dev<Rank, Ti, Tv>(
                 src_bstr, group_zbs, groups.num_zbs[pos],
                 group_wb, sh.sh_pb + b_offset, TILE_B, rank);
@@ -206,15 +232,15 @@ __device__ __forceinline__ void process_single_group_a_row(
     int b_start,
     int cur_b)
 {
-    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool UsesAExcitation = uses_a_excitation<TypeCode>();
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : KERNEL_MAX_RANK);
 
     const Ti dst_astr = astrs[a];
     Tv pa[STACK_SIZE] = {};
     const int rank = groups.ranks[pos];
 
-    if constexpr (TypeCode == 0)
+    if constexpr (is_diagonal_type<TypeCode>())
     {
         compute_phase_dev<Rank, Ti, Tv>(
             dst_astr, groups.flat_zas + groups.za_start[pos], groups.num_zas[pos],
@@ -232,7 +258,7 @@ __device__ __forceinline__ void process_single_group_a_row(
         Ti src_astr = dst_astr;
         if constexpr (UsesAExcitation)
             src_astr ^= groups.axs[pos];
-        const int sa = (TypeCode == 2) ? a : basis.astr2idx[src_astr];
+        const int sa = (TypeCode == kPureBType) ? a : basis.astr2idx[src_astr];
         if (sa != -1 && !(src_bid == bid && sa < a))
         {
             compute_phase_dev<Rank, Ti, Tv>(
@@ -270,8 +296,8 @@ __device__ __forceinline__ void load_multi_group_b_tile_phases(
     int current_tile_b,
     bool full_b_tile)
 {
-    constexpr bool IsDiagonal = TypeCode == 0;
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool IsDiagonal = is_diagonal_type<TypeCode>();
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     constexpr int BATCH_SIZE =
         Rank == 1   ? BATCH_SIZE_SH1
         : Rank == 2 ? BATCH_SIZE_SH2
@@ -329,9 +355,9 @@ __device__ __forceinline__ void process_multi_group_a_row(
     int b_tile_start,
     int current_tile_b)
 {
-    constexpr bool IsDiagonal = TypeCode == 0;
-    constexpr bool UsesAExcitation = TypeCode == 1 || TypeCode == 3;
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool IsDiagonal = is_diagonal_type<TypeCode>();
+    constexpr bool UsesAExcitation = uses_a_excitation<TypeCode>();
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     constexpr int BATCH_SIZE =
         Rank == 1   ? BATCH_SIZE_SH1
         : Rank == 2 ? BATCH_SIZE_SH2
@@ -401,7 +427,7 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     int bid,
     int task_idx)
 {
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
     constexpr int IDX_MEM_SIZE = UsesBExcitation ? TILE_B : 0;
 
@@ -478,8 +504,8 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
     int first_task_idx,
     int task_stride)
 {
-    constexpr bool IsDiagonal = TypeCode == 0;
-    constexpr bool UsesBExcitation = TypeCode == 2 || TypeCode == 3;
+    constexpr bool IsDiagonal = is_diagonal_type<TypeCode>();
+    constexpr bool UsesBExcitation = uses_b_excitation<TypeCode>();
     constexpr int BATCH_SIZE =
         Rank == 1   ? BATCH_SIZE_SH1
         : Rank == 2 ? BATCH_SIZE_SH2
