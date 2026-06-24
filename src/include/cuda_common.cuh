@@ -5,6 +5,12 @@
 #include "host_common.hpp"
 
 inline constexpr int TILE_A = 256;
+// CUDA launch policy: single-group kernels use kCudaBlockSize threads per block,
+// while multi-group work decomposition tiles the A dimension by TILE_A. These
+// must stay equal because both policies cover one A tile per CUDA block.
+inline constexpr int kCudaBlockSize = 256;
+static_assert(kCudaBlockSize == TILE_A, "single-group block size must match multi-group TILE_A tiling");
+inline constexpr int kBlocksPerSmForRectangularGrid = 4;
 inline constexpr int TILE_B = 32;
 inline constexpr int BATCH_SIZE_SH1 = 64;
 inline constexpr int BATCH_SIZE_SH2 = 32;
