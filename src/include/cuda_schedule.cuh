@@ -5,51 +5,83 @@
 #include <utility>
 #include <vector>
 
+template <typename Task>
+struct CudaDeviceTaskBuffer
+{
+    Task *ptr = nullptr;
+    int64 count = 0;
+
+    CudaDeviceTaskBuffer() = default;
+    CudaDeviceTaskBuffer(const CudaDeviceTaskBuffer &) = delete;
+    CudaDeviceTaskBuffer &operator=(const CudaDeviceTaskBuffer &) = delete;
+
+    CudaDeviceTaskBuffer(CudaDeviceTaskBuffer &&other) noexcept
+    {
+        *this = std::move(other);
+    }
+
+    CudaDeviceTaskBuffer &operator=(CudaDeviceTaskBuffer &&other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            ptr = other.ptr;
+            count = other.count;
+            other.ptr = nullptr;
+            other.count = 0;
+        }
+        return *this;
+    }
+
+    ~CudaDeviceTaskBuffer() { reset(); }
+
+    void reset() noexcept
+    {
+        if (ptr)
+        {
+            // Destructors and noexcept reset paths must not throw/check; callers that need
+            // error reporting should use clear_checked() explicitly.
+            cudaFree(ptr);
+            ptr = nullptr;
+            count = 0;
+        }
+    }
+
+    void reset(Task *new_ptr, int64 new_count) noexcept
+    {
+        reset();
+        ptr = new_ptr;
+        count = new_ptr ? new_count : 0;
+    }
+
+    void clear_checked()
+    {
+        if (ptr)
+        {
+            CUDA_CHECK(cudaFree(ptr));
+            ptr = nullptr;
+            count = 0;
+        }
+    }
+
+    Task *get() const noexcept { return ptr; }
+    int64 size() const noexcept { return count; }
+};
+
 struct CudaSingleGroupSchedule
 {
     int max_tasks = 0;
     int64 total_tasks = 0;
     int64 rectangular_tasks = 0;
-    CudaSingleGroupTask *dev_tasks = nullptr;
+    CudaDeviceTaskBuffer<CudaSingleGroupTask> dev_tasks;
 
     CudaSingleGroupSchedule() = default;
     CudaSingleGroupSchedule(const CudaSingleGroupSchedule &) = delete;
     CudaSingleGroupSchedule &operator=(const CudaSingleGroupSchedule &) = delete;
+    CudaSingleGroupSchedule(CudaSingleGroupSchedule &&) noexcept = default;
+    CudaSingleGroupSchedule &operator=(CudaSingleGroupSchedule &&) noexcept = default;
 
-    CudaSingleGroupSchedule(CudaSingleGroupSchedule &&other) noexcept
-    {
-        *this = std::move(other);
-    }
-
-    CudaSingleGroupSchedule &operator=(CudaSingleGroupSchedule &&other) noexcept
-    {
-        if (this != &other)
-        {
-            clear();
-            max_tasks = other.max_tasks;
-            total_tasks = other.total_tasks;
-            rectangular_tasks = other.rectangular_tasks;
-            dev_tasks = other.dev_tasks;
-            other.max_tasks = 0;
-            other.total_tasks = 0;
-            other.rectangular_tasks = 0;
-            other.dev_tasks = nullptr;
-        }
-        return *this;
-    }
-
-    ~CudaSingleGroupSchedule() { clear(); }
-
-    void clear()
-    {
-        if (dev_tasks)
-        {
-            cudaFree(dev_tasks);
-            dev_tasks = nullptr;
-        }
-    }
-
-    bool compact_enabled() const { return dev_tasks != nullptr && total_tasks > 0; }
+    bool compact_enabled() const { return dev_tasks.get() != nullptr && total_tasks > 0; }
 
     double early_return_rate() const
     {
@@ -61,44 +93,15 @@ struct CudaMultiGroupSchedule
 {
     int64 total_tiles = 0;
     int64 rectangular_tasks = 0;
-    CudaMultiGroupTask *dev_tasks = nullptr;
+    CudaDeviceTaskBuffer<CudaMultiGroupTask> dev_tasks;
 
     CudaMultiGroupSchedule() = default;
     CudaMultiGroupSchedule(const CudaMultiGroupSchedule &) = delete;
     CudaMultiGroupSchedule &operator=(const CudaMultiGroupSchedule &) = delete;
+    CudaMultiGroupSchedule(CudaMultiGroupSchedule &&) noexcept = default;
+    CudaMultiGroupSchedule &operator=(CudaMultiGroupSchedule &&) noexcept = default;
 
-    CudaMultiGroupSchedule(CudaMultiGroupSchedule &&other) noexcept
-    {
-        *this = std::move(other);
-    }
-
-    CudaMultiGroupSchedule &operator=(CudaMultiGroupSchedule &&other) noexcept
-    {
-        if (this != &other)
-        {
-            clear();
-            total_tiles = other.total_tiles;
-            rectangular_tasks = other.rectangular_tasks;
-            dev_tasks = other.dev_tasks;
-            other.total_tiles = 0;
-            other.rectangular_tasks = 0;
-            other.dev_tasks = nullptr;
-        }
-        return *this;
-    }
-
-    ~CudaMultiGroupSchedule() { clear(); }
-
-    void clear()
-    {
-        if (dev_tasks)
-        {
-            cudaFree(dev_tasks);
-            dev_tasks = nullptr;
-        }
-    }
-
-    bool compact_enabled() const { return dev_tasks != nullptr && total_tiles > 0; }
+    bool compact_enabled() const { return dev_tasks.get() != nullptr && total_tiles > 0; }
 };
 
 template <typename Ti>
@@ -124,8 +127,10 @@ static inline CudaMultiGroupSchedule cuda_multi_group_schedule(const BasisViewDe
     const bool high_idle = schedule.rectangular_tasks > 0 && schedule.total_tiles * 2 < schedule.rectangular_tasks;
     if (!host_tasks.empty() && grid_fits && compact_is_smaller && high_idle)
     {
-        CUDA_CHECK(cudaMalloc(&schedule.dev_tasks, host_tasks.size() * sizeof(CudaMultiGroupTask)));
-        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks, host_tasks.data(), host_tasks.size() * sizeof(CudaMultiGroupTask), cudaMemcpyHostToDevice));
+        CudaMultiGroupTask *dev_tasks = nullptr;
+        CUDA_CHECK(cudaMalloc(&dev_tasks, host_tasks.size() * sizeof(CudaMultiGroupTask)));
+        schedule.dev_tasks.reset(dev_tasks, static_cast<int64>(host_tasks.size()));
+        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks.get(), host_tasks.data(), host_tasks.size() * sizeof(CudaMultiGroupTask), cudaMemcpyHostToDevice));
     }
 
     return schedule;
@@ -153,8 +158,10 @@ static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisView
 
     if (!host_tasks.empty() && schedule.total_tasks < schedule.rectangular_tasks)
     {
-        CUDA_CHECK(cudaMalloc(&schedule.dev_tasks, host_tasks.size() * sizeof(CudaSingleGroupTask)));
-        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks, host_tasks.data(), host_tasks.size() * sizeof(CudaSingleGroupTask), cudaMemcpyHostToDevice));
+        CudaSingleGroupTask *dev_tasks = nullptr;
+        CUDA_CHECK(cudaMalloc(&dev_tasks, host_tasks.size() * sizeof(CudaSingleGroupTask)));
+        schedule.dev_tasks.reset(dev_tasks, static_cast<int64>(host_tasks.size()));
+        CUDA_CHECK(cudaMemcpy(schedule.dev_tasks.get(), host_tasks.data(), host_tasks.size() * sizeof(CudaSingleGroupTask), cudaMemcpyHostToDevice));
     }
 
     return schedule;

@@ -95,7 +95,7 @@ static inline void dispatch_cuda_multi_group_chunks_by_rank(
     CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
     constexpr int block_size = 256;
     const dim3 grid_size(num_active_blocks, num_sms * 4);
-    const CudaMultiGroupTask *compact_tasks = (schedule && schedule->compact_enabled()) ? schedule->dev_tasks : nullptr;
+    const CudaMultiGroupTask *compact_tasks = (schedule && schedule->compact_enabled()) ? schedule->dev_tasks.get() : nullptr;
     const int64 compact_num_tasks = compact_tasks ? schedule->total_tiles : 0;
 
     int64 start = 0;
