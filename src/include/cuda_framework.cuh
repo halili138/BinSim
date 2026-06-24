@@ -119,20 +119,14 @@ __global__ void cuda_single_group_sharedtile_kernel(
     int src_bid = bid;
     if constexpr (TypeCode != 0)
     {
-        __shared__ int sh_src_bid;
-        if (threadIdx.x == 0)
-        {
-            int h;
-            if constexpr (TypeCode == 1)
-                h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + basis.block_bsym[bid];
-            else if constexpr (TypeCode == 2)
-                h = basis.block_asym[bid] * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
-            else
-                h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
-            sh_src_bid = basis.block_map[h];
-        }
-        __syncthreads();
-        src_bid = sh_src_bid;
+        int h;
+        if constexpr (TypeCode == 1)
+            h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + basis.block_bsym[bid];
+        else if constexpr (TypeCode == 2)
+            h = basis.block_asym[bid] * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
+        else
+            h = (basis.block_asym[bid] ^ groups.asyms[pos]) * basis.num_irreps + (basis.block_bsym[bid] ^ groups.bsyms[pos]);
+        src_bid = basis.block_map[h];
     }
 
     for (int b_offset = threadIdx.x; b_offset < cur_b; b_offset += blockDim.x)

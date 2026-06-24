@@ -22,3 +22,4 @@ bashs/
 
 # Native build artifacts
 src/lib/*.so
+*.so
