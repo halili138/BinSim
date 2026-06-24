@@ -120,7 +120,7 @@ static inline CudaMultiGroupSchedule cuda_multi_group_schedule(const BasisViewDe
     }
 
     schedule.total_tiles = static_cast<int64>(host_tasks.size());
-    schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * num_sms * 4;
+    schedule.rectangular_tasks = static_cast<int64>(basis.num_blocks) * num_sms * kBlocksPerSmForRectangularGrid;
 
     const bool grid_fits = schedule.total_tiles <= std::numeric_limits<unsigned int>::max();
     const bool compact_is_smaller = schedule.total_tiles < schedule.rectangular_tasks;
@@ -139,7 +139,7 @@ static inline CudaMultiGroupSchedule cuda_multi_group_schedule(const BasisViewDe
 template <typename Ti>
 static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisViewDev<Ti> &basis)
 {
-    constexpr int block_size = 256;
+    constexpr int block_size = kCudaBlockSize;
     CudaSingleGroupSchedule schedule;
     std::vector<CudaSingleGroupTask> host_tasks;
 
@@ -170,7 +170,7 @@ static inline CudaSingleGroupSchedule cuda_single_group_schedule(const BasisView
 template <typename Ti>
 static inline int cuda_single_group_max_tasks(const BasisViewDev<Ti> &basis)
 {
-    constexpr int block_size = 256;
+    constexpr int block_size = kCudaBlockSize;
     int max_tasks = 0;
     for (int bid = 0; bid < basis.num_blocks; ++bid)
     {

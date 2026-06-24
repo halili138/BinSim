@@ -8,7 +8,7 @@ static inline void launch_cuda_single_group_rank(
     const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int max_tasks,
     const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
-    constexpr int block_size = 256;
+    constexpr int block_size = kCudaBlockSize;
     if (max_tasks <= 0)
         return;
 
@@ -93,8 +93,8 @@ static inline void dispatch_cuda_multi_group_chunks_by_rank(
 
     int num_sms = 0;
     CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
-    constexpr int block_size = 256;
-    const dim3 grid_size(num_active_blocks, num_sms * 4);
+    constexpr int block_size = kCudaBlockSize;
+    const dim3 grid_size(num_active_blocks, num_sms * kBlocksPerSmForRectangularGrid);
     const CudaMultiGroupTask *compact_tasks = (schedule && schedule->compact_enabled()) ? schedule->dev_tasks.get() : nullptr;
     const int64 compact_num_tasks = compact_tasks ? schedule->total_tiles : 0;
 
