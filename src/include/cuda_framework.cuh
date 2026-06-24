@@ -45,11 +45,15 @@ struct StaticSharedStorage
     }
 };
 
+// Empty specialization used when a shared-storage field has size 0;
+// this avoids declaring a non-standard zero-length array.
 template <typename T>
 struct StaticSharedStorage<T, 0>
 {
 };
 
+// Optional static shared storage uses a distinct Tag plus the Enabled bool
+// template parameter to control whether the named field exists in a storage type.
 template <typename Tag, typename T, int Size, bool Enabled>
 struct OptionalStaticSharedStorage
 {
@@ -82,8 +86,11 @@ template <typename Tv, int PhaseMemSize, int IdxMemSize, bool UsesBExcitation>
 struct SingleGroupSharedTileStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>
 {
+    // sh_pb is laid out with a TILE_B stride for single-group phase tiles.
     Tv sh_pb[PhaseMemSize];
 
+    // Only call this accessor on if constexpr (UsesBExcitation) paths,
+    // where the optional B-excitation storage field is present.
     __device__ __forceinline__ StaticSharedStorage<int, IdxMemSize> &sh_sb()
     {
         return OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>::data;
@@ -97,23 +104,29 @@ struct MultiGroupTileSharedStorage
       OptionalStaticSharedStorage<ValidGroupStorageTag, int, GroupMemSize, !IsDiagonal>,
       OptionalStaticSharedStorage<GroupRankStorageTag, int, GroupMemSize, true>
 {
+    // sh_pb is laid out with a BATCH_SIZE * TILE_B stride for multi-group phase tiles.
     Tv sh_pb[PhaseMemSize];
 
+    // Only call these accessors on the matching if constexpr paths where
+    // their OptionalStaticSharedStorage fields are present.
     __device__ __forceinline__ StaticSharedStorage<int, IdxMemSize> &sh_sb()
     {
         return OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>::data;
     }
 
+    // Requires if constexpr (!IsDiagonal).
     __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_src_bid()
     {
         return OptionalStaticSharedStorage<SourceBlockStorageTag, int, GroupMemSize, !IsDiagonal>::data;
     }
 
+    // Requires if constexpr (!IsDiagonal).
     __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_valid_group()
     {
         return OptionalStaticSharedStorage<ValidGroupStorageTag, int, GroupMemSize, !IsDiagonal>::data;
     }
 
+    // Always present.
     __device__ __forceinline__ StaticSharedStorage<int, GroupMemSize> &sh_rank()
     {
         return OptionalStaticSharedStorage<GroupRankStorageTag, int, GroupMemSize, true>::data;
