@@ -220,7 +220,7 @@ static inline void launch_cuda_single_group_rank(
 template <int TypeCode, typename Ti, typename Tv, typename Op>
 static inline void launch_cuda_single_group_by_rank(const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, int64 pos, Op op, int host_rank, int max_tasks, const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
-    if constexpr (TypeCode == 0 && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
+    if constexpr (is_diagonal_type<TypeCode>() && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
 
     if (host_rank == 1)
@@ -241,17 +241,17 @@ static inline void dispatch_cuda_network_group(
 
     switch (type)
     {
-    case 0:
-        launcher.template operator()<0>(basis_slice, net.diag_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
+    case kDiagType:
+        launcher.template operator()<kDiagType>(basis_slice, net.diag_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
-    case 1:
-        launcher.template operator()<1>(basis_slice, net.pure_a_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
+    case kPureAType:
+        launcher.template operator()<kPureAType>(basis_slice, net.pure_a_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
-    case 2:
-        launcher.template operator()<2>(basis_slice, net.pure_b_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
+    case kPureBType:
+        launcher.template operator()<kPureBType>(basis_slice, net.pure_b_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
-    case 3:
-        launcher.template operator()<3>(basis_slice, net.mixed_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
+    case kMixedType:
+        launcher.template operator()<kMixedType>(basis_slice, net.mixed_groups, pos, max_tasks, compact_tasks, compact_num_tasks);
         break;
     default:
         break;
@@ -466,7 +466,7 @@ static inline void launch_cuda_multi_group_rank(
     const BasisSliceDev<Ti> &basis_slice, const GroupsSliceDev<Ti, Tv> &groups, dim3 grid_size, int block_size, Op op,
     const CudaMultiGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0)
 {
-    if constexpr (TypeCode == 0 && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
+    if constexpr (is_diagonal_type<TypeCode>() && Op::SkipRealDiagonal && std::is_arithmetic_v<Tv>)
         return;
     if (compact_tasks && compact_num_tasks > 0 && compact_num_tasks <= std::numeric_limits<unsigned int>::max())
     {
