@@ -51,6 +51,36 @@ function test_cost_fun(mole, nsteps)
 end
 
 
+function test_cost_fun_with_backgrad(mole, nsteps)
+    basis       = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    ham         = JW_hamiltonian(mole)
+    orbs        = Orbitals(); kernel(mole, orbs, generalize=false)
+    pool        = FEB(orbs)
+    v           = get_hf(basis, mole.nelec)
+    w           = zeros(Float64, basis.dim)
+    funcs       = OTF_Functions(basis, ham, pool, time_print=false)
+
+    v0_idxs     = findall(x -> x != 0, v) 
+    v0_vals     = v[v0_idxs]
+    amplitudes  = rand(Float64, length(pool))
+    idxs        = [i for i in eachindex(pool)]
+
+    for _ in 1:nsteps
+        @time begin
+            fill!(v, 0.0)
+            v[v0_idxs] .= v0_vals
+
+            energy_objective(
+                funcs.hvec, 
+                funcs.expm, 
+                funcs.backgrad, 
+                idxs, amplitudes, v, w
+                )
+        end
+    end
+end
+
+
 function test_trotter(mole, nsteps)
     basis       = BasisManager(mole.norb, mole.nelec, mole.orbsym)
     orbs        = Orbitals(); kernel(mole, orbs, generalize=false)
@@ -88,5 +118,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     ARGS[3] == "1" && test_hvec(mole, 10)
     ARGS[3] == "2" && test_cost_fun(mole, 10)
     ARGS[3] == "3" && test_trotter(mole, 10)
+    ARGS[3] == "4" && test_cost_fun_with_backgrad(mole, 10)
 end
 
