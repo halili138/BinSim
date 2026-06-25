@@ -7,7 +7,7 @@ include("../jl/binsim.jl")
 function reduce_gsd_T20_feb(mole; 
     Ti::DataType=UInt32, Tv::DataType=Float64, complete::Bool=false,
 )
-    # 原理是, 统计 occ 和 vir 轨道的数量, 最大占据数 = ne, 那么将轨道下标整除以 ne, 结果 == 0 就代表是 occ
+    # 原理是, 统计 occ 和 vir 轨道的数量, 最大占据数 = ne, 那么将轨道下标整除 ne, 结果 == 0 就代表是 occ
     # 如果 occ 的数量 == 0 就代表全是占据轨道, == 4 就代表全是空轨道, 这些就是待去除的轨道组合
 
     orbs = Orbitals()
