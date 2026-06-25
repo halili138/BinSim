@@ -51,8 +51,6 @@ function ham_inspired_feb(mole;
     return FEB(orbitals, Ti=Ti, Tv=Tv, complete=complete)
 end
 
-Tv = Float64 # 周期性或实时演化, 需使用ComplexF64
-
 mole = Mole()
 mole.name  = ARGS[1]
 mole.ratio = 1.0
@@ -64,20 +62,13 @@ mole.orbsym = Int64.(mole.orbsym .% 10) # 非阿贝尔点群(Dooh, Cooh), 需通
 
 basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
 ham   = JW_hamiltonian(mole, spin="aabb")
-ham   = BinaryQubitAABB(ham.axs, ham.bxs, ham.azs, ham.bzs, Tv.(ham.cs))
 
-# e_fci, v_fci = run_fci(basis, ham, get_hf(basis, mole.nelec, Tv=Tv))
+e_fci, v_fci = run_fci(basis, ham, get_hf(basis, mole.nelec))
 
-pool = ham_inspired_feb(mole, tol=1e-12, Tv=Tv)
-
-# orbs = Orbitals()
-# kernel(mole, orbs, generalize=false)
-# pool = FEB(orbs, Tv=Tv)
+pool = ham_inspired_feb(mole, tol=1e-12)
 
 orbs = Orbitals()
 kernel(mole, orbs, generalize=true)
-pool = FEB(orbs, Tv=Tv)
+pool = FEB(orbs)
 
 # e_vqe, v_vqe, x_vqe = run_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci, options = VQE_OPTIONS(verbose=1))
-# run_exact_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci)
-# run_adapt_vqe(basis, ham, pool, get_hf(basis, mole.nelec), e_fci, vqe_options=VQE_OPTIONS(ftol=1e-8, gtol=1e-6))
