@@ -94,7 +94,7 @@ SLURM 环境中建议让 `OMP_NUM_THREADS` 与 `SLURM_CPUS_PER_TASK` 保持一�
 
 ```bash
 cd example
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
+export OMP_NUM_THREADS=8
 julia --project=.. host_vqe.jl n2 1.0 sto-3g
 ```
 
@@ -180,7 +180,7 @@ NVLink 多卡需 CUDA-aware MPI（见 [CUDA-aware MPI 配置](#10-cuda-aware-mpi
 未设置 `OMP_NUM_THREADS`。解决：
 
 ```bash
-export OMP_NUM_THREADS=8 JULIA_NUM_THREADS=8
+export OMP_NUM_THREADS=8
 ```
 
 ### 2. `could not load library "src/lib/lib*.so"`
