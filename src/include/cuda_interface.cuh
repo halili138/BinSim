@@ -541,6 +541,7 @@ struct CudaHVecMultiGroupOp
     static constexpr bool SkipSameBlockReverse = false;
     static constexpr bool UsesOriginalIdx = false;
     static constexpr bool UsesGroupResult = false;
+    static constexpr bool UsesTileAccumulator = true;
 
     const Tv *src_vec;
     Tv *dst_vec;
@@ -597,25 +598,21 @@ struct CudaBatchGradMultiGroupOp
     static constexpr bool SkipSameBlockReverse = true;
     static constexpr bool UsesOriginalIdx = true;
     static constexpr bool UsesGroupResult = true;
+    static constexpr bool UsesTileAccumulator = false;
 
     const double *thetas;
     const Tv *lp;
     const Tv *rp;
     Tv *grads;
 
-    __device__ __forceinline__ void init_tile(Tv (&accum)[TILE_B]) const
-    {
-        (void)accum;
-    }
-
-    __device__ __forceinline__ void diag(Tv (&)[TILE_B], Tv &local_res, Tv vt, int64 di, int original_idx, int) const
+    __device__ __forceinline__ void diag(Tv &local_res, Tv vt, int64 di, int original_idx) const
     {
         const double theta = thetas[original_idx];
         const Tv du = fast_diag_grad_dev<Tv>(vt, theta);
         local_res += dev_conj(lp[di] * du) * rp[di];
     }
 
-    __device__ __forceinline__ void offdiag(Tv (&)[TILE_B], Tv &local_res, Tv vt, int64 si, int64 di, int original_idx, int) const
+    __device__ __forceinline__ void offdiag(Tv &local_res, Tv vt, int64 si, int64 di, int original_idx) const
     {
         const double theta = thetas[original_idx];
         grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, -std::sin(theta), std::cos(theta));
@@ -625,11 +622,6 @@ struct CudaBatchGradMultiGroupOp
     {
         atomicAdd_Tv(grads + original_idx, local_res);
     }
-
-    template <typename Ti>
-    __device__ __forceinline__ void finish_tile(
-        const BasisSliceDev<Ti> &, int64, int64, int, int, bool,
-        Tv (&)[TILE_B]) const {}
 };
 
 template <typename Ti, typename Tv>
