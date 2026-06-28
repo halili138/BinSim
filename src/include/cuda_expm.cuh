@@ -9,13 +9,14 @@ __global__ void expm_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
+    int task_offset,
     double theta,
     double cd,
     double co,
     Tv *__restrict__ vec)
 {
     const int bid = blockIdx.x;
-    const int task_idx = blockIdx.y;
+    const int task_idx = task_offset + blockIdx.y;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
@@ -132,13 +133,18 @@ static inline void launch_single_group_expm_tile(
     if (max_tasks <= 0)
         return;
 
-    dim3 grid(basis_slice.num_blocks, max_tasks);
-    if (rank == 1)
-        expm_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
-    else if (rank == 2)
-        expm_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
-    else
-        expm_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, dev_vec);
+    constexpr int max_grid_y = 65535;
+    for (int task_offset = 0; task_offset < max_tasks; task_offset += max_grid_y)
+    {
+        const int launch_tasks = std::min(max_grid_y, max_tasks - task_offset);
+        dim3 grid(basis_slice.num_blocks, launch_tasks);
+        if (rank == 1)
+            expm_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, dev_vec);
+        else if (rank == 2)
+            expm_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, dev_vec);
+        else
+            expm_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, dev_vec);
+    }
 }
 
 template <typename Ti, typename Tv>

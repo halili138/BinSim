@@ -31,6 +31,7 @@ __global__ void grad_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
+    int task_offset,
     double theta,
     double cd,
     double co,
@@ -39,7 +40,7 @@ __global__ void grad_single_group_sharedtile_kernel(
     Tv *__restrict__ d_res)
 {
     const int bid = blockIdx.x;
-    const int task_idx = blockIdx.y;
+    const int task_idx = task_offset + blockIdx.y;
     constexpr int SHARED_MEM_SIZE = Rank == 1 ? TILE_B : (Rank == 2 ? TILE_B * 2 : TILE_B * KERNEL_MAX_RANK);
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
@@ -157,13 +158,18 @@ static inline void launch_single_group_grad_tile(
         return;
     const double cd = -std::sin(theta);
     const double co = std::cos(theta);
-    dim3 grid(basis_slice.num_blocks, max_tasks);
-    if (host_rank == 1)
-        grad_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, lp, rp, d_res);
-    else if (host_rank == 2)
-        grad_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, lp, rp, d_res);
-    else
-        grad_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, theta, cd, co, lp, rp, d_res);
+    constexpr int max_grid_y = 65535;
+    for (int task_offset = 0; task_offset < max_tasks; task_offset += max_grid_y)
+    {
+        const int launch_tasks = std::min(max_grid_y, max_tasks - task_offset);
+        dim3 grid(basis_slice.num_blocks, launch_tasks);
+        if (host_rank == 1)
+            grad_single_group_sharedtile_kernel<1, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, lp, rp, d_res);
+        else if (host_rank == 2)
+            grad_single_group_sharedtile_kernel<2, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, lp, rp, d_res);
+        else
+            grad_single_group_sharedtile_kernel<0, TypeCode, Ti, Tv><<<grid, block_size>>>(basis_slice, groups, pos, task_offset, theta, cd, co, lp, rp, d_res);
+    }
 }
 
 template <typename Ti, typename Tv>
