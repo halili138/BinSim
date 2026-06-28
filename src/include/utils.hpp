@@ -33,12 +33,13 @@ FORCE_INLINE Tv fast_diag_grad(const Tv &vt, double theta)
 template <int Rank, typename Ti, typename Tv>
 FORCE_INLINE void precompute_phase(Ti str, const Ti *zs, int num_zs, const Tv *w0, Tv *p0, int stride, int rank)
 {
+    static_assert(is_supported_bit_uint_v<Ti>, "precompute_phase<Ti> requires a supported unsigned bit-integer type");
     if constexpr (Rank == 1)
     {
         Tv v0 = {};
         for (int k = 0; k < num_zs; ++k)
         {
-            bool parity = std::popcount(str & zs[k]) & 1;
+            bool parity = popcnt(str & zs[k]) & 1;
             v0 += parity ? -w0[k] : w0[k];
         }
         p0[0] = v0;
@@ -50,7 +51,7 @@ FORCE_INLINE void precompute_phase(Ti str, const Ti *zs, int num_zs, const Tv *w
         Tv v1 = {};
         for (int k = 0; k < num_zs; ++k)
         {
-            bool parity = std::popcount(str & zs[k]) & 1;
+            bool parity = popcnt(str & zs[k]) & 1;
             v0 += parity ? -w0[k] : w0[k];
             v1 += parity ? -w1[k] : w1[k];
         }
@@ -65,7 +66,7 @@ FORCE_INLINE void precompute_phase(Ti str, const Ti *zs, int num_zs, const Tv *w
             Tv vr = {};
             for (int k = 0; k < num_zs; ++k)
             {
-                bool parity = std::popcount(str & zs[k]) & 1;
+                bool parity = popcnt(str & zs[k]) & 1;
                 vr += parity ? -wr[k] : wr[k];
             }
             p0[r * stride] = vr;

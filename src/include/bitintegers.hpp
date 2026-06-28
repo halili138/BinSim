@@ -21,11 +21,24 @@ struct uint256
 
     uint256 operator<<(int p) const
     {
-        if (p == 0)
+        if (p <= 0)
             return *this;
+        if (p >= 256)
+            return {0, 0};
         if (p < 128)
             return {lo << p, (hi << p) | (lo >> (128 - p))};
         return {0, lo << (p - 128)};
+    }
+
+    uint256 operator>>(int p) const
+    {
+        if (p <= 0)
+            return *this;
+        if (p >= 256)
+            return {0, 0};
+        if (p < 128)
+            return {(lo >> p) | (hi << (128 - p)), hi >> p};
+        return {hi >> (p - 128), 0};
     }
 
     uint256 operator|(const uint256 &o) const { return {lo | o.lo, hi | o.hi}; }
@@ -35,6 +48,8 @@ struct uint256
     uint256 operator^(const uint256 &o) const { return {lo ^ o.lo, hi ^ o.hi}; }
 
     uint256 operator&(const uint256 &o) const { return {lo & o.lo, hi & o.hi}; }
+
+    explicit operator bool() const { return lo != 0 || hi != 0; }
 
     bool operator==(const uint256 &o) const { return lo == o.lo && hi == o.hi; }
 
@@ -53,13 +68,48 @@ struct uint256
 
     bool operator>=(const uint256 &o) const { return !(*this < o); }
 
+    uint256 operator+(const uint256 &o) const
+    {
+        uint128 new_lo = lo + o.lo;
+        return {new_lo, hi + o.hi + (new_lo < lo)};
+    }
+
     uint256 operator-(const uint256 &o) const
     {
-        if (lo < o.lo)
-            return {lo - o.lo, hi - o.hi - 1UL};
-        return {lo - o.lo, hi - o.hi};
+        return {lo - o.lo, hi - o.hi - (lo < o.lo)};
     }
 };
+
+template <typename T>
+struct is_supported_bit_uint : std::false_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint8> : std::true_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint16> : std::true_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint32> : std::true_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint64> : std::true_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint128> : std::true_type
+{
+};
+template <>
+struct is_supported_bit_uint<uint256> : std::true_type
+{
+};
+template <typename T>
+inline constexpr bool is_supported_bit_uint_v = is_supported_bit_uint<T>::value;
 
 FORCE_INLINE int popcnt(uint8 v) { return std::popcount(v); }
 FORCE_INLINE int popcnt(uint16 v) { return std::popcount(v); }
@@ -165,6 +215,8 @@ FORCE_INLINE uint256 uzip_odd_bit_bmi2(uint128 v)
     return {res_lo, res_hi};
 }
 
+FORCE_INLINE int ctz_gen(uint8 v) { return __builtin_ctz(static_cast<uint32>(v)); }
+FORCE_INLINE int ctz_gen(uint16 v) { return __builtin_ctz(static_cast<uint32>(v)); }
 FORCE_INLINE int ctz_gen(uint32 v) { return __builtin_ctz(v); }
 FORCE_INLINE int ctz_gen(uint64 v) { return __builtin_ctzll(v); }
 FORCE_INLINE int ctz_gen(uint128 v)
@@ -172,6 +224,10 @@ FORCE_INLINE int ctz_gen(uint128 v)
     uint64 lo = static_cast<uint64>(v);
     uint64 hi = static_cast<uint64>(v >> 64);
     return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll(hi);
+}
+FORCE_INLINE int ctz_gen(const uint256 &v)
+{
+    return v.lo ? ctz_gen(v.lo) : 128 + ctz_gen(v.hi);
 }
 
 template <typename Ti>

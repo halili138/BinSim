@@ -11,11 +11,7 @@
 #include <cstring>
 #include <map>
 #include <stdexcept>
-
-using uint8 = uint8_t;
-using uint16 = uint16_t;
-using uint32 = uint32_t;
-using uint64 = uint64_t;
+#include "bitintegers.hpp"
 
 using int8 = int8_t;
 using int16 = int16_t;
@@ -45,7 +41,8 @@ FORCE_INLINE T math_conj(const T &x)
 template <typename T>
 FORCE_INLINE int phase(T x)
 {
-    return 1 - 2 * (std::popcount(x) & 1);
+    static_assert(is_supported_bit_uint_v<T>, "phase<T> requires a supported unsigned bit-integer type");
+    return 1 - 2 * (popcnt(x) & 1);
 }
 
 template <typename T>
@@ -62,16 +59,13 @@ FORCE_INLINE int64 find_index(const T *arr, int64 len, T val)
 template <typename T>
 FORCE_INLINE int64 get_string_sym(T str, const int64 *orbsym)
 {
+    static_assert(is_supported_bit_uint_v<T>, "get_string_sym<T> requires a supported unsigned bit-integer type");
     int64 sym = 0;
-    int64 pos = 0;
-    while (str > 0)
+    while (str != get_zero<T>())
     {
-        if (str & 1)
-        {
-            sym ^= *(orbsym + pos);
-        }
-        str >>= 1;
-        ++pos;
+        const int64 pos = ctz_gen(str);
+        sym ^= *(orbsym + pos);
+        str = str & (str - get_one<T>());
     }
     return sym;
 }
@@ -79,9 +73,10 @@ FORCE_INLINE int64 get_string_sym(T str, const int64 *orbsym)
 template <typename T>
 FORCE_INLINE T next_combination(T v)
 {
-    if (v == 0)
-        return 0;
-    T c = (v & -v);
+    static_assert(is_supported_bit_uint_v<T>, "next_combination<T> requires a supported unsigned bit-integer type");
+    if (v == get_zero<T>())
+        return get_zero<T>();
+    T c = (v & (get_zero<T>() - v));
     T r = v + c;
-    return (((r ^ v) >> 2) / c) | r;
+    return (((r ^ v) >> (ctz_gen(c) + 2)) | r);
 }
