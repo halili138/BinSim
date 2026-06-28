@@ -156,30 +156,52 @@ __device__ __forceinline__ void cuda_multi_group_op_init_tile(Op &op, Tv (&accum
 }
 
 template <typename Op, typename Tv>
-__device__ __forceinline__ void cuda_multi_group_op_diag(
-    Op &op, Tv (&accum)[TILE_B], Tv &local_res, Tv vt, int64 di, int original_idx, int b_offset)
+__device__ __forceinline__ void call_group_diag(
+    Op &op, Tv (&accum)[TILE_B], Tv *local_res, Tv vt, int64 di, int original_idx, int b_offset)
 {
-    if constexpr (Op::UsesTileAccumulator)
-        op.diag(accum, local_res, vt, di, original_idx, b_offset);
-    else
+    if constexpr (Op::UsesGroupResult)
     {
         (void)accum;
         (void)b_offset;
-        op.diag(local_res, vt, di, original_idx);
+        op.diag(*local_res, vt, di, original_idx);
+    }
+    else
+    {
+        (void)local_res;
+        (void)original_idx;
+        if constexpr (Op::UsesTileAccumulator)
+            op.diag(accum, vt, di, b_offset);
+        else
+        {
+            (void)accum;
+            (void)b_offset;
+            op.diag(vt, di);
+        }
     }
 }
 
 template <typename Op, typename Tv>
-__device__ __forceinline__ void cuda_multi_group_op_offdiag(
-    Op &op, Tv (&accum)[TILE_B], Tv &local_res, Tv vt, int64 si, int64 di, int original_idx, int b_offset)
+__device__ __forceinline__ void call_group_offdiag(
+    Op &op, Tv (&accum)[TILE_B], Tv *local_res, Tv vt, int64 si, int64 di, int original_idx, int b_offset)
 {
-    if constexpr (Op::UsesTileAccumulator)
-        op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
-    else
+    if constexpr (Op::UsesGroupResult)
     {
         (void)accum;
         (void)b_offset;
-        op.offdiag(local_res, vt, si, di, original_idx);
+        op.offdiag(*local_res, vt, si, di, original_idx);
+    }
+    else
+    {
+        (void)local_res;
+        (void)original_idx;
+        if constexpr (Op::UsesTileAccumulator)
+            op.offdiag(accum, vt, si, di, b_offset);
+        else
+        {
+            (void)accum;
+            (void)b_offset;
+            op.offdiag(vt, si, di);
+        }
     }
 }
 
@@ -580,49 +602,95 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
                     int original_idx = -1;
                     if constexpr (Op::UsesOriginalIdx)
                         original_idx = groups.original_idx[g];
-                    Tv local_res = {};
-
-                    if (full_b_tile)
+                    Tv *local_res_ptr = nullptr;
+                    if constexpr (Op::UsesGroupResult)
                     {
-#pragma unroll
-                        for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
-                        {
-                            int sb = b_tile_start + b_offset;
-                            if constexpr (UsesBExcitation)
-                                sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
-                            if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
-                                continue;
+                        Tv local_res = {};
+                        local_res_ptr = &local_res;
 
-                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                            const int64 si = src_row + sb;
-                            const int64 di = dst_row + b_tile_start + b_offset;
-                            if constexpr (IsDiagonal)
-                                cuda_multi_group_op_diag(op, accum, local_res, vt, di, original_idx, b_offset);
-                            else
-                                cuda_multi_group_op_offdiag(op, accum, local_res, vt, si, di, original_idx, b_offset);
+                        if (full_b_tile)
+                        {
+#pragma unroll
+                            for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                            {
+                                int sb = b_tile_start + b_offset;
+                                if constexpr (UsesBExcitation)
+                                    sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                                if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                    continue;
+
+                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                const int64 si = src_row + sb;
+                                const int64 di = dst_row + b_tile_start + b_offset;
+                                if constexpr (IsDiagonal)
+                                    call_group_diag(op, accum, local_res_ptr, vt, di, original_idx, b_offset);
+                                else
+                                    call_group_offdiag(op, accum, local_res_ptr, vt, si, di, original_idx, b_offset);
+                            }
                         }
+                        else
+                        {
+                            for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                            {
+                                int sb = b_tile_start + b_offset;
+                                if constexpr (UsesBExcitation)
+                                    sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                                if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                    continue;
+
+                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                const int64 si = src_row + sb;
+                                const int64 di = dst_row + b_tile_start + b_offset;
+                                if constexpr (IsDiagonal)
+                                    call_group_diag(op, accum, local_res_ptr, vt, di, original_idx, b_offset);
+                                else
+                                    call_group_offdiag(op, accum, local_res_ptr, vt, si, di, original_idx, b_offset);
+                            }
+                        }
+                        op.finish_group(local_res, original_idx);
                     }
                     else
                     {
-                        for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                        if (full_b_tile)
                         {
-                            int sb = b_tile_start + b_offset;
-                            if constexpr (UsesBExcitation)
-                                sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
-                            if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
-                                continue;
+#pragma unroll
+                            for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                            {
+                                int sb = b_tile_start + b_offset;
+                                if constexpr (UsesBExcitation)
+                                    sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                                if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                    continue;
 
-                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                            const int64 si = src_row + sb;
-                            const int64 di = dst_row + b_tile_start + b_offset;
-                            if constexpr (IsDiagonal)
-                                cuda_multi_group_op_diag(op, accum, local_res, vt, di, original_idx, b_offset);
-                            else
-                                cuda_multi_group_op_offdiag(op, accum, local_res, vt, si, di, original_idx, b_offset);
+                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                const int64 si = src_row + sb;
+                                const int64 di = dst_row + b_tile_start + b_offset;
+                                if constexpr (IsDiagonal)
+                                    call_group_diag(op, accum, local_res_ptr, vt, di, original_idx, b_offset);
+                                else
+                                    call_group_offdiag(op, accum, local_res_ptr, vt, si, di, original_idx, b_offset);
+                            }
+                        }
+                        else
+                        {
+                            for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                            {
+                                int sb = b_tile_start + b_offset;
+                                if constexpr (UsesBExcitation)
+                                    sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                                if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                    continue;
+
+                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                const int64 si = src_row + sb;
+                                const int64 di = dst_row + b_tile_start + b_offset;
+                                if constexpr (IsDiagonal)
+                                    call_group_diag(op, accum, local_res_ptr, vt, di, original_idx, b_offset);
+                                else
+                                    call_group_offdiag(op, accum, local_res_ptr, vt, si, di, original_idx, b_offset);
+                            }
                         }
                     }
-                    if constexpr (Op::UsesGroupResult)
-                        op.finish_group(local_res, original_idx);
                 }
             }
             __syncthreads();
