@@ -254,6 +254,7 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     const int a_tile_idx = task_idx / num_b_tiles;
     const int b_start = b_tile_idx * TILE_B;
     const int cur_b = min(TILE_B, n_b - b_start);
+    const bool full_b_tile = cur_b == TILE_B;
     const int a = a_tile_idx * blockDim.x + threadIdx.x;
     const bool valid_a = a < n_a;
     const Ti *astrs = basis.astrs_flat + basis.astrs_start[bid];
@@ -332,11 +333,24 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
                 dst_astr, group_zas, num_zas,
                 group_wa, pa, 1, rank);
 
-            for (int b_offset = 0; b_offset < cur_b; ++b_offset)
+            if (full_b_tile)
             {
-                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
-                const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
-                cuda_single_group_op_diag(op, local_res, vt, di);
+#pragma unroll
+                for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                {
+                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
+                    const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
+                    cuda_single_group_op_diag(op, local_res, vt, di);
+                }
+            }
+            else
+            {
+                for (int b_offset = 0; b_offset < cur_b; ++b_offset)
+                {
+                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
+                    const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
+                    cuda_single_group_op_diag(op, local_res, vt, di);
+                }
             }
         }
         else if (src_bid != -1 && src_bid >= bid)
@@ -354,17 +368,36 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
                 const int src_n_b = basis.block_num_b[src_bid];
                 const int64 src_row = basis.block_offsets[src_bid] + (int64)sa * src_n_b;
                 const int64 dst_row = basis.block_offsets[bid] + (int64)a * n_b;
-                for (int b_offset = 0; b_offset < cur_b; ++b_offset)
+                if (full_b_tile)
                 {
-                    int sb;
-                    if constexpr (UsesBExcitation)
-                        sb = sh.sh_sb()[b_offset];
-                    else
-                        sb = b_start + b_offset;
-                    if (sb == -1 || (src_bid == bid && sa == a && sb < b_start + b_offset))
-                        continue;
-                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
-                    cuda_single_group_op_offdiag(op, local_res, vt, src_row + sb, dst_row + b_start + b_offset);
+#pragma unroll
+                    for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                    {
+                        int sb;
+                        if constexpr (UsesBExcitation)
+                            sb = sh.sh_sb()[b_offset];
+                        else
+                            sb = b_start + b_offset;
+                        if (sb == -1 || (src_bid == bid && sa == a && sb < b_start + b_offset))
+                            continue;
+                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
+                        cuda_single_group_op_offdiag(op, local_res, vt, src_row + sb, dst_row + b_start + b_offset);
+                    }
+                }
+                else
+                {
+                    for (int b_offset = 0; b_offset < cur_b; ++b_offset)
+                    {
+                        int sb;
+                        if constexpr (UsesBExcitation)
+                            sb = sh.sh_sb()[b_offset];
+                        else
+                            sb = b_start + b_offset;
+                        if (sb == -1 || (src_bid == bid && sa == a && sb < b_start + b_offset))
+                            continue;
+                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
+                        cuda_single_group_op_offdiag(op, local_res, vt, src_row + sb, dst_row + b_start + b_offset);
+                    }
                 }
             }
         }
