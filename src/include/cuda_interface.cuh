@@ -213,8 +213,13 @@ static inline void launch_cuda_single_group_rank(
         return;
     }
 
-    dim3 grid(basis_slice.num_blocks, max_tasks);
-    cuda_single_group_sharedtile_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op);
+    constexpr int MAX_GRID_Y = 65535;
+    for (int task_offset = 0; task_offset < max_tasks; task_offset += MAX_GRID_Y)
+    {
+        const int tasks_this_launch = std::min(MAX_GRID_Y, max_tasks - task_offset);
+        dim3 grid(basis_slice.num_blocks, tasks_this_launch);
+        cuda_single_group_sharedtile_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op, task_offset);
+    }
 }
 
 template <int TypeCode, typename Ti, typename Tv, typename Op>

@@ -94,10 +94,10 @@ struct MultiGroupTileSharedStorage
     }
 };
 
-__device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int &task_idx)
+__device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int &task_idx, int task_offset)
 {
     bid = blockIdx.x;
-    task_idx = blockIdx.y;
+    task_idx = task_offset + blockIdx.y;
 }
 
 __device__ __forceinline__ void cuda_single_group_decode_compact_task(
@@ -277,11 +277,12 @@ __global__ void cuda_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
-    Op op)
+    Op op,
+    int task_offset)
 {
     int bid;
     int task_idx;
-    cuda_single_group_decode_rect_task(bid, task_idx);
+    cuda_single_group_decode_rect_task(bid, task_idx, task_offset);
     cuda_single_group_sharedtile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, pos, op, bid, task_idx);
 }
 
