@@ -206,10 +206,15 @@ static inline void launch_cuda_single_group_rank(
     if (max_tasks <= 0)
         return;
 
-    if (compact_tasks && compact_num_tasks > 0 && compact_num_tasks <= std::numeric_limits<unsigned int>::max())
+    if (compact_tasks && compact_num_tasks > 0)
     {
-        dim3 grid(static_cast<unsigned int>(compact_num_tasks));
-        cuda_single_group_sharedtile_compact_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op, compact_tasks);
+        constexpr int64 MAX_COMPACT_GRID_X = std::numeric_limits<int>::max();
+        for (int64 task_offset = 0; task_offset < compact_num_tasks; task_offset += MAX_COMPACT_GRID_X)
+        {
+            const int64 tasks_this_launch = std::min<int64>(MAX_COMPACT_GRID_X, compact_num_tasks - task_offset);
+            dim3 grid(static_cast<unsigned int>(tasks_this_launch));
+            cuda_single_group_sharedtile_compact_kernel<Rank, TypeCode, Ti, Tv, Op><<<grid, block_size>>>(basis_slice, groups, pos, op, compact_tasks, task_offset);
+        }
         return;
     }
 
