@@ -142,6 +142,67 @@ __device__ __forceinline__ void cuda_single_group_op_offdiag(Op &op, Tv &local_r
         op.offdiag(vt, si, di);
 }
 
+
+template <typename Op, typename Tv>
+__device__ __forceinline__ void cuda_multi_group_op_init_tile(Op &op, Tv (&accum)[TILE_B])
+{
+    if constexpr (Op::UsesTileAccumulator)
+        op.init_tile(accum);
+    else
+    {
+        (void)op;
+        (void)accum;
+    }
+}
+
+template <typename Op, typename Tv>
+__device__ __forceinline__ void cuda_multi_group_op_diag(
+    Op &op, Tv (&accum)[TILE_B], Tv &local_res, Tv vt, int64 di, int original_idx, int b_offset)
+{
+    if constexpr (Op::UsesTileAccumulator)
+        op.diag(accum, local_res, vt, di, original_idx, b_offset);
+    else
+    {
+        (void)accum;
+        (void)b_offset;
+        op.diag(local_res, vt, di, original_idx);
+    }
+}
+
+template <typename Op, typename Tv>
+__device__ __forceinline__ void cuda_multi_group_op_offdiag(
+    Op &op, Tv (&accum)[TILE_B], Tv &local_res, Tv vt, int64 si, int64 di, int original_idx, int b_offset)
+{
+    if constexpr (Op::UsesTileAccumulator)
+        op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+    else
+    {
+        (void)accum;
+        (void)b_offset;
+        op.offdiag(local_res, vt, si, di, original_idx);
+    }
+}
+
+template <typename Op, typename Ti, typename Tv>
+__device__ __forceinline__ void cuda_multi_group_op_finish_tile(
+    Op &op, const BasisSliceDev<Ti> &basis, int64 dst_row, int64 dst_block_offset, int b_tile_start,
+    int current_tile_b, bool valid_a, Tv (&accum)[TILE_B])
+{
+    if constexpr (Op::UsesTileAccumulator)
+        op.finish_tile(basis, dst_row, dst_block_offset, b_tile_start, current_tile_b, valid_a, accum);
+    else
+    {
+        (void)op;
+        (void)basis;
+        (void)dst_row;
+        (void)dst_block_offset;
+        (void)b_tile_start;
+        (void)current_tile_b;
+        (void)valid_a;
+        (void)accum;
+    }
+}
+
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     const BasisSliceDev<Ti> basis,
@@ -380,7 +441,7 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
         const int64 dst_row = dst_block_offset + (int64)a * n_b;
 
         Tv accum[TILE_B];
-        op.init_tile(accum);
+        cuda_multi_group_op_init_tile(op, accum);
 
         for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx)
         {
@@ -536,9 +597,9 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
                             const int64 si = src_row + sb;
                             const int64 di = dst_row + b_tile_start + b_offset;
                             if constexpr (IsDiagonal)
-                                op.diag(accum, local_res, vt, di, original_idx, b_offset);
+                                cuda_multi_group_op_diag(op, accum, local_res, vt, di, original_idx, b_offset);
                             else
-                                op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                                cuda_multi_group_op_offdiag(op, accum, local_res, vt, si, di, original_idx, b_offset);
                         }
                     }
                     else
@@ -555,9 +616,9 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
                             const int64 si = src_row + sb;
                             const int64 di = dst_row + b_tile_start + b_offset;
                             if constexpr (IsDiagonal)
-                                op.diag(accum, local_res, vt, di, original_idx, b_offset);
+                                cuda_multi_group_op_diag(op, accum, local_res, vt, di, original_idx, b_offset);
                             else
-                                op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                                cuda_multi_group_op_offdiag(op, accum, local_res, vt, si, di, original_idx, b_offset);
                         }
                     }
                     if constexpr (Op::UsesGroupResult)
@@ -567,7 +628,7 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
             __syncthreads();
         }
 
-        op.finish_tile(basis, dst_row, dst_block_offset, b_tile_start, current_tile_b, valid_a, accum);
+        cuda_multi_group_op_finish_tile(op, basis, dst_row, dst_block_offset, b_tile_start, current_tile_b, valid_a, accum);
         if (task_stride <= 0)
             break;
     }
