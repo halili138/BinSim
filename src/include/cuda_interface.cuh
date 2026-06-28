@@ -267,24 +267,22 @@ template <typename Tv>
 struct CudaExpmSingleGroupOp
 {
     static constexpr bool SkipRealDiagonal = true;
+    static constexpr bool UsesBlockResult = false;
 
     double theta;
     double cd;
     double co;
     Tv *vec;
-    Tv *d_res;
 
-    __device__ __forceinline__ void diag(Tv &, Tv vt, int64 di) const
+    __device__ __forceinline__ void diag(Tv vt, int64 di) const
     {
         vec[di] *= fast_diag_exp_dev<Tv>(vt, theta);
     }
 
-    __device__ __forceinline__ void offdiag(Tv &, Tv vt, int64 si, int64 di) const
+    __device__ __forceinline__ void offdiag(Tv vt, int64 si, int64 di) const
     {
         expm_update_dev<Tv>(vec + si, vec + di, vt, cd, co);
     }
-
-    __device__ __forceinline__ void finish_block(Tv &) const {}
 };
 
 template <typename Ti, typename Tv>
@@ -298,7 +296,7 @@ struct CudaExpmLauncher
         const BasisSliceDev<Ti> &basis_slice, const GroupsViewDev<Ti, Tv> &groups, int64 pos, int max_tasks,
         const CudaSingleGroupTask *compact_tasks = nullptr, int64 compact_num_tasks = 0) const
     {
-        CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec, nullptr};
+        CudaExpmSingleGroupOp<Tv> op{theta, std::cos(theta) - 1.0, std::sin(theta), dev_vec};
         launch_cuda_single_group_by_rank<TypeCode, Ti, Tv>(basis_slice, make_groups_slice(groups), pos, op, groups.host_ranks[pos], max_tasks, compact_tasks, compact_num_tasks);
     }
 };
@@ -324,6 +322,7 @@ template <typename Tv>
 struct CudaGradSingleGroupOp
 {
     static constexpr bool SkipRealDiagonal = true;
+    static constexpr bool UsesBlockResult = true;
 
     double theta;
     double cd;
@@ -394,6 +393,7 @@ template <typename Tv>
 struct CudaBackgradSingleGroupOp
 {
     static constexpr bool SkipRealDiagonal = true;
+    static constexpr bool UsesBlockResult = true;
 
     double theta;
     double ecd;
