@@ -11,6 +11,18 @@ inline constexpr int BATCH_SIZE_SH2 = 32;
 inline constexpr int BATCH_SIZE_SH3 = 1;
 inline constexpr int KERNEL_MAX_RANK = 128;
 
+struct CudaSingleGroupTask
+{
+    int bid;
+    int task_idx;
+};
+
+struct CudaMultiGroupTask
+{
+    int active_block_idx;
+    int tile_idx;
+};
+
 __device__ __forceinline__ int count_ones(uint32 v) { return __popc(v); }
 __device__ __forceinline__ int count_ones(uint64 v) { return __popcll(v); }
 

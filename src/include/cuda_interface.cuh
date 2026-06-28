@@ -319,8 +319,7 @@ template <typename Ti, typename Tv>
 void expm_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *dev_vec)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
-    expm_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, dev_vec, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
+    expm_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, dev_vec, basis.single_group_max_tasks, basis.single_group_tasks, basis.single_group_total_tasks);
 }
 
 template <typename Tv>
@@ -390,8 +389,7 @@ template <typename Ti, typename Tv>
 Tv grad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, const Tv *lp, const Tv *rp)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
-    return grad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
+    return grad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, basis.single_group_max_tasks, basis.single_group_tasks, basis.single_group_total_tasks);
 }
 
 template <typename Tv>
@@ -467,8 +465,7 @@ template <typename Ti, typename Tv>
 Tv backgrad_svd_network_otf_gpu(const BasisViewDev<Ti> &basis, const NetworkDev<Ti, Tv> &net, int64 idx, double theta, Tv *lp, Tv *rp)
 {
     const BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
-    CudaSingleGroupSchedule schedule = cuda_single_group_schedule(basis);
-    return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, schedule.max_tasks, schedule.dev_tasks, schedule.total_tasks);
+    return backgrad_svd_network_otf_gpu<Ti, Tv>(basis_slice, net, idx, theta, lp, rp, basis.single_group_max_tasks, basis.single_group_tasks, basis.single_group_total_tasks);
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>

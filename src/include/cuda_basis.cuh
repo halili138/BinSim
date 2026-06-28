@@ -1,6 +1,7 @@
 #pragma once
 #include "cuda_common.cuh"
 #include "host_basis.hpp"
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -27,6 +28,10 @@ struct BasisViewDev
     const int *block_map = nullptr;       // [num_irreps * num_irreps]
     const int *astr2idx = nullptr;
     const int *bstr2idx = nullptr;
+    int single_group_max_tasks = 0;
+    int64 single_group_total_tasks = 0;
+    int64 single_group_rectangular_tasks = 0;
+    const CudaSingleGroupTask *single_group_tasks = nullptr;
 
     BasisViewDev() = default;
     BasisViewDev(const BasisViewDev &) = delete;
@@ -100,6 +105,14 @@ struct BasisViewDev
             cudaFree(const_cast<int *>(bstr2idx));
             bstr2idx = nullptr;
         }
+        if (single_group_tasks)
+        {
+            cudaFree(const_cast<CudaSingleGroupTask *>(single_group_tasks));
+            single_group_tasks = nullptr;
+        }
+        single_group_max_tasks = 0;
+        single_group_total_tasks = 0;
+        single_group_rectangular_tasks = 0;
         host_block_num_a.clear();
         host_block_num_b.clear();
     }
@@ -130,6 +143,10 @@ struct BasisViewDev
             block_map = other.block_map;
             astr2idx = other.astr2idx;
             bstr2idx = other.bstr2idx;
+            single_group_max_tasks = other.single_group_max_tasks;
+            single_group_total_tasks = other.single_group_total_tasks;
+            single_group_rectangular_tasks = other.single_group_rectangular_tasks;
+            single_group_tasks = other.single_group_tasks;
 
             other.num_blocks = 0;
             other.num_irreps = 0;
@@ -149,8 +166,10 @@ struct BasisViewDev
             other.bstrs_start = nullptr;
             other.block_map = nullptr;
             other.astr2idx = nullptr;
-            host_block_num_a = std::move(other.host_block_num_a);
-            host_block_num_b = std::move(other.host_block_num_b);
+            other.single_group_max_tasks = 0;
+            other.single_group_total_tasks = 0;
+            other.single_group_rectangular_tasks = 0;
+            other.single_group_tasks = nullptr;
 
             other.bstr2idx = nullptr;
             other.host_block_num_a.clear();
@@ -246,6 +265,22 @@ void *upload_basis(const BasisManager<Ti> *hb)
     db->block_map = up(hbm.data(), ni * ni);
     db->astr2idx = up(hb->a_idx_map, ms);
     db->bstr2idx = up(hb->b_idx_map, ms);
+
+    constexpr int single_group_block_size = 256;
+    std::vector<CudaSingleGroupTask> single_group_tasks;
+    for (int bid = 0; bid < nb; ++bid)
+    {
+        const int num_a_tiles = (hna[bid] + single_group_block_size - 1) / single_group_block_size;
+        const int num_b_tiles = (hnb[bid] + TILE_B - 1) / TILE_B;
+        const int block_tasks = num_a_tiles * num_b_tiles;
+        db->single_group_max_tasks = std::max(db->single_group_max_tasks, block_tasks);
+        for (int task_idx = 0; task_idx < block_tasks; ++task_idx)
+            single_group_tasks.push_back(CudaSingleGroupTask{bid, task_idx});
+    }
+    db->single_group_total_tasks = static_cast<int64>(single_group_tasks.size());
+    db->single_group_rectangular_tasks = static_cast<int64>(nb) * db->single_group_max_tasks;
+    if (!single_group_tasks.empty() && db->single_group_total_tasks < db->single_group_rectangular_tasks)
+        db->single_group_tasks = up(single_group_tasks.data(), static_cast<int64>(single_group_tasks.size()));
 
     return static_cast<void *>(db);
 }

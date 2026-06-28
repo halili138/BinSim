@@ -40,18 +40,6 @@ struct SourceBlockStorageTag;
 struct ValidGroupStorageTag;
 struct GroupRankStorageTag;
 
-struct CudaSingleGroupTask
-{
-    int bid;
-    int task_idx;
-};
-
-struct CudaMultiGroupTask
-{
-    int active_block_idx;
-    int tile_idx;
-};
-
 template <typename Tv, int PhaseMemSize, int IdxMemSize, bool UsesBExcitation>
 struct SingleGroupSharedTileStorage
     : OptionalStaticSharedStorage<BExcitationStorageTag, int, IdxMemSize, UsesBExcitation>
