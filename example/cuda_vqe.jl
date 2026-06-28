@@ -22,7 +22,10 @@ function test_vqe(mole)
 
     h_funcs     = OTF_Functions(basis, ham, pool)
     d_funcs     = CuOTF_Functions(basis, h_funcs.ham, h_funcs.pool)
-    x0          = zeros(Float64, length(pool))
+
+    xpath       = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
+    # x0          = zeros(Float64, length(pool))
+    x0          = load_x(xpath)
     idxs        = [i for i in eachindex(pool)]
 
     run_vqe2(d_funcs, d_lv, d_rv, d_v0_idxs, d_v0_vals, mole.e_scale, x0, idxs, 
@@ -31,7 +34,7 @@ function test_vqe(mole)
             gtol      = 1e-6, 
             maxiter   = 9999, 
             verbose   = 3, 
-            # save_path = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
+            save_path = xpath
         )
     )
 end
