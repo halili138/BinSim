@@ -124,6 +124,24 @@ __device__ __forceinline__ void cuda_multi_group_decode_compact_task(
     task_stride = 0;
 }
 
+template <typename Op, typename Tv>
+__device__ __forceinline__ void cuda_single_group_op_diag(Op &op, Tv &local_res, Tv vt, int64 di)
+{
+    if constexpr (Op::UsesBlockResult)
+        op.diag(local_res, vt, di);
+    else
+        op.diag(vt, di);
+}
+
+template <typename Op, typename Tv>
+__device__ __forceinline__ void cuda_single_group_op_offdiag(Op &op, Tv &local_res, Tv vt, int64 si, int64 di)
+{
+    if constexpr (Op::UsesBlockResult)
+        op.offdiag(local_res, vt, si, di);
+    else
+        op.offdiag(vt, si, di);
+}
+
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
 __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
     const BasisSliceDev<Ti> basis,
@@ -235,7 +253,7 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
             {
                 const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
                 const int64 di = basis.block_offsets[bid] + (int64)a * n_b + b_start + b_offset;
-                op.diag(local_res, vt, di);
+                cuda_single_group_op_diag(op, local_res, vt, di);
             }
         }
         else if (src_bid != -1 && src_bid >= bid)
@@ -263,13 +281,14 @@ __device__ __forceinline__ void cuda_single_group_sharedtile_impl(
                     if (sb == -1 || (src_bid == bid && sa == a && sb < b_start + b_offset))
                         continue;
                     const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh.sh_pb, TILE_B, rank, b_offset);
-                    op.offdiag(local_res, vt, src_row + sb, dst_row + b_start + b_offset);
+                    cuda_single_group_op_offdiag(op, local_res, vt, src_row + sb, dst_row + b_start + b_offset);
                 }
             }
         }
     }
 
-    op.finish_block(local_res);
+    if constexpr (Op::UsesBlockResult)
+        op.finish_block(local_res);
 }
 
 template <int Rank, int TypeCode, typename Ti, typename Tv, typename Op>
