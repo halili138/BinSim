@@ -540,6 +540,7 @@ struct CudaHVecMultiGroupOp
     static constexpr bool SkipLowerBlocks = false;
     static constexpr bool SkipSameBlockReverse = false;
     static constexpr bool UsesOriginalIdx = false;
+    static constexpr bool UsesGroupResult = false;
 
     const Tv *src_vec;
     Tv *dst_vec;
@@ -595,6 +596,7 @@ struct CudaBatchGradMultiGroupOp
     static constexpr bool SkipLowerBlocks = true;
     static constexpr bool SkipSameBlockReverse = true;
     static constexpr bool UsesOriginalIdx = true;
+    static constexpr bool UsesGroupResult = true;
 
     const double *thetas;
     const Tv *lp;

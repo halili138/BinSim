@@ -541,7 +541,8 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
                                 op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
                         }
                     }
-                    op.finish_group(local_res, original_idx);
+                    if constexpr (Op::UsesGroupResult)
+                        op.finish_group(local_res, original_idx);
                 }
             }
             __syncthreads();
