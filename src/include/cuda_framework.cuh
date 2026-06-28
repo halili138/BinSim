@@ -94,10 +94,10 @@ struct MultiGroupTileSharedStorage
     }
 };
 
-__device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int &task_idx)
+__device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int &task_idx, int task_offset)
 {
     bid = blockIdx.x;
-    task_idx = blockIdx.y;
+    task_idx = task_offset + blockIdx.y;
 }
 
 __device__ __forceinline__ void cuda_single_group_decode_compact_task(
@@ -277,11 +277,12 @@ __global__ void cuda_single_group_sharedtile_kernel(
     const BasisSliceDev<Ti> basis,
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
-    Op op)
+    Op op,
+    int task_offset)
 {
     int bid;
     int task_idx;
-    cuda_single_group_decode_rect_task(bid, task_idx);
+    cuda_single_group_decode_rect_task(bid, task_idx, task_offset);
     cuda_single_group_sharedtile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, pos, op, bid, task_idx);
 }
 
@@ -496,26 +497,52 @@ __device__ __forceinline__ void cuda_multi_group_tile_impl(
                     const int src_n_b = IsDiagonal ? n_b : basis.block_num_b[src_bid];
                     const int64 src_row = IsDiagonal ? dst_row : basis.block_offsets[src_bid] + (int64)sa * src_n_b;
                     const Tv *pb = sh.sh_pb + (g_offset * TILE_B);
-                    const int original_idx = groups.original_idx[g];
+                    int original_idx = -1;
+                    if constexpr (Op::UsesOriginalIdx)
+                        original_idx = groups.original_idx[g];
                     Tv local_res = {};
 
-                    for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                    if (full_b_tile)
                     {
-                        int sb = b_tile_start + b_offset;
-                        if constexpr (UsesBExcitation)
-                            sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
-                        if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
-                            continue;
+#pragma unroll
+                        for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                        {
+                            int sb = b_tile_start + b_offset;
+                            if constexpr (UsesBExcitation)
+                                sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                            if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                continue;
 
-                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                        const int64 si = src_row + sb;
-                        const int64 di = dst_row + b_tile_start + b_offset;
-                        if constexpr (IsDiagonal)
-                            op.diag(accum, local_res, vt, di, original_idx, b_offset);
-                        else
-                            op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                            const int64 si = src_row + sb;
+                            const int64 di = dst_row + b_tile_start + b_offset;
+                            if constexpr (IsDiagonal)
+                                op.diag(accum, local_res, vt, di, original_idx, b_offset);
+                            else
+                                op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                        }
                     }
-                    op.finish_group(local_res, original_idx);
+                    else
+                    {
+                        for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                        {
+                            int sb = b_tile_start + b_offset;
+                            if constexpr (UsesBExcitation)
+                                sb = sh.sh_sb()[g_offset * TILE_B + b_offset];
+                            if (sb == -1 || (Op::SkipSameBlockReverse && src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                continue;
+
+                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                            const int64 si = src_row + sb;
+                            const int64 di = dst_row + b_tile_start + b_offset;
+                            if constexpr (IsDiagonal)
+                                op.diag(accum, local_res, vt, di, original_idx, b_offset);
+                            else
+                                op.offdiag(accum, local_res, vt, si, di, original_idx, b_offset);
+                        }
+                    }
+                    if constexpr (Op::UsesGroupResult)
+                        op.finish_group(local_res, original_idx);
                 }
             }
             __syncthreads();
