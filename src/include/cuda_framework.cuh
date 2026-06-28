@@ -101,9 +101,9 @@ __device__ __forceinline__ void cuda_single_group_decode_rect_task(int &bid, int
 }
 
 __device__ __forceinline__ void cuda_single_group_decode_compact_task(
-    const CudaSingleGroupTask *__restrict__ tasks, int &bid, int &task_idx)
+    const CudaSingleGroupTask *__restrict__ tasks, int64 task_offset, int &bid, int &task_idx)
 {
-    const CudaSingleGroupTask task = tasks[blockIdx.x];
+    const CudaSingleGroupTask task = tasks[task_offset + blockIdx.x];
     bid = task.bid;
     task_idx = task.task_idx;
 }
@@ -429,11 +429,12 @@ __global__ void cuda_single_group_sharedtile_compact_kernel(
     const GroupsSliceDev<Ti, Tv> groups,
     int pos,
     Op op,
-    const CudaSingleGroupTask *__restrict__ tasks)
+    const CudaSingleGroupTask *__restrict__ tasks,
+    int64 task_offset)
 {
     int bid;
     int task_idx;
-    cuda_single_group_decode_compact_task(tasks, bid, task_idx);
+    cuda_single_group_decode_compact_task(tasks, task_offset, bid, task_idx);
     cuda_single_group_sharedtile_impl<Rank, TypeCode, Ti, Tv, Op>(basis, groups, pos, op, bid, task_idx);
 }
 
