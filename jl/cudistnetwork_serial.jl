@@ -69,8 +69,7 @@ function CuDistributedFunctions(
     global_max_send  = maximum(max_send_dims)
 
     d_cache = CUDA.zeros(Float64, global_max_local + global_max_recv)
-    d_send  = CUDA.zeros(Float64, global_max_send)
-    d_w     = CUDA.zeros(Float64, global_max_local)
+    d_send  = CUDA.zeros(Float64, max(global_max_send, global_max_local))
     d_back_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
 
     function backgrad_cache!()
@@ -165,13 +164,13 @@ function CuDistributedFunctions(
                 if topo.recv_dim > 0
                     copyto!(d_cache, ld + 1, host_recv_bufs[r], 1, topo.recv_dim)
                 end
-                d_w .= 0.0
+                d_send .= 0.0
                 @ccall LIB_CUDIST.compute_hvec_sub_chunk_gpu_f64(
                     cu_basis_dev.ptr::Ptr{Cvoid}, cu_otfs[i].ptr::Ptr{Cvoid},
                     topo.ptr::Ptr{Cvoid},
-                    pointer(d_cache)::CuPtr{Float64}, pointer(d_w)::CuPtr{Float64},
+                    pointer(d_cache)::CuPtr{Float64}, pointer(d_send)::CuPtr{Float64},
                 )::Cvoid
-                host_w_chunks[r] .+= Array(d_w[1:ld])
+                host_w_chunks[r] .+= Array(d_send[1:ld])
             end
         end
 
@@ -372,13 +371,12 @@ function CuDistributedFunctions(
     println("  Max recv dim:             $(global_max_recv)")
     d_cache_bytes = _hvec_bytes(global_max_local + global_max_recv)
     d_send_bytes = _hvec_bytes(global_max_send)
-    d_w_bytes = _hvec_bytes(global_max_local)
-    hvec_vram_bytes = d_cache_bytes + d_send_bytes + d_w_bytes
+    hvec_vram_bytes = d_cache_bytes + d_send_bytes
     host_v_chunks_bytes = _sum_buffer_bytes(host_v_chunks)
     host_w_chunks_bytes = _sum_buffer_bytes(host_w_chunks)
     host_send_bufs_bytes = _sum_buffer_bytes(host_send_bufs)
     host_recv_bufs_bytes = _sum_buffer_bytes(host_recv_bufs)
-    println("  Hvec GPU buffers:         d_cache=$(_hvec_gib(d_cache_bytes)) GB ($(d_cache_bytes) bytes), d_send=$(_hvec_gib(d_send_bytes)) GB ($(d_send_bytes) bytes), d_w=$(_hvec_gib(d_w_bytes)) GB ($(d_w_bytes) bytes)")
+    println("  Hvec GPU buffers:         d_cache=$(_hvec_gib(d_cache_bytes)) GB ($(d_cache_bytes) bytes), d_send=$(_hvec_gib(d_send_bytes)) GB ($(d_send_bytes) bytes)")
     println("  Peak GPU hvec buffer/rank: $(_hvec_gib(hvec_vram_bytes)) GB ($(hvec_vram_bytes) bytes)")
     println("  Total GPU hvec buffers:   $(_hvec_gib(hvec_vram_bytes)) GB ($(hvec_vram_bytes) bytes)")
     println("  Host chunk buffers:       host_v_chunks=$(_hvec_gib(host_v_chunks_bytes)) GB ($(host_v_chunks_bytes) bytes), host_w_chunks=$(_hvec_gib(host_w_chunks_bytes)) GB ($(host_w_chunks_bytes) bytes)")

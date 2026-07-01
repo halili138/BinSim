@@ -1,5 +1,8 @@
 #pragma once
 #include "common.hpp"
+#include <unordered_map>
+#include <numeric>
+#include <cmath>
 
 template <typename T>
 struct BlockDesc
@@ -41,6 +44,7 @@ struct BasisManager
     int64 *orbsym = nullptr;
     int64 *block_map = nullptr;
     int64 num_irreps = {};
+    int64 physical_num_irreps = {};  // 0 = non-partitioned; >0 = physical irrep count
     int64 total_sym = {};
 
     int64 dim = {};
@@ -96,6 +100,7 @@ struct BasisManager
         b_idx_map = nullptr;
         num_blocks = 0;
         num_irreps = 0;
+        physical_num_irreps = 0;
         total_sym = 0;
         dim = 0;
         norb = 0;
@@ -124,6 +129,7 @@ void *create_basis_manager_tmpl(
     try
     {
         basis->num_irreps = num_irreps;
+        basis->physical_num_irreps = num_irreps;  // non-partitioned: physical == virtual
         basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
@@ -335,6 +341,7 @@ void *create_custom_basis_manager_tmpl(
     try
     {
         basis->num_irreps = num_irreps;
+        basis->physical_num_irreps = num_irreps;  // non-partitioned: physical == virtual
         basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
@@ -516,6 +523,7 @@ void *create_partitioned_basis_manager_tmpl(
         };
 
         basis->num_irreps = combined_num_irreps;
+        basis->physical_num_irreps = physical_num_irreps;
         basis->norb = norb;
         basis->dim = 0;
         basis->num_blocks = 0;
@@ -710,27 +718,60 @@ GlobalMemMap *build_global_map(const BasisManager<Ti> *basis, int mpi_rank, int 
         binfo.push_back({h, basis->blocks[i].num_a * basis->blocks[i].num_b});
     }
 
-    // 贪心算法分配波函数块
+    // 贪心算法分配波函数块 — 先按物理对称性扇区分组，再按尺寸负载均衡
     std::sort(binfo.begin(), binfo.end(), [](const BInfo &a, const BInfo &b)
               { return a.size > b.size; });
 
+    const int64 pnirp = basis->physical_num_irreps;
+    const int64 pmask = pnirp - 1;
+    const int64 nirp  = basis->num_irreps;
+
+    // Group blocks by physical sector
+    std::unordered_map<int64, std::vector<BInfo>> phys_blocks;
+    std::unordered_map<int64, int64> phys_size;
+    int64 total_size = 0;
     for (const auto &bi : binfo)
     {
-        int tgt_rank = 0;
-        int64 min_load = rank_loads[0];
-        for (int r = 1; r < mpi_size; ++r)
-        {
-            if (rank_loads[r] < min_load)
-            {
-                min_load = rank_loads[r];
-                tgt_rank = r;
-            }
-        }
-        gmap->block_to_rank[bi.h] = tgt_rank;
-        gmap->block_local_offsets[bi.h] = current_local_offsets[tgt_rank];
+        const int64 ph = ((bi.h / nirp) & pmask) * pnirp + ((bi.h % nirp) & pmask);
+        phys_blocks[ph].push_back(bi);
+        phys_size[ph] += bi.size;
+        total_size += bi.size;
+    }
 
-        current_local_offsets[tgt_rank] += bi.size;
-        rank_loads[tgt_rank] += bi.size;
+    std::vector<std::pair<int64, int64>> ranked_phys(phys_size.begin(), phys_size.end());
+    std::sort(ranked_phys.begin(), ranked_phys.end(),
+              [](auto &a, auto &b) { return a.second > b.second; });
+
+    int ranks_done = 0;
+    for (size_t si = 0; si < ranked_phys.size(); ++si)
+    {
+        const auto &[ph, psize] = ranked_phys[si];
+        bool is_last = (si == ranked_phys.size() - 1);
+        int K = is_last ? std::max(1, mpi_size - ranks_done)
+                        : std::max(1, (int)std::llround((double)mpi_size * (double)psize / (double)total_size));
+        if (K > mpi_size - ranks_done)
+            K = mpi_size - ranks_done;
+
+        // Find K least-loaded ranks
+        std::vector<int> cand_ranks(mpi_size);
+        std::iota(cand_ranks.begin(), cand_ranks.end(), 0);
+        std::partial_sort(cand_ranks.begin(), cand_ranks.begin() + K, cand_ranks.end(),
+                          [&](int a, int b) { return rank_loads[a] < rank_loads[b]; });
+
+        // Within this physical sector, distribute blocks greedily across the K ranks
+        auto &blocks = phys_blocks[ph];
+        for (const auto &bi : blocks)
+        {
+            int tgt = cand_ranks[0];
+            for (int k = 1; k < K; ++k)
+                if (rank_loads[cand_ranks[k]] < rank_loads[tgt])
+                    tgt = cand_ranks[k];
+            gmap->block_to_rank[bi.h] = tgt;
+            gmap->block_local_offsets[bi.h] = current_local_offsets[tgt];
+            current_local_offsets[tgt] += bi.size;
+            rank_loads[tgt] += bi.size;
+        }
+        ranks_done += K;
     }
 
     gmap->local_dim = current_local_offsets[mpi_rank];

@@ -99,6 +99,12 @@ function mole_geo(name::String, ratio::Float64=1.0)
         O 0.0 0.0 0.0;
         O 0.0 0.0 $(a);
         "
+    elseif name == "s2"
+        a = 1.8892 * ratio
+        geo = "
+        S 0.0 0.0 0.0;
+        S 0.0 0.0 $(a);
+        "
     elseif name == "hf"
         a = 0.917 * ratio
         geo = "

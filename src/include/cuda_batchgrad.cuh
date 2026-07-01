@@ -119,7 +119,7 @@ __global__ void batchgrad_offdiag_kernel(
 
     constexpr int SHARED_MEM_SIZE = BATCH_GROUP_SHARED_MEM<Rank>;
     constexpr int BATCH_SIZE = BATCH_GROUP_SIZE<Rank>;
-    constexpr int IDX_MEM_SIZE = BATCH_GROUP_IDX_MEM<Rank>;
+    constexpr int IDX_MEM_SIZE = (TypeCode == 1) ? 1 : BATCH_GROUP_IDX_MEM<Rank>;
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
     __shared__ int sh_sb[IDX_MEM_SIZE];
@@ -171,7 +171,8 @@ __global__ void batchgrad_offdiag_kernel(
                 const int g_offset = sh_idx / current_tile_b;
                 const int b_offset = sh_idx % current_tile_b;
                 const int sh_flat_offset = g_offset * TILE_B + b_offset;
-                sh_sb[sh_flat_offset] = -1;
+                if constexpr (TypeCode != 1)
+                    sh_sb[sh_flat_offset] = -1;
                 if (sh_valid[g_offset] == 0)
                     continue;
 
@@ -179,10 +180,14 @@ __global__ void batchgrad_offdiag_kernel(
                 Ti src_bstr = bstrs_tile_start[b_offset];
                 if constexpr (TypeCode == 2 || TypeCode == 3)
                     src_bstr ^= groups.bxs[g];
-                const int sb = (TypeCode == 1) ? (b_tile_start + b_offset) : b_idx_map[src_bstr];
-                sh_sb[sh_flat_offset] = sb;
-                if (sb == -1)
-                    continue;
+
+                if constexpr (TypeCode != 1)
+                {
+                    const int sb = b_idx_map[src_bstr];
+                    sh_sb[sh_flat_offset] = sb;
+                    if (sb == -1)
+                        continue;
+                }
 
                 compute_phase_dev<Rank, Ti, Tv>(
                     src_bstr, groups.flat_zbs + groups.zb_start[g], groups.num_zbs[g], groups.flat_wb + groups.wb_start[g],
@@ -216,23 +221,41 @@ __global__ void batchgrad_offdiag_kernel(
                     const int64 src_row = basis.block_offsets[src_bid] + (int64)sa * src_n_b;
                     const int64 dst_row = basis.block_offsets[bid] + (int64)a * n_b;
                     const Tv *pb = sh_pb + (g_offset * TILE_B);
-                    const int *sb_tile = sh_sb + (g_offset * TILE_B);
                     const int original_idx = groups.original_idx[g];
                     const double theta = thetas[original_idx];
                     const double cd = -std::sin(theta);
                     const double co = std::cos(theta);
 
                     Tv local_res = {};
-                    for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                    if constexpr (TypeCode == 1)
                     {
-                        const int sb = sb_tile[b_offset];
-                        if (sb == -1 || (src_bid == bid && sa == a && sb < b_tile_start + b_offset))
-                            continue;
+                        for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                        {
+                            const int sb = b_tile_start + b_offset;
+                            if (src_bid == bid && sa == a && sb < b_tile_start + b_offset)
+                                continue;
 
-                        const int64 si = src_row + sb;
-                        const int64 di = dst_row + b_tile_start + b_offset;
-                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                        grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                            const int64 si = src_row + sb;
+                            const int64 di = dst_row + b_tile_start + b_offset;
+                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                            grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                        }
+                    }
+                    else
+                    {
+                        const int *sb_tile = sh_sb + (g_offset * TILE_B);
+
+                        for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                        {
+                            const int sb = sb_tile[b_offset];
+                            if (sb == -1 || (src_bid == bid && sa == a && sb < b_tile_start + b_offset))
+                                continue;
+
+                            const int64 si = src_row + sb;
+                            const int64 di = dst_row + b_tile_start + b_offset;
+                            const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                            grad_update_dev<Tv>(local_res, lp + si, lp + di, rp + si, rp + di, vt, cd, co);
+                        }
                     }
                     atomic_add_grad(grads, original_idx, local_res);
                 }

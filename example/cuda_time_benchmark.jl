@@ -1,6 +1,4 @@
 ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", 1)
-ENV["OMP_PROC_BIND"] = get(ENV, "OMP_PROC_BIND", "close")
-ENV["OMP_PLACES"] = get(ENV, "OMP_PLACES", "cores")
 
 include("../jl/cunetwork.jl")
 
@@ -18,7 +16,7 @@ function test_hvec(mole, nsteps)
         d_funcs.hvec(d_v, d_w)
         println("")
         @. d_v -= 1e-2 * d_w
-	println(real(dot(d_v, d_w)))
+	    println(real(dot(d_v, d_w)))
         normalize!(d_v)
     end
 end

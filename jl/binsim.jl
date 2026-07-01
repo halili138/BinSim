@@ -7,7 +7,7 @@ using JLD2
 using Dates
 using Combinatorics
 using SparseArrays
-
+using Random
 using MPI
 
 # 辅助函数：多进程场景下，仅 rank 0 打印诊断信息

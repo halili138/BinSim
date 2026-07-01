@@ -75,8 +75,7 @@ function CuDistributedFunctions(
     cache_scalars = local_dim + max_recv_dim
     send_scalars = max_send_dim
     recv_scalars = max_recv_dim
-    w_scalars = local_dim
-    hvec_scalar_count = cache_scalars + send_scalars + recv_scalars + w_scalars
+    hvec_scalar_count = cache_scalars + send_scalars + recv_scalars
     hvec_vram_bytes = Int64(hvec_scalar_count) * Int64(sizeof(Float64))
 
     max_local_dim_all = MPI.Allreduce(Int64(local_dim), max, comm)
@@ -88,7 +87,6 @@ function CuDistributedFunctions(
     d_cache = CUDA.zeros(Float64, cache_scalars)
     d_send  = CUDA.zeros(Float64, send_scalars)
     d_recv  = CUDA.zeros(Float64, recv_scalars)
-    d_w     = CUDA.zeros(Float64, w_scalars)
     d_left_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
     d_right_cache_ref = Ref{Union{Nothing, CuVector{Float64}}}(nothing)
 
@@ -142,23 +140,34 @@ function CuDistributedFunctions(
 
     _hvec = (v::CuVector{Float64}, Hv::CuVector{Float64}) -> begin
         copyto!(d_local_v, v)
-        d_w .= 0.0
+        Hv .= 0.0
 
         for i in 1:n_otfs, p in 1:num_phases
             topo = sub_topos[i, p]
             exchange_ghosts!(topo, d_cache, d_send, d_recv)
+            # --- phase diagnostics (env DEBUG_HVEC=1) ---
+            if get(ENV, "DEBUG_HVEC", "0") == "1"
+                d_recv_norm = topo.recv_dim > 0 ? sqrt(sum(abs2, @view d_recv[1:topo.recv_dim])) : 0.0
+                hvec_pre_sq = real(sum(abs2, Hv))
+            end
             @ccall LIB_CUDIST.compute_hvec_sub_chunk_gpu_f64(
                 cu_basis_dev.ptr::Ptr{Cvoid}, cu_otfs[i].ptr::Ptr{Cvoid},
                 topo.ptr::Ptr{Cvoid},
-                pointer(d_cache)::CuPtr{Float64}, pointer(d_w)::CuPtr{Float64},
+                pointer(d_cache)::CuPtr{Float64}, pointer(Hv)::CuPtr{Float64},
             )::Cvoid
+            if get(ENV, "DEBUG_HVEC", "0") == "1"
+                hvec_post_sq = real(sum(abs2, Hv))
+                @printf("[DEBUG] otf=%2d phase=%d send=%d recv=%d recv_norm=%.4f Hv_Δ|·|²=%+.6e\n",
+                    i, p, topo.send_dim, topo.recv_dim, Float64(d_recv_norm), hvec_post_sq - hvec_pre_sq)
+            end
         end
-
-        copyto!(Hv, d_w)
+        if get(ENV, "DEBUG_HVEC", "0") == "1"
+            @printf("[DEBUG] total Hv |·|² = %.16e\n", real(sum(abs2, Hv)))
+        end
     end
 
     _expm = (idx, θ, v::CuVector{Float64}) -> begin
-        n_pool == 0 && error("CuDistributedFunctions.expm requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        n_pool == 0 && error("CuDistributedFunctions.expm requires an operator pool")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.expm: pool index out of bounds"
         copyto!(d_local_v, v)
         for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
@@ -177,7 +186,7 @@ function CuDistributedFunctions(
     _grad = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad: not yet implemented")
 
     _backgrad = (idx, θ, lv::CuVector{Float64}, rv::CuVector{Float64}) -> begin
-        n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        n_pool == 0 && error("CuDistributedFunctions.backgrad requires an operator pool")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad: pool index out of bounds"
         d_left_cache, d_right_cache = backgrad_caches!()
         left_local = @view d_left_cache[1:local_dim]
@@ -188,9 +197,6 @@ function CuDistributedFunctions(
         for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
             topo = pool_sub_topos[idx][j, p]
             exchange_ghosts!(topo, d_left_cache, d_send, d_recv)
-            # exchange_ghosts! is blocking and copies received ghosts into the
-            # target cache before returning, so the same send/recv workspace can
-            # be reused for the right-vector exchange.
             exchange_ghosts!(topo, d_right_cache, d_send, d_recv)
             local_grad += @ccall LIB_CUDIST.compute_backgrad_sub_chunk_gpu_f64(
                 cu_basis_dev.ptr::Ptr{Cvoid}, pool_cu_otfs[idx][j].ptr::Ptr{Cvoid},
@@ -204,7 +210,7 @@ function CuDistributedFunctions(
     end
 
     _expm_2d = (idx, θ, v::CuVector{Float64}) -> begin
-        n_pool == 0 && error("CuDistributedFunctions.expm_2d requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        n_pool == 0 && error("CuDistributedFunctions.expm_2d requires an operator pool")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.expm_2d: pool index out of bounds"
         copyto!(d_local_v, v)
         for j in 1:length(pool_cu_otfs[idx]), p in 1:num_phases
@@ -221,7 +227,7 @@ function CuDistributedFunctions(
     end
     _grad_2d = (idx, θ, lv, rv) -> error("CuDistributedFunctions.grad_2d: not yet implemented")
     _backgrad_2d = (idx, θ, lv::CuVector{Float64}, rv::CuVector{Float64}) -> begin
-        n_pool == 0 && error("CuDistributedFunctions.backgrad_2d requires an operator pool; construct with CuDistributedFunctions(ModeNVLink, basis, ham, pool, comm; ...) for VQE usage")
+        n_pool == 0 && error("CuDistributedFunctions.backgrad_2d requires an operator pool")
         @assert 1 <= idx <= n_pool "CuDistributedFunctions.backgrad_2d: pool index out of bounds"
         d_left_cache, d_right_cache = backgrad_caches!()
         left_local = @view d_left_cache[1:local_dim]
@@ -255,7 +261,8 @@ function CuDistributedFunctions(
         println("  Phases effective:       $(num_phases)")
         println("  Max send dim:           $(max_send_dim_all)")
         println("  Max recv dim:           $(max_recv_dim_all)")
-        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(_hvec_bytes(cache_scalars))) GB, d_send=$(_hvec_gib(_hvec_bytes(send_scalars))) GB, d_recv=$(_hvec_gib(_hvec_bytes(recv_scalars))) GB, d_w=$(_hvec_gib(_hvec_bytes(w_scalars))) GB")
+        println("  Hvec buffers (r0):      d_cache=$(_hvec_gib(_hvec_bytes(cache_scalars))) GB, d_send=$(_hvec_gib(_hvec_bytes(send_scalars))) GB, d_recv=$(_hvec_gib(_hvec_bytes(recv_scalars))) GB")
+        hvec_vram_bytes = _hvec_bytes(cache_scalars + send_scalars)
         println("  Peak GPU hvec buffer/rank: $(round(max_hvec_vram_bytes / 1024^3, digits=3)) GB ($(max_hvec_vram_bytes) bytes)")
         println("  Total GPU hvec buffers:    $(round(total_hvec_vram_bytes / 1024^3, digits=3)) GB ($(total_hvec_vram_bytes) bytes)")
         println()

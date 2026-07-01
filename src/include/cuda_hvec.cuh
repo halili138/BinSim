@@ -134,7 +134,7 @@ __global__ void hvec_gather_offdiag_kernel(
     constexpr int SHARED_MEM_SIZE = BATCH_GROUP_SHARED_MEM<Rank>;
     constexpr int BATCH_SIZE = BATCH_GROUP_SIZE<Rank>;
 
-    constexpr int IDX_MEM_SIZE = BATCH_GROUP_IDX_MEM<Rank>;
+    constexpr int IDX_MEM_SIZE = (TypeCode == 1) ? 1 : BATCH_GROUP_IDX_MEM<Rank>;
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
     __shared__ int sh_sa_b[IDX_MEM_SIZE];
@@ -188,7 +188,7 @@ __global__ void hvec_gather_offdiag_kernel(
             for (int g_offset = threadIdx.x; g_offset < current_chunk_groups; g_offset += blockDim.x)
             {
                 const int g = chunk_start_g + g_offset;
-                const int h = compute_sym_hash<3>(asym, bsym, groups.asyms[g], groups.bsyms[g], nirp);
+                const int h = compute_sym_hash<TypeCode>(asym, bsym, groups.asyms[g], groups.bsyms[g], nirp);
                 const int src_bid = basis.block_map[h];
                 sh_src_bid[g_offset] = src_bid;
                 sh_valid_b[g_offset] = (src_bid == -1) ? 0 : n_b;
@@ -206,11 +206,14 @@ __global__ void hvec_gather_offdiag_kernel(
 
                 const int g = chunk_start_g + g_offset;
                 const Ti dst_b_str = bstrs_tile_start[b_offset];
-                const Ti bx = groups.bxs[g];
-                const Ti sas_b = dst_b_str ^ bx;
 
-                const int sh_flat_offset = g_offset * TILE_B + b_offset;
-                sh_sa_b[sh_flat_offset] = b_idx_map[sas_b];
+                Ti sas_b = dst_b_str;
+                if constexpr (TypeCode != 1)
+                {
+                    sas_b ^= groups.bxs[g];
+                    const int sh_flat_offset = g_offset * TILE_B + b_offset;
+                    sh_sa_b[sh_flat_offset] = b_idx_map[sas_b];
+                }
 
                 const Ti *zbs = groups.flat_zbs + groups.zb_start[g];
                 const Tv *wb = groups.flat_wb + groups.wb_start[g];
@@ -232,19 +235,25 @@ __global__ void hvec_gather_offdiag_kernel(
                         continue;
 
                     const int g = chunk_start_g + g_offset;
-                    const Ti ax = groups.axs[g];
-                    int sa = -1;
-                    Ti sas_a = 0;
 
-                    if (ax == 0)
+                    Ti sas_a = astr;
+                    int sa;
+                    if constexpr (TypeCode == 2)
                     {
                         sa = a;
-                        sas_a = astr;
                     }
                     else
                     {
-                        sas_a = astr ^ ax;
-                        sa = a_idx_map[sas_a];
+                        const Ti ax = groups.axs[g];
+                        if (ax != 0)
+                        {
+                            sas_a = astr ^ ax;
+                            sa = a_idx_map[sas_a];
+                        }
+                        else
+                        {
+                            sa = a;
+                        }
                     }
 
                     if (sa != -1)
@@ -259,34 +268,57 @@ __global__ void hvec_gather_offdiag_kernel(
                         compute_phase_dev<Rank, Ti, Tv>(sas_a, zas, nza, wa, pa, 1, rank);
 
                         const int sbi = sh_src_bid[g_offset];
-                        const Tv *src_base = src_vec + basis.block_offsets[sbi] + (int64)sa * basis.block_num_b[sbi];
+                        const int src_n_b = basis.block_num_b[sbi];
+                        const Tv *src_base = src_vec + basis.block_offsets[sbi] + (int64)sa * src_n_b;
                         const Tv *pb = sh_pb + (g_offset * TILE_B);
-                        const int *sh_sa_b_task = sh_sa_b + g_offset * TILE_B;
 
-                        if (current_tile_b == TILE_B)
+                        if constexpr (TypeCode == 1)
                         {
-// 对于 99% 的完整 Tile，强制编译器将 32 次循环完全展开成一长串 FMA (融合乘加) 指令
-#pragma unroll
-                            for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                            if (current_tile_b == TILE_B)
                             {
-                                const int sa_b = sh_sa_b_task[b_offset];
-                                if (sa_b != -1)
+#pragma unroll
+                                for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
                                 {
                                     const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                                    accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                    accum[b_offset] += __ldg(&src_base[b_tile_start + b_offset]) * vt;
+                                }
+                            }
+                            else
+                            {
+                                for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                                {
+                                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                    accum[b_offset] += __ldg(&src_base[b_tile_start + b_offset]) * vt;
                                 }
                             }
                         }
                         else
                         {
-                            // 仅在处理最后边界残缺的 Tile 时，使用常规循环
-                            for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                            const int *sh_sa_b_task = sh_sa_b + g_offset * TILE_B;
+
+                            if (current_tile_b == TILE_B)
                             {
-                                const int sa_b = sh_sa_b_task[b_offset];
-                                if (sa_b != -1)
+#pragma unroll
+                                for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
                                 {
-                                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
-                                    accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                    const int sa_b = sh_sa_b_task[b_offset];
+                                    if (sa_b != -1)
+                                    {
+                                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                        accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                                {
+                                    const int sa_b = sh_sa_b_task[b_offset];
+                                    if (sa_b != -1)
+                                    {
+                                        const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                        accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                    }
                                 }
                             }
                         }

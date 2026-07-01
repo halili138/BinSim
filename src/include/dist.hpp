@@ -78,18 +78,18 @@ SubTopology *build_sub_topology(const BasisManager<Ti> *basis, const Network_OTF
     std::vector<std::vector<int64>> recv_reqs(size);
 
     // =================================================================
-    // 【终极切片修复】：按 Local Index 分发 Phase，确保每张卡完美平分！
+    // Phase 分配按物理对称性扇区内轮转，保证同一物理映射的 target/source 同 phase
     // =================================================================
     std::vector<int> phase_of_block(basis->num_blocks, 0);
-    std::vector<int> rank_block_count(size, 0);
+    const int64 pnirp_p = basis->physical_num_irreps;
+    const int64 pmask_p = pnirp_p - 1;
+    std::unordered_map<int64, int> phys_phase_count;
 
     for (int64 i = 0; i < basis->num_blocks; ++i)
     {
-        int64 h = basis->blocks[i].asym * num_irreps + basis->blocks[i].bsym;
-        int dest_r = gmap->block_to_rank[h];
-        // 关键：基于该块在自己 Rank 里的排行来分配 Phase
-        phase_of_block[i] = rank_block_count[dest_r] % num_phases;
-        rank_block_count[dest_r]++;
+        const int64 ph = ((basis->blocks[i].asym & pmask_p) * pnirp_p) + (basis->blocks[i].bsym & pmask_p);
+        phase_of_block[i] = phys_phase_count[ph] % num_phases;
+        phys_phase_count[ph]++;
     }
 
     for (int64 i = 0; i < basis->num_blocks; ++i)

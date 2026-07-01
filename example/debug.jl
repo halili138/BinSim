@@ -1,6 +1,4 @@
 ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", 1)
-ENV["OMP_PROC_BIND"] = get(ENV, "OMP_PROC_BIND", "close")
-ENV["OMP_PLACES"] = get(ENV, "OMP_PLACES", "cores")
 
 include("../jl/cunetwork.jl")
 
@@ -12,15 +10,19 @@ function test_hvec(mole, nsteps)
     d_v     = CuArray{Float64,1,CUDA.DeviceMemory}(h_v)
     d_w     = CUDA.zeros(Float64, basis.dim)
     h_funcs = OTF_Functions(basis, ham, typeof(ham)[])
-    d_funcs = CuOTF_Functions(basis, h_funcs.ham, h_funcs.pool, time_print=true)
+    d_funcs = CuOTF_Functions(basis, h_funcs.ham, h_funcs.pool, time_print=false)
 
-    for _ in 1:nsteps
+    for step in 1:10
+        t_start = time_ns()
+
         d_funcs.hvec(d_v, d_w)
-        println("")
+        energy  = real(dot(d_v, d_w))
         @. d_v -= 1e-2 * d_w
-        e = real(dot(d_v, d_w)) / norm(d_v) ^ 2
-        @printf("    e: %.12f\n", e)
         normalize!(d_v)
+
+        t_iter = (time_ns() - t_start) / 1.0e9
+
+        @printf("  Step %2d | E: %14.10f | Time: %.4f s\n", step, energy, t_iter)
     end
 end
 
@@ -52,7 +54,7 @@ function test_trotter(mole, nsteps)
             d_v[d_v0_idxs] .= d_v0_vals
 
             for (i, t) in enumerate(amplitudes)
-                d_funcs.expm(i, t, d_v)
+                d_funcs.expm_2d(i, t, d_v)
                 i % 1000 == 0 && println(real(dot(d_v, d_v_test)))
             end
             sync_device!()
