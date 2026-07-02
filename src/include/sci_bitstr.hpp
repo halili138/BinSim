@@ -2,6 +2,8 @@
 #include "sci_common.hpp"
 #include "sci_hvec.hpp"
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 template <typename Tv>
 FORCE_INLINE auto sqnorm(const Tv &v)
@@ -30,6 +32,12 @@ int64 sci_hvec_select_for_block_bitstr(
 
     int64 out_count = 0;
 
+    const bool debug_external_selection = std::getenv("BINSIM_SCI_BITSTR_DEBUG_SELECTION") != nullptr;
+    double max_external_hpsi_abs = 0.0;
+    double max_external_selection_abs = 0.0;
+    int64 external_candidates_scanned = 0;
+    int64 external_candidates_passing_eps = 0;
+
     for (int64 a_start = 0; a_start < num_a_total; a_start += chunk_size)
     {
         const int64 a_end = std::min(a_start + (int64)chunk_size, num_a_total);
@@ -56,18 +64,56 @@ int64 sci_hvec_select_for_block_bitstr(
             for (int b = 0; b < num_b && out_count < max_entries; ++b)
             {
                 if (row[b] == Tv{}) continue;
+
+                const Ti candidate_astr = full_block.astrs[a_global];
+                const Ti candidate_bstr = full_block.bstrs[b];
+                const int64 src_block_idx =
+                    (full_block.asym < src_basis->num_irreps && full_block.bsym < src_basis->num_irreps)
+                        ? src_basis->block_map[full_block.asym * src_basis->num_irreps + full_block.bsym]
+                        : -1;
+                const auto src_a_it = src_basis->a_idx_map.find(candidate_astr);
+                const auto src_b_it = src_basis->b_idx_map.find(candidate_bstr);
+                const bool candidate_in_src_basis =
+                    src_a_it != src_basis->a_idx_map.end() && src_a_it->second != -1 &&
+                    src_b_it != src_basis->b_idx_map.end() && src_b_it->second != -1 &&
+                    src_block_idx != -1;
+
                 const Tv haa = candidate_diags[full_block.offset + a_global * num_b + b];
                 const Tv denom = variational_energy - haa;
                 const double denom_norm = std::sqrt(sqnorm(denom));
                 if (denom_norm == 0.0) continue;
                 const Tv selection_amplitude = row[b] / denom;
-                if (sqnorm(selection_amplitude) <= eps * eps) continue;
-                out_entries[out_count++] = {full_block.astrs[a_global],
-                                            full_block.bstrs[b], row[b]};
+                const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
+                const bool passes_eps = selection_norm > eps;
+
+                if (!candidate_in_src_basis)
+                {
+                    ++external_candidates_scanned;
+                    max_external_hpsi_abs = std::max(max_external_hpsi_abs, std::sqrt(sqnorm(row[b])));
+                    max_external_selection_abs = std::max(max_external_selection_abs, selection_norm);
+                    if (passes_eps) ++external_candidates_passing_eps;
+                }
+
+                if (!passes_eps) continue;
+                out_entries[out_count++] = {candidate_astr, candidate_bstr, row[b]};
             }
         }
 
         delete[] chunk_acc;
+    }
+
+    if (debug_external_selection)
+    {
+        std::fprintf(stderr,
+                     "[sci_bitstr debug] block=%lld external_scanned=%lld "
+                     "external_pass_eps=%lld max_external_abs_Hpsi=%.17g "
+                     "max_external_abs_Hpsi_over_E_minus_Haa=%.17g out_count=%lld\n",
+                     (long long)block_idx,
+                     (long long)external_candidates_scanned,
+                     (long long)external_candidates_passing_eps,
+                     max_external_hpsi_abs,
+                     max_external_selection_abs,
+                     (long long)out_count);
     }
 
     return out_count;
