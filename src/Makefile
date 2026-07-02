@@ -1,12 +1,12 @@
 CXX := g++
-CXXARCH_FLAGS := -march=icelake-server -mtune=icelake-server # a100_80g节点
+CXXARCH_FLAGS := -march=native -mtune=native
 CXXFLAGS := -std=c++20 $(CXXARCH_FLAGS) -O3\
             -fopenmp -fPIC -shared \
             -fomit-frame-pointer -mpopcnt -mbmi2 \
             -fopenmp-simd -funsafe-math-optimizations -fassociative-math \
 
-CUXX := nvcc
-CUXXARCH_FLAGS := -arch=sm_80
+CUXX := /usr/local/cuda-12.9/bin/nvcc
+CUXXARCH_FLAGS := -arch=sm_120
 CUXXFLAGS := -std=c++20 $(CUXXARCH_FLAGS) -O3 --extended-lambda --expt-relaxed-constexpr \
 			 -Xcompiler -fPIC -shared \
 			 --use_fast_math \
