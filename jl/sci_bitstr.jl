@@ -170,7 +170,8 @@ end
 
 function sci_hvec_select_for_block_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    blk::Integer, psi::Vector{Float64}, chunk_size::Int, eps::Float64,
+    blk::Integer, psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
 
     max_per_block = tgt.dim
@@ -181,7 +182,8 @@ function sci_hvec_select_for_block_bitstr!(
     blk64 = Int64(blk)
     n = @ccall LIB_SCI_BITSTR.sci_hvec_select_for_block_bitstr_f64(
         tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        blk64::Int64, psi::Ptr{Float64}, chunk_size::Cint, eps::Cdouble,
+        blk64::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
         buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
         mb64::Int64
     )::Int64
@@ -275,6 +277,12 @@ function run_sci_bitstr(mole::Mole;
     max_iter::Int=20, max_size::Int=10000, eps::Float64=1e-6,
     chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true)
 
+    # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
+    # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
+    # the current variational energy and Haa is the candidate diagonal matrix
+    # element.  Thus eps thresholds an energy-aware estimated CI coefficient,
+    # not the raw residual |Hψ(candidate)|.
+
     na, nb = mole.nelec
 
     verbose && print("Building OTF ... ")
@@ -292,17 +300,21 @@ function run_sci_bitstr(mole::Mole;
     psi = Float64[1.0]
     diags = zeros(Float64, 1)
     get_diags_bitstr!(basis, ham_otf, diags)
-    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n", basis.dim, diags[1])
+    current_energy = diags[1]
+    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n", basis.dim, current_energy)
 
     for iter in 1:max_iter
         t_iter = @elapsed begin
             dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
                 basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym)
             tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
+            tgt_diags = zeros(Float64, tgt.dim)
+            get_diags_bitstr!(tgt, ham_otf, tgt_diags)
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
             for blk in 0:tgt.num_blocks-1
                 sci_hvec_select_for_block_bitstr!(tgt, basis, ham_otf, blk, psi,
+                                                   tgt_diags, current_energy,
                                                    chunk_size, eps, sel_a, sel_b, sel_v)
             end
             verbose && @printf("  [%d] expand %d→%d  raw_sel=%d  ",
@@ -339,6 +351,7 @@ function run_sci_bitstr(mole::Mole;
             destroy_sci_basis_manager_bitstr(tgt)
             destroy_sci_basis_manager_bitstr(basis)
             basis, psi, diags = new_basis, psi_new, new_diags
+            current_energy = E
         end
         verbose && @printf("  iter %d time=%.2f s\n", iter, t_iter)
     end

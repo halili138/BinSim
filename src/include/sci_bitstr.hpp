@@ -17,6 +17,8 @@ int64 sci_hvec_select_for_block_bitstr(
     const Network_OTF<Ti, Tv> *net,
     int64 block_idx,
     const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
     int chunk_size,
     double eps,
     BufferedEntry<Ti, Tv> *out_entries,
@@ -54,7 +56,12 @@ int64 sci_hvec_select_for_block_bitstr(
             for (int b = 0; b < num_b && out_count < max_entries; ++b)
             {
                 if (row[b] == Tv{}) continue;
-                if (sqnorm(row[b]) <= eps * eps) continue;
+                const Tv haa = candidate_diags[full_block.offset + a_global * num_b + b];
+                const Tv denom = variational_energy - haa;
+                const double denom_norm = std::sqrt(sqnorm(denom));
+                if (denom_norm == 0.0) continue;
+                const Tv selection_amplitude = row[b] / denom;
+                if (sqnorm(selection_amplitude) <= eps * eps) continue;
                 out_entries[out_count++] = {full_block.astrs[a_global],
                                             full_block.bstrs[b], row[b]};
             }
