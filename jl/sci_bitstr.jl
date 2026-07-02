@@ -33,13 +33,13 @@ function get_string_sym(str::UInt32, orbsym::Vector{Int64})::Int64
     return sym
 end
 
-function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Integer=SCI_BITSTR_NUM_IRREPS)::Vector{UInt32}
+function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Integer)::Vector{UInt32}
     num_irreps = Int64(num_irreps)
     by_sym = [Vector{UInt32}() for _ in 1:num_irreps]
     for a in arr
-        sym = get_string_sym(a, orbsym) + 1
-        if sym <= num_irreps
-            push!(by_sym[sym], a)
+        sym = get_string_sym(a, orbsym)
+        if 0 <= sym < num_irreps
+            push!(by_sym[sym + 1], a)
         end
     end
     result = UInt32[]
