@@ -1,5 +1,6 @@
 #pragma once
 #include "sci_hvec.hpp"
+#include <algorithm>
 #include <cmath>
 
 template <typename Tv>
@@ -10,6 +11,13 @@ FORCE_INLINE auto sqnorm(const Tv &v)
     else
         return v.real() * v.real() + v.imag() * v.imag();
 }
+
+struct SciSelectStats
+{
+    double max_abs = 0.0;
+    int64 count_gt_eps = 0;
+    int64 count_gt_1e12 = 0;
+};
 
 template <typename Ti>
 inline void build_block_new_set(
@@ -38,7 +46,8 @@ int64 sci_hvec_select_for_block(
     int chunk_size,
     double eps,
     BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
+    int64 max_entries,
+    SciSelectStats *stats = nullptr)
 {
     const BlockDesc<Ti> &full_block = tgt_basis->blocks[block_idx];
     const int64 num_a_total = full_block.num_a;
@@ -86,7 +95,17 @@ int64 sci_hvec_select_for_block(
                         continue;
                     if (!a_new && !tgt_basis->is_new_b[gb_base + b])
                         continue;
-                    if (sqnorm(row[b]) <= eps * eps)
+
+                    const double abs_val = std::sqrt((double)sqnorm(row[b]));
+                    if (stats != nullptr)
+                    {
+                        stats->max_abs = std::max(stats->max_abs, abs_val);
+                        if (abs_val > eps)
+                            stats->count_gt_eps++;
+                        if (abs_val > 1e-12)
+                            stats->count_gt_1e12++;
+                    }
+                    if (abs_val <= eps)
                         continue;
 
                     out_entries[out_count++] = {full_block.astrs[a_global],
@@ -99,11 +118,21 @@ int64 sci_hvec_select_for_block(
                 {
                     if (row[b] == Tv{})
                         continue;
-                    if (sqnorm(row[b]) <= eps * eps)
-                        continue;
 
                     uint64_t key = (uint64_t(a_global) << 32) | uint64_t(b);
                     if (block_new_set.find(key) == block_new_set.end())
+                        continue;
+
+                    const double abs_val = std::sqrt((double)sqnorm(row[b]));
+                    if (stats != nullptr)
+                    {
+                        stats->max_abs = std::max(stats->max_abs, abs_val);
+                        if (abs_val > eps)
+                            stats->count_gt_eps++;
+                        if (abs_val > 1e-12)
+                            stats->count_gt_1e12++;
+                    }
+                    if (abs_val <= eps)
                         continue;
 
                     out_entries[out_count++] = {full_block.astrs[a_global],

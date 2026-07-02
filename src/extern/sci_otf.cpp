@@ -119,16 +119,24 @@ extern "C"
         uint32 *out_a,
         uint32 *out_b,
         double *out_v,
-        int64 max_entries)
+        int64 max_entries,
+        double *out_max_abs,
+        int64 *out_count_gt_eps,
+        int64 *out_count_gt_1e12)
     {
         auto *tgt = static_cast<SciBasisManager<uint32> *>(tgt_basis_ptr);
         auto *src = static_cast<SciBasisManager<uint32> *>(src_basis_ptr);
         auto *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
 
         auto *entries = new BufferedEntry<uint32, double>[max_entries];
+        SciSelectStats stats;
         int64 count = sci_hvec_select_for_block<uint32, double>(
             tgt, src, net, block_idx, src_vec,
-            chunk_size, eps, entries, max_entries);
+            chunk_size, eps, entries, max_entries, &stats);
+
+        *out_max_abs = stats.max_abs;
+        *out_count_gt_eps = stats.count_gt_eps;
+        *out_count_gt_1e12 = stats.count_gt_1e12;
 
         for (int64 i = 0; i < count; ++i)
         {
@@ -151,16 +159,24 @@ extern "C"
         uint32 *out_a,
         uint32 *out_b,
         complexf64 *out_v,
-        int64 max_entries)
+        int64 max_entries,
+        double *out_max_abs,
+        int64 *out_count_gt_eps,
+        int64 *out_count_gt_1e12)
     {
         auto *tgt = static_cast<SciBasisManager<uint32> *>(tgt_basis_ptr);
         auto *src = static_cast<SciBasisManager<uint32> *>(src_basis_ptr);
         auto *net = static_cast<Network_OTF<uint32, complexf64> *>(net_ptr);
 
         auto *entries = new BufferedEntry<uint32, complexf64>[max_entries];
+        SciSelectStats stats;
         int64 count = sci_hvec_select_for_block<uint32, complexf64>(
             tgt, src, net, block_idx, src_vec,
-            chunk_size, eps, entries, max_entries);
+            chunk_size, eps, entries, max_entries, &stats);
+
+        *out_max_abs = stats.max_abs;
+        *out_count_gt_eps = stats.count_gt_eps;
+        *out_count_gt_1e12 = stats.count_gt_1e12;
 
         for (int64 i = 0; i < count; ++i)
         {
@@ -356,6 +372,24 @@ extern "C"
     int64 sci_basis_num_blocks(void *ptr)
     {
         return static_cast<SciBasisManager<uint32> *>(ptr)->num_blocks;
+    }
+
+    int64 sci_basis_num_alpha_strings(void *ptr)
+    {
+        auto *basis = static_cast<SciBasisManager<uint32> *>(ptr);
+        int64 total = 0;
+        for (int64 i = 0; i < basis->num_irreps; ++i)
+            total += basis->num_astrs[i];
+        return total;
+    }
+
+    int64 sci_basis_num_beta_strings(void *ptr)
+    {
+        auto *basis = static_cast<SciBasisManager<uint32> *>(ptr);
+        int64 total = 0;
+        for (int64 i = 0; i < basis->num_irreps; ++i)
+            total += basis->num_bstrs[i];
+        return total;
     }
 
     void get_diags_elements_sci_f64(void *basis_ptr, void *net_ptr, double *diags)
