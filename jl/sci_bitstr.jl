@@ -194,6 +194,37 @@ function sci_hvec_select_for_block_bitstr!(
     return n
 end
 
+function sci_hvec_select_external_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    blk::Integer, psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+
+    max_per_block = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_per_block)
+    buf_b = Vector{UInt32}(undef, max_per_block)
+    buf_v = Vector{Float64}(undef, max_per_block)
+    mb64 = Int64(max_per_block)
+    blk64 = Int64(blk)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        blk64::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        mb64::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
+function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
+    return Set(zip(sel_a, sel_b))
+end
+
 function filter_new_selected(
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64},
     dst_a_idx_map::Dict{UInt32,Int}, dst_b_idx_map::Dict{UInt32,Int},
@@ -295,7 +326,8 @@ end
 function run_sci_bitstr(mole::Mole;
     max_iter::Int=20, max_size::Int=10000, eps::Float64=1e-6,
     chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true,
-    debug_compare_fci::Bool=false, total_sym::Int64=0)
+    debug_compare_fci::Bool=false, total_sym::Int64=0,
+    use_external_select::Bool=true, debug_external_select::Bool=false)
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -364,16 +396,48 @@ function run_sci_bitstr(mole::Mole;
             end
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
-            for blk in 0:tgt.num_blocks-1
-                sci_hvec_select_for_block_bitstr!(tgt, basis, ham_otf, blk, psi,
-                                                   tgt_diags, current_energy,
-                                                   chunk_size, eps, sel_a, sel_b, sel_v)
+            raw_sel = 0
+            if use_external_select
+                for blk in 0:tgt.num_blocks-1
+                    sci_hvec_select_external_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                                                      blk, psi, tgt_diags, current_energy,
+                                                      chunk_size, eps, sel_a, sel_b, sel_v)
+                end
+                raw_sel = length(sel_v)
+            else
+                for blk in 0:tgt.num_blocks-1
+                    sci_hvec_select_for_block_bitstr!(tgt, basis, ham_otf, blk, psi,
+                                                       tgt_diags, current_energy,
+                                                       chunk_size, eps, sel_a, sel_b, sel_v)
+                end
+                raw_sel = length(sel_v)
+                sel_a, sel_b, sel_v = filter_new_selected(
+                    sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
             end
-            verbose && @printf("  [%d] expand %d→%d  raw_sel=%d  ",
-                               iter, basis.dim, tgt.dim, length(sel_v))
 
-            sel_a, sel_b, sel_v = filter_new_selected(
-                sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
+            if debug_external_select
+                full_a = UInt32[]; full_b = UInt32[]; full_v = Float64[]
+                for blk in 0:tgt.num_blocks-1
+                    sci_hvec_select_for_block_bitstr!(tgt, basis, ham_otf, blk, psi,
+                                                       tgt_diags, current_energy,
+                                                       chunk_size, eps, full_a, full_b, full_v)
+                end
+                full_a, full_b, full_v = filter_new_selected(
+                    full_a, full_b, full_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
+                full_set = selected_pair_set(full_a, full_b)
+                external_set = selected_pair_set(sel_a, sel_b)
+                if full_set != external_set
+                    missing = setdiff(full_set, external_set)
+                    extra = setdiff(external_set, full_set)
+                    error("external-only selection mismatch at iter $iter: missing=$(length(missing)) extra=$(length(extra))")
+                end
+                verbose && @printf("  [%d debug] external select matches full-target fallback (%d determinants)\n",
+                                   iter, length(external_set))
+            end
+
+            verbose && @printf("  [%d] expand %d→%d  raw_sel=%d  ",
+                               iter, basis.dim, tgt.dim, raw_sel)
+
             nsel = length(sel_v)
             verbose && @printf("new_sel=%d  ", nsel)
 
