@@ -224,6 +224,24 @@ function merge_bitstrings(
     return a_union, b_union
 end
 
+function fixed_electron_bitstrings(norb::Integer, nelec::Integer)::Vector{UInt32}
+    norb64 = Int64(norb)
+    nelec64 = Int64(nelec)
+    nelec64 < 0 && error("nelec must be non-negative")
+    nelec64 > norb64 && error("nelec must be <= norb")
+
+    strings = UInt32[]
+    for str in UInt32(0):(UInt32(1) << norb64) - UInt32(1)
+        count_ones(str) == nelec64 && push!(strings, str)
+    end
+    return strings
+end
+
+function count_missing_bitstrings(reference::Vector{UInt32}, candidates::Vector{UInt32})::Int
+    candidate_set = Set(candidates)
+    return count(str -> !(str in candidate_set), reference)
+end
+
 function remap_wavefunction_bitstr!(
     old::SciBasisManagerBitstr, old_psi::Vector{Float64},
     new::SciBasisManagerBitstr, new_psi::Vector{Float64},
@@ -275,7 +293,8 @@ end
 
 function run_sci_bitstr(mole::Mole;
     max_iter::Int=20, max_size::Int=10000, eps::Float64=1e-6,
-    chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true)
+    chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true,
+    debug_compare_fci::Bool=false, total_sym::Int64=0)
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -284,6 +303,24 @@ function run_sci_bitstr(mole::Mole;
     # not the raw residual |Hψ(candidate)|.
 
     na, nb = mole.nelec
+
+    fci_basis = BasisManager()
+    fci_astrs = UInt32[]
+    fci_bstrs = UInt32[]
+    fci_dim = Int64(-1)
+    if debug_compare_fci
+        fci_basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+        # create_sci_basis_from_standard_bitstr currently preserves the native
+        # bitstring layout on the C++ side but does not expose the alpha/beta
+        # string arrays back to Julia.  Generate the fixed-electron string sets
+        # directly here and use the standard BasisManager dimension as the FCI
+        # determinant-pair reference for the requested total symmetry.
+        fci_astrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, na), mole.orbsym)
+        fci_bstrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, nb), mole.orbsym)
+        fci_dim = fci_basis.dim
+        verbose && @printf("[SCI bitstr FCI debug] full strings: nα=%d nβ=%d dim=%d total_sym=%d\n",
+                           length(fci_astrs), length(fci_bstrs), fci_dim, total_sym)
+    end
 
     verbose && print("Building OTF ... ")
     t0 = @elapsed begin
@@ -296,7 +333,7 @@ function run_sci_bitstr(mole::Mole;
 
     hf_astr = UInt32((1 << na) - 1)
     hf_bstr = UInt32((1 << nb) - 1)
-    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, 0, mole.orbsym, na, nb)
+    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, total_sym, mole.orbsym, na, nb)
     psi = Float64[1.0]
     diags = zeros(Float64, 1)
     get_diags_bitstr!(basis, ham_otf, diags)
@@ -307,9 +344,22 @@ function run_sci_bitstr(mole::Mole;
         t_iter = @elapsed begin
             dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
                 basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym)
-            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
+            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true)
             tgt_diags = zeros(Float64, tgt.dim)
             get_diags_bitstr!(tgt, ham_otf, tgt_diags)
+
+            if debug_compare_fci && verbose
+                cur_missing_a = count_missing_bitstrings(fci_astrs, basis.astrs)
+                cur_missing_b = count_missing_bitstrings(fci_bstrs, basis.bstrs)
+                dst_missing_a = count_missing_bitstrings(fci_astrs, dst_a)
+                dst_missing_b = count_missing_bitstrings(fci_bstrs, dst_b)
+                @printf("  [%d FCI debug] current strings missing: α=%d/%d β=%d/%d dim=%d/%d\n",
+                        iter, cur_missing_a, length(fci_astrs), cur_missing_b, length(fci_bstrs),
+                        basis.dim, fci_dim)
+                @printf("  [%d FCI debug] expanded strings missing: α=%d/%d β=%d/%d dim=%d/%d\n",
+                        iter, dst_missing_a, length(fci_astrs), dst_missing_b, length(fci_bstrs),
+                        tgt.dim, fci_dim)
+            end
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
             for blk in 0:tgt.num_blocks-1
@@ -325,6 +375,18 @@ function run_sci_bitstr(mole::Mole;
             nsel = length(sel_v)
             verbose && @printf("new_sel=%d  ", nsel)
 
+            if debug_compare_fci && verbose
+                selected_pairs = Set(zip(sel_a, sel_b))
+                @printf("\n  [%d FCI debug] selected new determinant pairs=%d; expanded determinant space %s FCI\n",
+                        iter, length(selected_pairs), tgt.dim == fci_dim ? "matches" : "does not match")
+                if tgt.dim == fci_dim && nsel == 0
+                    @printf("  [%d FCI debug] FCI determinant pairs are present in the expanded basis; growth stopped at selection, not at the string-expansion level.\n",
+                            iter)
+                elseif tgt.dim < fci_dim && dst_a == basis.astrs && dst_b == basis.bstrs
+                    @printf("  [%d FCI debug] expanded strings stopped growing before reaching FCI.\n", iter)
+                end
+            end
+
             if nsel == 0
                 verbose && println("No new states, done.")
                 destroy_sci_basis_manager_bitstr(tgt)
@@ -333,7 +395,7 @@ function run_sci_bitstr(mole::Mole;
 
             new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs,
                                              sel_a, sel_b, mole.orbsym)
-            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
+            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true)
             verbose && @printf("merged=%d  ", new_basis.dim)
 
             new_psi = zeros(Float64, new_basis.dim)
@@ -354,6 +416,10 @@ function run_sci_bitstr(mole::Mole;
             current_energy = E
         end
         verbose && @printf("  iter %d time=%.2f s\n", iter, t_iter)
+    end
+    if debug_compare_fci && fci_basis.ptr != C_NULL
+        @ccall LIB_BASIS.destroy_basis_manager(fci_basis.ptr::Ptr{Cvoid})::Cvoid
+        fci_basis.ptr = C_NULL
     end
     return basis, psi, diags
 end
