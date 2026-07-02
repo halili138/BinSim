@@ -1,5 +1,5 @@
 #pragma once
-#include "sci_basis.hpp"
+#include "sci_common.hpp"
 #include "otf.hpp"
 #include "utils.hpp"
 
