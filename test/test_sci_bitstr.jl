@@ -25,7 +25,7 @@ include("../jl/sci_bitstr.jl")
     hf_bstr = UInt32((1 << nb) - 1)
     dst_a, dst_b, _, _ = expand_bitstrings_bitstr(
         [hf_astr], [hf_bstr], all_axs, all_bxs, na, nb, mole.orbsym)
-    expanded_basis = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym; sorted=true)
+    expanded_basis = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
 
     @test all(count_ones(a) == na for a in dst_a)
     @test all(count_ones(b) == nb for b in dst_b)

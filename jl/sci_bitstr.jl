@@ -5,6 +5,8 @@ mutable struct SciBasisManagerBitstr
     dim::Int64
     norb::Int64
     num_blocks::Int64
+    na::Int64
+    nb::Int64
     astrs::Vector{UInt32}
     bstrs::Vector{UInt32}
     a_idx_map::Dict{UInt32,Int}
@@ -12,7 +14,7 @@ mutable struct SciBasisManagerBitstr
 end
 
 function SciBasisManagerBitstr()
-    return SciBasisManagerBitstr(C_NULL, 0, 0, 0, UInt32[], UInt32[],
+    return SciBasisManagerBitstr(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[],
                                   Dict{UInt32,Int}(), Dict{UInt32,Int}())
 end
 
@@ -58,26 +60,33 @@ end
 
 function SciBasisManagerBitstr(
     astrs::Vector{UInt32}, bstrs::Vector{UInt32},
-    norb::Int64, total_sym::Int64, orbsym::Vector{Int64};
-    sorted::Bool=false)
+    norb::Int64, total_sym::Int64, orbsym::Vector{Int64},
+    na::Integer, nb::Integer; sorted::Bool=false)
+
+    na64_expected = Int64(na)
+    nb64_expected = Int64(nb)
+    astrs = UInt32[a for a in astrs if count_ones(a) == na64_expected]
+    bstrs = UInt32[b for b in bstrs if count_ones(b) == nb64_expected]
+    @assert all(count_ones.(astrs) .== na64_expected)
+    @assert all(count_ones.(bstrs) .== nb64_expected)
 
     if !sorted
         astrs = sort_by_sym(astrs, orbsym)
         bstrs = sort_by_sym(bstrs, orbsym)
     end
 
-    na = length(astrs)
-    nb = length(bstrs)
-    a_idx_map = Dict{UInt32,Int}(astrs[i] => i-1 for i in 1:na)
-    b_idx_map = Dict{UInt32,Int}(bstrs[i] => i-1 for i in 1:nb)
+    num_a = length(astrs)
+    num_b = length(bstrs)
+    a_idx_map = Dict{UInt32,Int}(astrs[i] => i-1 for i in 1:num_a)
+    b_idx_map = Dict{UInt32,Int}(bstrs[i] => i-1 for i in 1:num_b)
 
-    na64 = Int64(na)
-    nb64 = Int64(nb)
+    num_a64 = Int64(num_a)
+    num_b64 = Int64(num_b)
     num_irreps = length(unique(orbsym))
     nirp64 = Int64(num_irreps)
     ptr = @ccall LIB_SCI_BITSTR.create_sci_basis_manager_bitstr_f64(
-        astrs::Ptr{UInt32}, na64::Int64,
-        bstrs::Ptr{UInt32}, nb64::Int64,
+        astrs::Ptr{UInt32}, num_a64::Int64,
+        bstrs::Ptr{UInt32}, num_b64::Int64,
         norb::Int64, orbsym::Ptr{Int64},
         total_sym::Int64, nirp64::Int64
     )::Ptr{Cvoid}
@@ -85,7 +94,7 @@ function SciBasisManagerBitstr(
     dim = @ccall LIB_SCI_BITSTR.sci_basis_dim_bitstr(ptr::Ptr{Cvoid})::Int64
     nbk = @ccall LIB_SCI_BITSTR.sci_basis_num_blocks_bitstr(ptr::Ptr{Cvoid})::Int64
 
-    obj = SciBasisManagerBitstr(ptr, dim, norb, nbk, astrs, bstrs, a_idx_map, b_idx_map)
+    obj = SciBasisManagerBitstr(ptr, dim, norb, nbk, na64_expected, nb64_expected, astrs, bstrs, a_idx_map, b_idx_map)
     finalizer(obj) do o
         if o.ptr != C_NULL
             @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(o.ptr::Ptr{Cvoid})::Cvoid
@@ -251,7 +260,7 @@ function create_sci_basis_from_standard_bitstr(basis::BasisManager)
         basis.ptr::Ptr{Cvoid})::Ptr{Cvoid}
     dim = @ccall LIB_SCI_BITSTR.sci_basis_dim_bitstr(ptr::Ptr{Cvoid})::Int64
     nb  = @ccall LIB_SCI_BITSTR.sci_basis_num_blocks_bitstr(ptr::Ptr{Cvoid})::Int64
-    obj = SciBasisManagerBitstr(ptr, dim, basis.norb, nb, UInt32[], UInt32[],
+    obj = SciBasisManagerBitstr(ptr, dim, basis.norb, nb, -1, -1, UInt32[], UInt32[],
                                  Dict{UInt32,Int}(), Dict{UInt32,Int}())
     finalizer(obj) do o
         if o.ptr != C_NULL
@@ -279,7 +288,7 @@ function run_sci_bitstr(mole::Mole;
 
     hf_astr = UInt32((1 << na) - 1)
     hf_bstr = UInt32((1 << nb) - 1)
-    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, 0, mole.orbsym)
+    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, 0, mole.orbsym, na, nb)
     psi = Float64[1.0]
     diags = zeros(Float64, 1)
     get_diags_bitstr!(basis, ham_otf, diags)
@@ -289,7 +298,7 @@ function run_sci_bitstr(mole::Mole;
         t_iter = @elapsed begin
             dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
                 basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym)
-            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym; sorted=true)
+            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
             for blk in 0:tgt.num_blocks-1
@@ -312,7 +321,7 @@ function run_sci_bitstr(mole::Mole;
 
             new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs,
                                              sel_a, sel_b, mole.orbsym)
-            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, 0, mole.orbsym; sorted=true)
+            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, 0, mole.orbsym, na, nb; sorted=true)
             verbose && @printf("merged=%d  ", new_basis.dim)
 
             new_psi = zeros(Float64, new_basis.dim)
