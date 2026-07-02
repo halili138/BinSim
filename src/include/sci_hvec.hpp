@@ -543,6 +543,22 @@ static inline void dispatch_chunks_for_block(
 }
 
 template <typename Ti, typename Tv>
+static inline void contract_hvec_sci_for_desc(
+    const BlockDesc<Ti> &tgt_block,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const Tv *src_vec, Tv *dst_acc)
+{
+    const int64 block_size = tgt_block.num_a * tgt_block.num_b;
+    std::fill_n(dst_acc, block_size, Tv{});
+
+    dispatch_chunks_for_block<0>(tgt_block, src_basis, net->diag_groups, src_vec, dst_acc);
+    dispatch_chunks_for_block<1>(tgt_block, src_basis, net->pure_a_groups, src_vec, dst_acc);
+    dispatch_chunks_for_block<2>(tgt_block, src_basis, net->pure_b_groups, src_vec, dst_acc);
+    dispatch_chunks_for_block<3>(tgt_block, src_basis, net->mixed_groups, src_vec, dst_acc);
+}
+
+template <typename Ti, typename Tv>
 void contract_hvec_sci_for_block(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
@@ -552,13 +568,7 @@ void contract_hvec_sci_for_block(
 {
     const BlockDesc<Ti> &tgt_block = tgt_basis->blocks[tgt_block_idx];
 
-    int64 block_size = tgt_block.num_a * tgt_block.num_b;
-    std::fill_n(dst_acc, block_size, Tv{});
-
-    dispatch_chunks_for_block<0>(tgt_block, src_basis, net->diag_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<1>(tgt_block, src_basis, net->pure_a_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<2>(tgt_block, src_basis, net->pure_b_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<3>(tgt_block, src_basis, net->mixed_groups, src_vec, dst_acc);
+    contract_hvec_sci_for_desc(tgt_block, src_basis, net, src_vec, dst_acc);
 }
 
 template <typename Ti, typename Tv, typename AccumFunc>
