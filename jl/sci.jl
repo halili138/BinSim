@@ -16,6 +16,18 @@ function SciBasisManager()
     return SciBasisManager(C_NULL, 0, 0, 0)
 end
 
+function sci_basis_num_alpha_strings(basis::SciBasisManager)
+    return @ccall LIB_SCI.sci_basis_num_alpha_strings(basis.ptr::Ptr{Cvoid})::Int64
+end
+
+function sci_basis_num_beta_strings(basis::SciBasisManager)
+    return @ccall LIB_SCI.sci_basis_num_beta_strings(basis.ptr::Ptr{Cvoid})::Int64
+end
+
+function sci_basis_full_product_dim(basis::SciBasisManager)
+    return sci_basis_num_alpha_strings(basis) * sci_basis_num_beta_strings(basis)
+end
+
 function SciBasisManager(
     astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     norb::Int64, total_sym::Int64, orbsym::Vector{Int64};
@@ -164,27 +176,34 @@ function sci_hvec_select_for_block!(
     buf_a = Vector{UInt32}(undef, max_per_block)
     buf_b = Vector{UInt32}(undef, max_per_block)
     buf_v = Vector{Tv}(undef, max_per_block)
+    max_abs_ref = Ref{Cdouble}(0.0)
+    count_gt_eps_ref = Ref{Int64}(0)
+    count_gt_1e12_ref = Ref{Int64}(0)
 
     n = if Tv <: Complex
         @ccall LIB_SCI.sci_hvec_select_for_block_c64(
             tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
             blk::Int64, psi::Ptr{Tv}, chunk_size::Cint, eps::Cdouble,
             buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Tv},
-            max_per_block::Int64
+            max_per_block::Int64,
+            max_abs_ref::Ref{Cdouble}, count_gt_eps_ref::Ref{Int64},
+            count_gt_1e12_ref::Ref{Int64}
         )::Int64
     else
         @ccall LIB_SCI.sci_hvec_select_for_block_f64(
             tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
             blk::Int64, psi::Ptr{Tv}, chunk_size::Cint, eps::Cdouble,
             buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Tv},
-            max_per_block::Int64
+            max_per_block::Int64,
+            max_abs_ref::Ref{Cdouble}, count_gt_eps_ref::Ref{Int64},
+            count_gt_1e12_ref::Ref{Int64}
         )::Int64
     end
 
     append!(sel_a, view(buf_a, 1:n))
     append!(sel_b, view(buf_b, 1:n))
     append!(sel_v, view(buf_v, 1:n))
-    return n
+    return n, max_abs_ref[], count_gt_eps_ref[], count_gt_1e12_ref[]
 end
 
 function create_source_basis_from_merge(
@@ -340,22 +359,41 @@ function run_sci(mole::Mole;
             verbose && @printf("  [%d] expand %d→%d  ", iter, basis.dim, tgt.dim)
 
             sel_a = UInt32[];  sel_b = UInt32[];  sel_v = Float64[]
+            external_max_abs = 0.0
+            external_count_gt_eps = 0
+            external_count_gt_1e12 = 0
             for blk in 0:tgt.num_blocks-1
-                sci_hvec_select_for_block!(tgt, basis, ham_otf, blk, psi,
-                                           chunk_size, eps, sel_a, sel_b, sel_v)
+                blk_nsel, blk_max_abs, blk_count_gt_eps, blk_count_gt_1e12 =
+                    sci_hvec_select_for_block!(tgt, basis, ham_otf, blk, psi,
+                                               chunk_size, eps, sel_a, sel_b, sel_v)
+                external_max_abs = max(external_max_abs, blk_max_abs)
+                external_count_gt_eps += blk_count_gt_eps
+                external_count_gt_1e12 += blk_count_gt_1e12
+                verbose && @printf("block=%d max|Hψ|=%.3e count>|eps|=%d count>|1e-12|=%d sel=%d  ",
+                                   blk, blk_max_abs, blk_count_gt_eps,
+                                   blk_count_gt_1e12, blk_nsel)
             end
             nsel = length(sel_v)
-            verbose && @printf("sel=%d  ", nsel)
+            verbose && @printf("sel=%d external_max|Hψ|=%.3e external_count>|eps|=%d external_count>|1e-12|=%d  ",
+                               nsel, external_max_abs, external_count_gt_eps, external_count_gt_1e12)
+            if verbose && iter == 4
+                @printf("plateau_probe_iter4_external_max|Hψ|=%.6e candidates>|1e-12|=%d  ",
+                        external_max_abs, external_count_gt_1e12)
+            end
 
             if nsel == 0
-                verbose && println("\nNo new states selected, done.")
+                verbose && @printf("\nNo new states selected; external max residual=%.6e candidate determinants=%d (>|1e-12|), count>|eps|=%d.\n",
+                                   external_max_abs, external_count_gt_1e12, external_count_gt_eps)
                 break
             end
 
             new_basis = create_source_basis_from_merge(
                 basis, sel_a, sel_b, sel_v, mole.norb, mole.orbsym, 0;
                 mode=mode, strat=strat)
-            verbose && @printf("merged=%d  ", new_basis.dim)
+            verbose && @printf("merged=%d unique_alpha=%d unique_beta=%d active_det=%d full_product_det=%d  ",
+                               new_basis.dim, sci_basis_num_alpha_strings(new_basis),
+                               sci_basis_num_beta_strings(new_basis), new_basis.dim,
+                               sci_basis_full_product_dim(new_basis))
 
             new_psi = zeros(Float64, new_basis.dim)
             remap_wavefunction!(basis, psi, new_basis, new_psi,
