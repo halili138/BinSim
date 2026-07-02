@@ -12,5 +12,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.basis = ARGS[3]
     build(mole)
 
+    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    ham   = JW_hamiltonian(mole, spin="aabb")
+    mole.e_scale, _ = run_fci(basis, ham, get_hf(basis, mole.nelec))
+
     run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-6, verbose=true)
 end
