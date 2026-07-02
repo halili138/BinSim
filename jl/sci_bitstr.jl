@@ -1,4 +1,6 @@
 const LIB_SCI_BITSTR = joinpath(libpath, "libsci_otf_bitstr.so")
+# Keep the bitstring SCI symmetry layout aligned with BasisManager in jl/network.jl.
+const SCI_BITSTR_NUM_IRREPS = Int64(16)
 
 mutable struct SciBasisManagerBitstr
     ptr::Ptr{Cvoid}
@@ -31,8 +33,8 @@ function get_string_sym(str::UInt32, orbsym::Vector{Int64})::Int64
     return sym
 end
 
-function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64})::Vector{UInt32}
-    num_irreps = length(unique(orbsym))
+function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Integer=SCI_BITSTR_NUM_IRREPS)::Vector{UInt32}
+    num_irreps = Int64(num_irreps)
     by_sym = [Vector{UInt32}() for _ in 1:num_irreps]
     for a in arr
         sym = get_string_sym(a, orbsym) + 1
@@ -61,7 +63,7 @@ end
 function SciBasisManagerBitstr(
     astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     norb::Int64, total_sym::Int64, orbsym::Vector{Int64},
-    na::Integer, nb::Integer; sorted::Bool=false)
+    na::Integer, nb::Integer; sorted::Bool=false, num_irreps::Integer=SCI_BITSTR_NUM_IRREPS)
 
     na64_expected = Int64(na)
     nb64_expected = Int64(nb)
@@ -71,8 +73,8 @@ function SciBasisManagerBitstr(
     @assert all(count_ones.(bstrs) .== nb64_expected)
 
     if !sorted
-        astrs = sort_by_sym(astrs, orbsym)
-        bstrs = sort_by_sym(bstrs, orbsym)
+        astrs = sort_by_sym(astrs, orbsym, num_irreps)
+        bstrs = sort_by_sym(bstrs, orbsym, num_irreps)
     end
 
     num_a = length(astrs)
@@ -82,7 +84,6 @@ function SciBasisManagerBitstr(
 
     num_a64 = Int64(num_a)
     num_b64 = Int64(num_b)
-    num_irreps = length(unique(orbsym))
     nirp64 = Int64(num_irreps)
     ptr = @ccall LIB_SCI_BITSTR.create_sci_basis_manager_bitstr_f64(
         astrs::Ptr{UInt32}, num_a64::Int64,
@@ -139,7 +140,7 @@ end
 function expand_bitstrings_bitstr(
     src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
     axs::Vector{UInt32}, bxs::Vector{UInt32},
-    na::Int, nb::Int, orbsym::Vector{Int64})
+    na::Int, nb::Int, orbsym::Vector{Int64}, num_irreps::Integer=SCI_BITSTR_NUM_IRREPS)
 
     a_map = Dict{UInt32,Int}(a => 0 for a in src_astrs)
     b_map = Dict{UInt32,Int}(b => 0 for b in src_bstrs)
@@ -159,8 +160,8 @@ function expand_bitstrings_bitstr(
         end
     end
 
-    dst_astrs = sort_by_sym(collect(keys(a_map)), orbsym)
-    dst_bstrs = sort_by_sym(collect(keys(b_map)), orbsym)
+    dst_astrs = sort_by_sym(collect(keys(a_map)), orbsym, num_irreps)
+    dst_bstrs = sort_by_sym(collect(keys(b_map)), orbsym, num_irreps)
 
     is_new_a = Bool[a_map[a] == 1 for a in dst_astrs]
     is_new_b = Bool[b_map[b] == 1 for b in dst_bstrs]
@@ -217,10 +218,10 @@ end
 function merge_bitstrings(
     src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32},
-    orbsym::Vector{Int64})
+    orbsym::Vector{Int64}, num_irreps::Integer=SCI_BITSTR_NUM_IRREPS)
 
-    a_union = sort_by_sym(collect(union(Set(src_astrs), Set(sel_a))), orbsym)
-    b_union = sort_by_sym(collect(union(Set(src_bstrs), Set(sel_b))), orbsym)
+    a_union = sort_by_sym(collect(union(Set(src_astrs), Set(sel_a))), orbsym, num_irreps)
+    b_union = sort_by_sym(collect(union(Set(src_bstrs), Set(sel_b))), orbsym, num_irreps)
     return a_union, b_union
 end
 
@@ -303,6 +304,7 @@ function run_sci_bitstr(mole::Mole;
     # not the raw residual |Hψ(candidate)|.
 
     na, nb = mole.nelec
+    num_irreps = SCI_BITSTR_NUM_IRREPS
 
     fci_basis = BasisManager()
     fci_astrs = UInt32[]
@@ -315,8 +317,8 @@ function run_sci_bitstr(mole::Mole;
         # string arrays back to Julia.  Generate the fixed-electron string sets
         # directly here and use the standard BasisManager dimension as the FCI
         # determinant-pair reference for the requested total symmetry.
-        fci_astrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, na), mole.orbsym)
-        fci_bstrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, nb), mole.orbsym)
+        fci_astrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, na), mole.orbsym, num_irreps)
+        fci_bstrs = sort_by_sym(fixed_electron_bitstrings(mole.norb, nb), mole.orbsym, num_irreps)
         fci_dim = fci_basis.dim
         verbose && @printf("[SCI bitstr FCI debug] full strings: nα=%d nβ=%d dim=%d total_sym=%d\n",
                            length(fci_astrs), length(fci_bstrs), fci_dim, total_sym)
@@ -333,7 +335,7 @@ function run_sci_bitstr(mole::Mole;
 
     hf_astr = UInt32((1 << na) - 1)
     hf_bstr = UInt32((1 << nb) - 1)
-    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, total_sym, mole.orbsym, na, nb)
+    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, total_sym, mole.orbsym, na, nb; num_irreps=num_irreps)
     psi = Float64[1.0]
     diags = zeros(Float64, 1)
     get_diags_bitstr!(basis, ham_otf, diags)
@@ -343,8 +345,8 @@ function run_sci_bitstr(mole::Mole;
     for iter in 1:max_iter
         t_iter = @elapsed begin
             dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
-                basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym)
-            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true)
+                basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym, num_irreps)
+            tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
             tgt_diags = zeros(Float64, tgt.dim)
             get_diags_bitstr!(tgt, ham_otf, tgt_diags)
 
@@ -394,8 +396,8 @@ function run_sci_bitstr(mole::Mole;
             end
 
             new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs,
-                                             sel_a, sel_b, mole.orbsym)
-            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true)
+                                             sel_a, sel_b, mole.orbsym, num_irreps)
+            new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
             verbose && @printf("merged=%d  ", new_basis.dim)
 
             new_psi = zeros(Float64, new_basis.dim)
