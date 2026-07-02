@@ -130,7 +130,7 @@ end
 function expand_bitstrings_bitstr(
     src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
     axs::Vector{UInt32}, bxs::Vector{UInt32},
-    orbsym::Vector{Int64})
+    na::Int, nb::Int, orbsym::Vector{Int64})
 
     a_map = Dict{UInt32,Int}(a => 0 for a in src_astrs)
     b_map = Dict{UInt32,Int}(b => 0 for b in src_bstrs)
@@ -138,12 +138,14 @@ function expand_bitstrings_bitstr(
     for (ax, bx) in zip(axs, bxs)
         if ax != 0
             for a in src_astrs
-                get!(a_map, a ⊻ ax, 1)
+                new_a = a ⊻ ax
+                count_ones(new_a) == na && get!(a_map, new_a, 1)
             end
         end
         if bx != 0
             for b in src_bstrs
-                get!(b_map, b ⊻ bx, 1)
+                new_b = b ⊻ bx
+                count_ones(new_b) == nb && get!(b_map, new_b, 1)
             end
         end
     end
@@ -286,7 +288,7 @@ function run_sci_bitstr(mole::Mole;
     for iter in 1:max_iter
         t_iter = @elapsed begin
             dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
-                basis.astrs, basis.bstrs, all_axs, all_bxs, mole.orbsym)
+                basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym)
             tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, 0, mole.orbsym; sorted=true)
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
