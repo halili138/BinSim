@@ -31,6 +31,23 @@ FORCE_INLINE Tv compute_group_coeff_for_pair_rank(
     return compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
 }
 
+
+template <typename Tv>
+FORCE_INLINE Tv compute_group_coeff_from_phases(
+    const Tv *pa, const Tv *pb, int rank)
+{
+    const int dispatch_rank = (rank == 1 || rank == 2) ? rank : 0;
+    switch (dispatch_rank)
+    {
+    case 1:
+        return compute_coeff<1, Tv>(0, pa, pb, 1, rank);
+    case 2:
+        return compute_coeff<2, Tv>(0, pa, pb, 1, rank);
+    default:
+        return compute_coeff<0, Tv>(0, pa, pb, 1, rank);
+    }
+}
+
 template <typename Ti, typename Tv>
 FORCE_INLINE Tv compute_group_coeff_for_pair(
     const SVDGroup_OTF<Ti, Tv> &group,

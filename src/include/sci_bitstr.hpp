@@ -556,22 +556,38 @@ int64 sci_hvec_select_external_link_block_bitstr(
 
     auto accumulate_for_buckets = [&](const std::vector<LinkBucket> &buckets, bool skip_new_alpha_targets)
     {
+        constexpr int max_rank = RANK3;
         for (const LinkBucket &bucket : buckets)
         {
             const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
             const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
             const int64 num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
             const int64 num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
+            const int64 group_count = bucket.groups.end - bucket.groups.begin;
+            std::vector<Tv> phase_a((size_t)group_count * max_rank);
+            std::vector<Tv> phase_b((size_t)group_count * max_rank);
+
             for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
             {
                 if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid) continue;
                 const SourceStringInfo &a_info = src_a_info[src_a_global];
+                const Ti src_astr = src_basis->all_astrs[src_a_global];
                 for (int64 pa = alpha_links.rowptr[src_a_global]; pa < alpha_links.rowptr[src_a_global + 1]; ++pa)
                 {
                     const int64 dst_a_global = alpha_links.colidx[pa];
                     if (dst_a_global < target_a_begin || dst_a_global >= target_a_end) continue;
                     if (skip_new_alpha_targets && is_new_a[dst_a_global]) continue;
                     const int64 a_full = dst_a_global - target_a_begin;
+                    const Ti dst_astr = tgt_basis->all_astrs[dst_a_global];
+
+                    for (int64 local_group_idx = 0; local_group_idx < group_count; ++local_group_idx)
+                    {
+                        const SVDGroup_OTF<Ti, Tv> &group = *group_ptrs[bucket.groups.begin + local_group_idx];
+                        const Ti phase_astr = (group.ax == Ti{}) ? dst_astr : src_astr;
+                        precompute_phase<0, Ti, Tv>(phase_astr, group.unique_zas, group.num_za,
+                                                    group.wa, phase_a.data() + (size_t)local_group_idx * max_rank,
+                                                    1, group.rank);
+                    }
 
                     for (int64 src_b_global = 0; src_b_global < num_src_b; ++src_b_global)
                     {
@@ -582,6 +598,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                         const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
                         const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
                         if (src_amp == Tv{}) continue;
+                        const Ti src_bstr = src_basis->all_bstrs[src_b_global];
 
                         for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
                         {
@@ -589,16 +606,19 @@ int64 sci_hvec_select_external_link_block_bitstr(
                             const int64 dst_b_global = beta_links.colidx[pb];
                             if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
                             const int64 b_full = dst_b_global - target_b_begin;
+                            const Ti dst_bstr = tgt_basis->all_bstrs[dst_b_global];
 
                             Tv hpsi = {};
-                            for (int64 group_idx = bucket.groups.begin; group_idx < bucket.groups.end; ++group_idx)
+                            for (int64 local_group_idx = 0; local_group_idx < group_count; ++local_group_idx)
                             {
-                                hpsi += src_amp * compute_group_coeff_for_pair(
-                                    *group_ptrs[group_idx],
-                                    src_basis->all_astrs[src_a_global],
-                                    src_basis->all_bstrs[src_b_global],
-                                    tgt_basis->all_astrs[dst_a_global],
-                                    tgt_basis->all_bstrs[dst_b_global]);
+                                const SVDGroup_OTF<Ti, Tv> &group = *group_ptrs[bucket.groups.begin + local_group_idx];
+                                const Ti phase_bstr = (group.bx == Ti{}) ? dst_bstr : src_bstr;
+                                Tv *pb_phase = phase_b.data() + (size_t)local_group_idx * max_rank;
+                                precompute_phase<0, Ti, Tv>(phase_bstr, group.unique_zbs, group.num_zb,
+                                                            group.wb, pb_phase, 1, group.rank);
+                                hpsi += src_amp * compute_group_coeff_from_phases(
+                                    phase_a.data() + (size_t)local_group_idx * max_rank,
+                                    pb_phase, group.rank);
                             }
                             append_accumulated_hpsi(full_block.offset + a_full * num_b_total + b_full, hpsi);
                         }
