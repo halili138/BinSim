@@ -1,5 +1,6 @@
 #pragma once
 #include "sci_common.hpp"
+#include "sci_links.hpp"
 #include "sci_hvec.hpp"
 #include <chrono>
 #include <cmath>
