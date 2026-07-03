@@ -65,7 +65,7 @@ extern "C"
         auto *b = static_cast<SciBasisManager<uint32>*>(src);
         auto *c = static_cast<Network_OTF<uint32,double>*>(net);
         auto *entries = new BufferedEntry<uint32,double>[max_entries];
-        int64 n = sci_hvec_select_external_bitstr<uint32,double>(
+        int64 n = sci_hvec_select_external_block_bitstr<uint32,double>(
             a, b, c, is_new_a, is_new_b, blk, src_vec, candidate_diags,
             variational_energy, chunk_size, eps, entries, max_entries);
         for (int64 i = 0; i < n; ++i)

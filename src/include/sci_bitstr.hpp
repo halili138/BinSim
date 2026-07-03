@@ -187,6 +187,68 @@ int64 sci_hvec_select_for_block_bitstr(
     return out_count;
 }
 
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_block_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    int64 block_idx,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    const BlockDesc<Ti> &full_block = tgt_basis->blocks[block_idx];
+    const int64 num_a_total = full_block.num_a;
+    const int64 num_b = full_block.num_b;
+    int64 out_count = 0;
+
+    for (int64 a_start = 0; a_start < num_a_total; a_start += chunk_size)
+    {
+        const int64 a_end = std::min(a_start + (int64)chunk_size, num_a_total);
+        const int64 cur_num_a = a_end - a_start;
+
+        BlockDesc<Ti> chunk_desc = full_block;
+        chunk_desc.astrs = full_block.astrs + a_start;
+        chunk_desc.num_a = cur_num_a;
+        chunk_desc.offset = 0;
+
+        std::vector<Tv> chunk_acc((size_t)cur_num_a * (size_t)num_b, Tv{});
+        contract_hvec_sci_for_desc(chunk_desc, src_basis, net, src_vec, chunk_acc.data());
+
+        for (int64 a = 0; a < cur_num_a && out_count < max_entries; ++a)
+        {
+            const int64 a_global = a_start + a;
+            const int64 a_external_idx = (full_block.astrs + a_global) - tgt_basis->all_astrs;
+            const bool new_a = is_new_a[a_external_idx];
+            const Tv *row = chunk_acc.data() + a * num_b;
+            for (int64 b = 0; b < num_b && out_count < max_entries; ++b)
+            {
+                const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
+                if (!new_a && !is_new_b[b_external_idx]) continue;
+                if (row[b] == Tv{}) continue;
+
+                const Tv haa = candidate_diags[full_block.offset + a_global * num_b + b];
+                const Tv denom = variational_energy - haa;
+                const double denom_norm = std::sqrt(sqnorm(denom));
+                if (denom_norm == 0.0) continue;
+                const Tv selection_amplitude = row[b] / denom;
+                const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
+                if (selection_norm <= eps) continue;
+
+                out_entries[out_count++] = {full_block.astrs[a_global], full_block.bstrs[b], row[b]};
+            }
+        }
+    }
+    return out_count;
+}
+
 template <typename Ti, typename Tv>
 int64 sci_hvec_select_external_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
@@ -207,6 +269,34 @@ int64 sci_hvec_select_external_bitstr(
     const int64 num_a_total = full_block.num_a;
     const int64 num_b_total = full_block.num_b;
 
+    int64 block_new_a_count = 0;
+    int64 block_new_b_count = 0;
+    for (int64 a = 0; a < num_a_total; ++a)
+    {
+        const int64 a_external_idx = (full_block.astrs + a) - tgt_basis->all_astrs;
+        if (is_new_a[a_external_idx]) ++block_new_a_count;
+    }
+    for (int64 b = 0; b < num_b_total; ++b)
+    {
+        const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
+        if (is_new_b[b_external_idx]) ++block_new_b_count;
+    }
+    const int64 full_candidate_count_heuristic = num_a_total * num_b_total;
+    const int64 external_candidate_count_heuristic =
+        block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
+    constexpr int64 max_link_entries = 50000000;
+    constexpr double dense_threshold = 0.85;
+    const double external_candidate_ratio = full_candidate_count_heuristic == 0
+        ? 0.0
+        : (double)external_candidate_count_heuristic / (double)full_candidate_count_heuristic;
+
+    if (external_candidate_ratio > dense_threshold)
+    {
+        return sci_hvec_select_external_block_bitstr(
+            tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
+            candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
+    }
+
     const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr ||
                             std::getenv("BINSIM_SCI_BITSTR_PRINT_LINK_SELECT_PERF") != nullptr;
     const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr ||
@@ -225,6 +315,12 @@ int64 sci_hvec_select_external_bitstr(
     const int64 beta_link_entries = count_spin_link_entries(full_links.beta_links_by_bx);
     const int64 alpha_new_link_entries = count_spin_link_entries(new_frontiers.alpha_links_by_ax);
     const int64 beta_new_link_entries = count_spin_link_entries(new_frontiers.beta_links_by_bx);
+    if (alpha_link_entries + beta_link_entries > max_link_entries)
+    {
+        return sci_hvec_select_external_block_bitstr(
+            tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
+            candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
+    }
 
     std::vector<Ti> new_astrs;
     std::vector<int64> new_a_idxs;
