@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -390,11 +391,17 @@ int64 sci_hvec_select_external_link_block_bitstr(
     int64 external_candidate_count = 0;
     int64 generated_target_edges = 0;
 
-    struct AccumTarget
+    struct AccumPair
     {
         int64 target_global;
-        int64 a_full;
-        int64 b_full;
+        Tv hpsi;
+    };
+
+    struct DenseAccumState
+    {
+        std::vector<Tv> values;
+        std::vector<unsigned char> touched;
+        std::vector<int64> touched_targets;
     };
 
     struct SourceStringInfo
@@ -415,36 +422,6 @@ int64 sci_hvec_select_external_link_block_bitstr(
         const SpinLinkCSR<Ti> *alpha_links = nullptr;
         const SpinLinkCSR<Ti> *beta_links = nullptr;
         GroupPtrRange groups;
-    };
-
-    struct AccumTask
-    {
-        int64 src_a_global;
-        int64 src_b_global;
-        int64 dst_a_global;
-        int64 dst_b_global;
-        int64 src_block_offset;
-        int64 src_block_num_b;
-        int64 src_a_local;
-        int64 src_b_local;
-        int64 target_slot;
-        GroupPtrRange groups;
-    };
-
-    std::vector<AccumTarget> target_order;
-    std::unordered_map<int64, int64> target_slots;
-    std::vector<Tv> target_acc;
-
-    auto target_slot_for = [&](int64 a_full, int64 b_full) -> int64
-    {
-        const int64 target_global = full_block.offset + a_full * num_b_total + b_full;
-        auto inserted = target_slots.emplace(target_global, (int64)target_order.size());
-        if (inserted.second)
-        {
-            target_order.push_back({target_global, a_full, b_full});
-            target_acc.push_back(Tv{});
-        }
-        return inserted.first->second;
     };
 
     auto group_from_original_idx = [&](int64 original_idx) -> const SVDGroup_OTF<Ti, Tv> *
@@ -534,8 +511,50 @@ int64 sci_hvec_select_external_link_block_bitstr(
     const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
     const int64 target_b_end = target_b_begin + num_b_total;
 
-    std::vector<AccumTask> tasks;
-    auto append_tasks_for_buckets = [&](const std::vector<LinkBucket> &buckets, bool skip_new_alpha_targets)
+    const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total
+                                       + (int64)old_astrs.size() * (int64)new_bstrs.size();
+    constexpr size_t max_dense_accumulator_bytes = (size_t)512 * 1024 * 1024;
+    const bool dense_accumulator_entry_count_fits = num_a_total >= 0 && num_b_total >= 0 &&
+        (num_b_total == 0 || (size_t)num_a_total <= std::numeric_limits<size_t>::max() / (size_t)num_b_total);
+    const size_t dense_accumulator_entries = dense_accumulator_entry_count_fits
+        ? (size_t)num_a_total * (size_t)num_b_total
+        : std::numeric_limits<size_t>::max();
+    const bool use_dense_accumulator = dense_accumulator_entries <= max_dense_accumulator_bytes / sizeof(Tv);
+
+    DenseAccumState dense_acc;
+    std::vector<AccumPair> sparse_acc_pairs;
+    if (use_dense_accumulator)
+    {
+        dense_acc.values.assign(dense_accumulator_entries, Tv{});
+        dense_acc.touched.assign(dense_accumulator_entries, 0);
+        dense_acc.touched_targets.reserve((size_t)reachable_target_count);
+    }
+    else
+    {
+        sparse_acc_pairs.reserve((size_t)std::min<int64>(reachable_target_count, max_link_entries));
+    }
+
+    auto append_accumulated_hpsi = [&](int64 target_global, Tv hpsi)
+    {
+        if (hpsi == Tv{}) return;
+        if (use_dense_accumulator)
+        {
+            const int64 local_target = target_global - full_block.offset;
+            Tv &acc = dense_acc.values[(size_t)local_target];
+            if (!dense_acc.touched[(size_t)local_target])
+            {
+                dense_acc.touched[(size_t)local_target] = 1;
+                dense_acc.touched_targets.push_back(target_global);
+            }
+            acc += hpsi;
+        }
+        else
+        {
+            sparse_acc_pairs.push_back({target_global, hpsi});
+        }
+    };
+
+    auto accumulate_for_buckets = [&](const std::vector<LinkBucket> &buckets, bool skip_new_alpha_targets)
     {
         for (const LinkBucket &bucket : buckets)
         {
@@ -561,6 +580,8 @@ int64 sci_hvec_select_external_link_block_bitstr(
                         const int64 src_block_idx = src_basis->block_map[a_info.sym * src_basis->num_irreps + b_info.sym];
                         if (src_block_idx == -1) continue;
                         const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
+                        const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
+                        if (src_amp == Tv{}) continue;
 
                         for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
                         {
@@ -568,10 +589,18 @@ int64 sci_hvec_select_external_link_block_bitstr(
                             const int64 dst_b_global = beta_links.colidx[pb];
                             if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
                             const int64 b_full = dst_b_global - target_b_begin;
-                            const int64 target_slot = target_slot_for(a_full, b_full);
-                            tasks.push_back({src_a_global, src_b_global, dst_a_global, dst_b_global,
-                                             src_block.offset, src_block.num_b,
-                                             a_info.local, b_info.local, target_slot, bucket.groups});
+
+                            Tv hpsi = {};
+                            for (int64 group_idx = bucket.groups.begin; group_idx < bucket.groups.end; ++group_idx)
+                            {
+                                hpsi += src_amp * compute_group_coeff_for_pair(
+                                    *group_ptrs[group_idx],
+                                    src_basis->all_astrs[src_a_global],
+                                    src_basis->all_bstrs[src_b_global],
+                                    tgt_basis->all_astrs[dst_a_global],
+                                    tgt_basis->all_bstrs[dst_b_global]);
+                            }
+                            append_accumulated_hpsi(full_block.offset + a_full * num_b_total + b_full, hpsi);
                         }
                     }
                 }
@@ -584,61 +613,60 @@ int64 sci_hvec_select_external_link_block_bitstr(
     // Contributions are accumulated by full target determinant before applying
     // the selection threshold so all source determinants and SVD groups that
     // reach the same external determinant contribute to the final Hψ value.
-    const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total
-                                       + (int64)old_astrs.size() * (int64)new_bstrs.size();
-    target_slots.reserve((size_t)reachable_target_count);
-    target_acc.reserve((size_t)reachable_target_count);
-    target_order.reserve((size_t)reachable_target_count);
-    tasks.reserve((size_t)std::min<int64>(generated_target_edges + reachable_target_count, max_link_entries));
-
-    // Alpha-new pass: traverse each (ax,bx) link-frontier bucket, keep only
-    // alpha links whose dst_a is new, use the full beta source->target link,
-    // and accumulate all contributions to A_new x B_all.  This includes
-    // A_new x B_new, so the beta-new pass below is restricted to A_old x B_new.
     const auto t_accumulate0 = std::chrono::steady_clock::now();
     external_candidate_count += (int64)new_astrs.size() * num_b_total;
-    append_tasks_for_buckets(alpha_new_buckets, false);
+    accumulate_for_buckets(alpha_new_buckets, false);
     external_candidate_count += (int64)old_astrs.size() * (int64)new_bstrs.size();
-    append_tasks_for_buckets(beta_new_buckets, true);
-
-    for (const AccumTask &task : tasks)
-    {
-        const Tv src_amp = src_vec[task.src_block_offset + task.src_a_local * task.src_block_num_b + task.src_b_local];
-        if (src_amp == Tv{}) continue;
-
-        Tv hpsi = {};
-        for (int64 group_idx = task.groups.begin; group_idx < task.groups.end; ++group_idx)
-        {
-            hpsi += src_amp * compute_group_coeff_for_pair(
-                *group_ptrs[group_idx],
-                src_basis->all_astrs[task.src_a_global],
-                src_basis->all_bstrs[task.src_b_global],
-                tgt_basis->all_astrs[task.dst_a_global],
-                tgt_basis->all_bstrs[task.dst_b_global]);
-        }
-        if (hpsi != Tv{}) target_acc[task.target_slot] += hpsi;
-    }
+    accumulate_for_buckets(beta_new_buckets, true);
     const auto t_accumulate1 = std::chrono::steady_clock::now();
 
     const auto t_threshold0 = std::chrono::steady_clock::now();
-    for (int64 target_slot = 0; target_slot < (int64)target_order.size(); ++target_slot)
+    int64 unique_accum_target_count = 0;
+    auto emit_if_selected = [&](int64 target_global, const Tv &acc)
     {
-        if (out_count >= max_entries) break;
-        const Tv acc = target_acc[target_slot];
-        if (acc == Tv{}) continue;
-        const AccumTarget &target = target_order[target_slot];
-
-        const Tv haa = candidate_diags[target.target_global];
+        if (out_count >= max_entries || acc == Tv{}) return;
+        const Tv haa = candidate_diags[target_global];
         const Tv denom = variational_energy - haa;
         const double denom_norm = std::sqrt(sqnorm(denom));
-        if (denom_norm == 0.0) continue;
+        if (denom_norm == 0.0) return;
         const Tv selection_amplitude = acc / denom;
         const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-        if (selection_norm <= eps) continue;
+        if (selection_norm <= eps) return;
 
-        out_entries[out_count++] = {full_block.astrs[target.a_full],
-                                    full_block.bstrs[target.b_full],
-                                    acc};
+        const int64 local_target = target_global - full_block.offset;
+        const int64 a_full = local_target / num_b_total;
+        const int64 b_full = local_target - a_full * num_b_total;
+        out_entries[out_count++] = {full_block.astrs[a_full], full_block.bstrs[b_full], acc};
+    };
+
+    if (use_dense_accumulator)
+    {
+        unique_accum_target_count = (int64)dense_acc.touched_targets.size();
+        for (int64 target_global : dense_acc.touched_targets)
+        {
+            if (out_count >= max_entries) break;
+            emit_if_selected(target_global, dense_acc.values[(size_t)(target_global - full_block.offset)]);
+        }
+    }
+    else
+    {
+        std::sort(sparse_acc_pairs.begin(), sparse_acc_pairs.end(),
+                  [](const AccumPair &lhs, const AccumPair &rhs)
+                  {
+                      return lhs.target_global < rhs.target_global;
+                  });
+        for (int64 i = 0; i < (int64)sparse_acc_pairs.size() && out_count < max_entries;)
+        {
+            const int64 target_global = sparse_acc_pairs[i].target_global;
+            ++unique_accum_target_count;
+            Tv acc = {};
+            do
+            {
+                acc += sparse_acc_pairs[i].hpsi;
+                ++i;
+            } while (i < (int64)sparse_acc_pairs.size() && sparse_acc_pairs[i].target_global == target_global);
+            emit_if_selected(target_global, acc);
+        }
     }
 
     const auto t_threshold1 = std::chrono::steady_clock::now();
@@ -733,7 +761,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                      (long long)ctx->alpha_new_link_entries,
                      (long long)ctx->beta_new_link_entries,
                      (long long)generated_target_edges,
-                     (long long)target_order.size(),
+                     (long long)unique_accum_target_count,
                      (long long)out_count,
                      link_build_time,
                      link_select_time,
