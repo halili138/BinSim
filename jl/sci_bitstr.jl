@@ -398,7 +398,6 @@ function select_full_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBit
             chunk_size, eps, sel_a, sel_b, sel_v
         )
     end
-    filter_new_selected(sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
 end
 
 function select_external_block_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr,
@@ -427,7 +426,7 @@ function select_external_link_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisM
         tgt, src, otf, is_new_a, is_new_b, unique_axs, unique_bxs,
         psi, candidate_diags, variational_energy,
         chunk_size, eps, sel_a, sel_b, sel_v
-        )
+    )
 end
 
 function run_sci_bitstr(mole::Mole;
@@ -475,25 +474,29 @@ function run_sci_bitstr(mole::Mole;
         sel_b = UInt32[]
         sel_v = Float64[]
 
-        t2 = if select_mode == :external_link || select_mode == :auto
-            @elapsed select_external_link_bitstr!(tgt, basis, ham_otf, psi, tgt_diags,
+        t2 = @elapsed if select_mode == :external_link || select_mode == :auto
+            select_external_link_bitstr!(
+                tgt, basis, ham_otf, psi, tgt_diags,
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
-                unique_axs, unique_bxs, sel_a, sel_b, sel_v)
+                unique_axs, unique_bxs, sel_a, sel_b, sel_v
+            )
         elseif select_mode == :external_block
-            @elapsed select_external_block_bitstr!(tgt, basis, ham_otf, psi, tgt_diags,
+            select_external_block_bitstr!(
+                tgt, basis, ham_otf, psi, tgt_diags,
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
-                sel_a, sel_b, sel_v)
+                sel_a, sel_b, sel_v
+            )
         else
-            @elapsed select_full_bitstr!(tgt, basis, ham_otf, psi, tgt_diags,
+            select_full_bitstr!(
+                tgt, basis, ham_otf, psi, tgt_diags,
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
-                sel_a, sel_b, sel_v)
+                sel_a, sel_b, sel_v
+            )
+            filter_new_selected(sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
         end
-        raw_sel = length(sel_v)
-
-        verbose && @printf("[%d] Expand %d→%d  raw_sel=%d  ", iter, basis.dim, tgt.dim, raw_sel)
 
         nsel = length(sel_v)
-        verbose && @printf("new_sel=%d  ", nsel)
+        verbose && @printf("[%d] Expand %d→%d  new_sel=%d  ", iter, basis.dim, tgt.dim, nsel)
 
         if nsel == 0
             verbose && println("No new states, done.")
