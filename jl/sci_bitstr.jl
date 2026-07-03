@@ -252,6 +252,34 @@ end
 function sci_hvec_select_external_link_all_blocks_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    unique_axs::Vector{UInt32}, unique_bxs::Vector{UInt32},
+    psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+
+    max_entries = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_entries)
+    buf_b = Vector{UInt32}(undef, max_entries)
+    buf_v = Vector{Float64}(undef, max_entries)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        unique_axs::Ptr{UInt32}, Int64(length(unique_axs))::Int64,
+        unique_bxs::Ptr{UInt32}, Int64(length(unique_bxs))::Int64,
+        psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        Int64(max_entries)::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
+function sci_hvec_select_external_link_all_blocks_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
     psi::Vector{Float64}, candidate_diags::Vector{Float64},
     variational_energy::Float64, chunk_size::Int, eps::Float64,
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
@@ -451,6 +479,8 @@ function run_sci_bitstr(mole::Mole;
         ham = JW_hamiltonian(mole; verbose=false)
         svd_groups = compress_by_svd(ham)
         all_axs, all_bxs = extract_ax_bx(svd_groups)
+        unique_axs = unique(all_axs)
+        unique_bxs = unique(all_bxs)
         ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
     end
     verbose && @printf("Done in %.4f s  (ngroups=%d)\n", t0, length(svd_groups))
@@ -496,7 +526,7 @@ function run_sci_bitstr(mole::Mole;
                 raw_sel = length(sel_v)
             elseif select_mode == :external_link || select_mode == :auto
                 t2 = @elapsed sci_hvec_select_external_link_all_blocks_bitstr!(
-                    tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
+                    tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, psi, tgt_diags,
                     current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
                 raw_sel = length(sel_v)
             else

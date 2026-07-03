@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <limits>
 #include <unordered_map>
-#include <unordered_set>
 
 template <typename Tv>
 FORCE_INLINE auto sqnorm(const Tv &v)
@@ -17,28 +16,6 @@ FORCE_INLINE auto sqnorm(const Tv &v)
     else return v.real() * v.real() + v.imag() * v.imag();
 }
 
-
-template <typename Ti, typename Tv>
-static inline void collect_unique_spin_masks(
-    const Network_OTF<Ti, Tv> *net,
-    std::vector<Ti> &unique_axs,
-    std::vector<Ti> &unique_bxs)
-{
-    std::unordered_set<Ti> ax_seen;
-    std::unordered_set<Ti> bx_seen;
-    auto add_groups = [&](const std::vector<SVDGroup_OTF<Ti, Tv>> &groups)
-    {
-        for (const auto &group : groups)
-        {
-            if (ax_seen.insert(group.ax).second) unique_axs.push_back(group.ax);
-            if (bx_seen.insert(group.bx).second) unique_bxs.push_back(group.bx);
-        }
-    };
-    add_groups(net->diag_groups);
-    add_groups(net->pure_a_groups);
-    add_groups(net->pure_b_groups);
-    add_groups(net->mixed_groups);
-}
 
 template <typename Ti>
 static inline void append_block_frontier_targets(
@@ -103,10 +80,15 @@ ExternalLinkSelectContext<Ti> build_external_link_select_context(
     const SciBasisManager<Ti> *tgt_basis,
     const Network_OTF<Ti, Tv> *net,
     const bool *is_new_a,
-    const bool *is_new_b)
+    const bool *is_new_b,
+    const Ti *unique_axs,
+    int64 num_unique_axs,
+    const Ti *unique_bxs,
+    int64 num_unique_bxs)
 {
     ExternalLinkSelectContext<Ti> ctx;
-    collect_unique_spin_masks(net, ctx.unique_axs, ctx.unique_bxs);
+    ctx.unique_axs.assign(unique_axs, unique_axs + num_unique_axs);
+    ctx.unique_bxs.assign(unique_bxs, unique_bxs + num_unique_bxs);
     const auto t0 = std::chrono::steady_clock::now();
     ctx.full_links = build_spin_links_by_mask(src_basis, tgt_basis, ctx.unique_axs, ctx.unique_bxs);
     ctx.new_frontiers = build_new_frontier_links_by_mask(ctx.full_links, is_new_a, is_new_b);
@@ -814,7 +796,38 @@ int64 sci_hvec_select_external_link_bitstr(
     BufferedEntry<Ti, Tv> *out_entries,
     int64 max_entries)
 {
-    auto ctx = build_external_link_select_context(src_basis, tgt_basis, net, is_new_a, is_new_b);
+    auto ctx = build_external_link_select_context(
+        src_basis, tgt_basis, net, is_new_a, is_new_b,
+        net->group_index.unique_axs.data(), (int64)net->group_index.unique_axs.size(),
+        net->group_index.unique_bxs.data(), (int64)net->group_index.unique_bxs.size());
+    return sci_hvec_select_external_link_block_bitstr(
+        &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
+        candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
+}
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_link_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    const Ti *unique_axs,
+    int64 num_unique_axs,
+    const Ti *unique_bxs,
+    int64 num_unique_bxs,
+    int64 block_idx,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    auto ctx = build_external_link_select_context(
+        src_basis, tgt_basis, net, is_new_a, is_new_b,
+        unique_axs, num_unique_axs, unique_bxs, num_unique_bxs);
     return sci_hvec_select_external_link_block_bitstr(
         &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
         candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
@@ -835,7 +848,43 @@ int64 sci_hvec_select_external_link_all_blocks_bitstr(
     BufferedEntry<Ti, Tv> *out_entries,
     int64 max_entries)
 {
-    auto ctx = build_external_link_select_context(src_basis, tgt_basis, net, is_new_a, is_new_b);
+    auto ctx = build_external_link_select_context(
+        src_basis, tgt_basis, net, is_new_a, is_new_b,
+        net->group_index.unique_axs.data(), (int64)net->group_index.unique_axs.size(),
+        net->group_index.unique_bxs.data(), (int64)net->group_index.unique_bxs.size());
+    int64 out_count = 0;
+    for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
+    {
+        out_count += sci_hvec_select_external_link_block_bitstr(
+            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
+            candidate_diags, variational_energy, chunk_size, eps,
+            out_entries + out_count, max_entries - out_count);
+    }
+    return out_count;
+}
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_link_all_blocks_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    const Ti *unique_axs,
+    int64 num_unique_axs,
+    const Ti *unique_bxs,
+    int64 num_unique_bxs,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    auto ctx = build_external_link_select_context(
+        src_basis, tgt_basis, net, is_new_a, is_new_b,
+        unique_axs, num_unique_axs, unique_bxs, num_unique_bxs);
     int64 out_count = 0;
     for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
     {
