@@ -6,12 +6,66 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <unordered_set>
 
 template <typename Tv>
 FORCE_INLINE auto sqnorm(const Tv &v)
 {
     if constexpr (std::is_arithmetic_v<Tv>) return v * v;
     else return v.real() * v.real() + v.imag() * v.imag();
+}
+
+
+template <typename Ti, typename Tv>
+static inline void collect_unique_spin_masks(
+    const Network_OTF<Ti, Tv> *net,
+    std::vector<Ti> &unique_axs,
+    std::vector<Ti> &unique_bxs)
+{
+    std::unordered_set<Ti> ax_seen;
+    std::unordered_set<Ti> bx_seen;
+    auto add_groups = [&](const std::vector<SVDGroup_OTF<Ti, Tv>> &groups)
+    {
+        for (const auto &group : groups)
+        {
+            if (ax_seen.insert(group.ax).second) unique_axs.push_back(group.ax);
+            if (bx_seen.insert(group.bx).second) unique_bxs.push_back(group.bx);
+        }
+    };
+    add_groups(net->diag_groups);
+    add_groups(net->pure_a_groups);
+    add_groups(net->pure_b_groups);
+    add_groups(net->mixed_groups);
+}
+
+template <typename Ti>
+static inline void append_block_frontier_targets(
+    const std::unordered_map<Ti, SpinLinkCSR<Ti>> &frontiers_by_mask,
+    const Ti *block_strings,
+    const Ti *all_strings,
+    int64 num_block_strings,
+    std::vector<Ti> &strings,
+    std::vector<int64> &block_idxs)
+{
+    if (num_block_strings == 0) return;
+
+    const int64 block_begin = block_strings - all_strings;
+    const int64 block_end = block_begin + num_block_strings;
+    std::vector<unsigned char> seen(num_block_strings, 0);
+
+    for (const auto &kv : frontiers_by_mask)
+    {
+        const SpinLinkCSR<Ti> &frontier = kv.second;
+        for (int dst_global_idx : frontier.colidx)
+        {
+            if (dst_global_idx < block_begin || dst_global_idx >= block_end) continue;
+            const int64 local_idx = (int64)dst_global_idx - block_begin;
+            if (seen[local_idx]) continue;
+            seen[local_idx] = 1;
+            strings.push_back(block_strings[local_idx]);
+            block_idxs.push_back(local_idx);
+        }
+    }
 }
 
 template <typename Ti, typename Tv>
@@ -145,41 +199,46 @@ int64 sci_hvec_select_external_bitstr(
     const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr;
     const auto t0 = std::chrono::steady_clock::now();
 
+    std::vector<Ti> unique_axs;
+    std::vector<Ti> unique_bxs;
+    collect_unique_spin_masks(net, unique_axs, unique_bxs);
+    SpinLinksByMask<Ti> full_links = build_spin_links_by_mask(src_basis, tgt_basis, unique_axs, unique_bxs);
+    SpinLinksByMask<Ti> new_frontiers = build_new_frontier_links_by_mask(full_links, is_new_a, is_new_b);
+
     std::vector<Ti> new_astrs;
     std::vector<int64> new_a_idxs;
     std::vector<Ti> old_astrs;
     std::vector<int64> old_a_idxs;
+    std::vector<Ti> new_bstrs;
+    std::vector<int64> new_b_idxs;
     new_astrs.reserve(num_a_total);
     new_a_idxs.reserve(num_a_total);
     old_astrs.reserve(num_a_total);
     old_a_idxs.reserve(num_a_total);
-
-    for (int64 a = 0; a < num_a_total; ++a)
-    {
-        const int64 a_external_idx = (full_block.astrs + a) - tgt_basis->all_astrs;
-        if (is_new_a[a_external_idx])
-        {
-            new_astrs.push_back(full_block.astrs[a]);
-            new_a_idxs.push_back(a);
-        }
-        else
-        {
-            old_astrs.push_back(full_block.astrs[a]);
-            old_a_idxs.push_back(a);
-        }
-    }
-
-    std::vector<Ti> new_bstrs;
-    std::vector<int64> new_b_idxs;
     new_bstrs.reserve(num_b_total);
     new_b_idxs.reserve(num_b_total);
-    for (int64 b = 0; b < num_b_total; ++b)
+
+    append_block_frontier_targets(new_frontiers.alpha_links_by_ax,
+                                  full_block.astrs, tgt_basis->all_astrs, num_a_total,
+                                  new_astrs, new_a_idxs);
+    append_block_frontier_targets(new_frontiers.beta_links_by_bx,
+                                  full_block.bstrs, tgt_basis->all_bstrs, num_b_total,
+                                  new_bstrs, new_b_idxs);
+
+    // The beta-new pass is A_old x B_new.  A_old is exactly the source alpha
+    // strings in this symmetry, so build it from src_basis instead of scanning
+    // every target alpha string.  This also makes A_new x B_new absent from the
+    // beta-new pass and leaves those determinants to the alpha-new pass.
+    if (full_block.asym < src_basis->num_irreps)
     {
-        const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
-        if (is_new_b[b_external_idx])
+        const Ti *src_astrs = src_basis->astrs_vec[full_block.asym];
+        const int64 num_src_astrs = src_basis->num_astrs[full_block.asym];
+        for (int64 i = 0; i < num_src_astrs; ++i)
         {
-            new_bstrs.push_back(full_block.bstrs[b]);
-            new_b_idxs.push_back(b);
+            auto it = tgt_basis->a_idx_map.find(src_astrs[i]);
+            if (it == tgt_basis->a_idx_map.end()) continue;
+            old_astrs.push_back(src_astrs[i]);
+            old_a_idxs.push_back(it->second);
         }
     }
 
