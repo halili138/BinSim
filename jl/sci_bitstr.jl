@@ -60,40 +60,6 @@ function extract_ax_bx(svd_groups::Vector{<:Any})
     return axs, bxs
 end
 
-function build_ax_bx_group_bucket(svd_groups::Vector{<:Any})
-    bucket = Dict{Tuple{UInt32,UInt32}, Vector{Int64}}()
-    for (idx, g) in enumerate(svd_groups)
-        push!(get!(bucket, (UInt32(g.ax), UInt32(g.bx)), Int64[]), Int64(idx - 1))
-    end
-    return bucket
-end
-
-function flatten_ax_bx_group_bucket(bucket::Dict{Tuple{UInt32,UInt32}, Vector{Int64}})
-    keys_sorted = sort!(collect(keys(bucket)))
-    bucket_axs = UInt32[first(key) for key in keys_sorted]
-    bucket_bxs = UInt32[last(key) for key in keys_sorted]
-    offsets = Vector{Int64}(undef, length(keys_sorted) + 1)
-    group_ids = Int64[]
-    offsets[1] = 0
-    for (i, key) in enumerate(keys_sorted)
-        append!(group_ids, bucket[key])
-        offsets[i + 1] = length(group_ids)
-    end
-    return bucket_axs, bucket_bxs, offsets, group_ids
-end
-
-mutable struct ExternalLinkSelectContextBitstr
-    ptr::Ptr{Cvoid}
-end
-
-function destroy_external_link_select_context_bitstr(ctx::ExternalLinkSelectContextBitstr)
-    if ctx.ptr != C_NULL
-        @ccall LIB_SCI_BITSTR.destroy_external_link_select_context_bitstr_f64(ctx.ptr::Ptr{Cvoid})::Cvoid
-        ctx.ptr = C_NULL
-    end
-    return nothing
-end
-
 function SciBasisManagerBitstr(
     astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     norb::Int64, total_sym::Int64, orbsym::Vector{Int64},
@@ -255,31 +221,38 @@ function sci_hvec_select_external_bitstr!(
     return n
 end
 
+function sci_hvec_select_external_link_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    blk::Integer, psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
 
-function ExternalLinkSelectContextBitstr(
+    max_per_block = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_per_block)
+    buf_b = Vector{UInt32}(undef, max_per_block)
+    buf_v = Vector{Float64}(undef, max_per_block)
+    mb64 = Int64(max_per_block)
+    blk64 = Int64(blk)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        blk64::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        mb64::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
+
+function sci_hvec_select_external_link_all_blocks_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
     unique_axs::Vector{UInt32}, unique_bxs::Vector{UInt32},
-    group_bucket::Dict{Tuple{UInt32,UInt32}, Vector{Int64}})
-
-    bucket_axs, bucket_bxs, bucket_offsets, bucket_group_ids = flatten_ax_bx_group_bucket(group_bucket)
-    ptr = @ccall LIB_SCI_BITSTR.create_external_link_select_context_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
-        unique_axs::Ptr{UInt32}, Int64(length(unique_axs))::Int64,
-        unique_bxs::Ptr{UInt32}, Int64(length(unique_bxs))::Int64,
-        bucket_axs::Ptr{UInt32}, bucket_bxs::Ptr{UInt32},
-        bucket_offsets::Ptr{Int64}, bucket_group_ids::Ptr{Int64},
-        Int64(length(bucket_axs))::Int64
-    )::Ptr{Cvoid}
-    ptr == C_NULL && error("Failed to create external-link select context.")
-    ctx = ExternalLinkSelectContextBitstr(ptr)
-    finalizer(destroy_external_link_select_context_bitstr, ctx)
-    return ctx
-end
-
-function sci_hvec_select_external_link_all_blocks_bitstr!(
-    ctx::ExternalLinkSelectContextBitstr, tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     psi::Vector{Float64}, candidate_diags::Vector{Float64},
     variational_energy::Float64, chunk_size::Int, eps::Float64,
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
@@ -288,8 +261,11 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     buf_a = Vector{UInt32}(undef, max_entries)
     buf_b = Vector{UInt32}(undef, max_entries)
     buf_v = Vector{Float64}(undef, max_entries)
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_context_bitstr_f64(
-        ctx.ptr::Ptr{Cvoid}, tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        unique_axs::Ptr{UInt32}, Int64(length(unique_axs))::Int64,
+        unique_bxs::Ptr{UInt32}, Int64(length(unique_bxs))::Int64,
         psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
         variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
         buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
@@ -301,6 +277,34 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     return n
 end
 
+function sci_hvec_select_external_link_all_blocks_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+
+    max_entries = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_entries)
+    buf_b = Vector{UInt32}(undef, max_entries)
+    buf_v = Vector{Float64}(undef, max_entries)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        Int64(max_entries)::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
+function sci_hvec_select_external_links_bitstr!(args...; kwargs...)
+    return sci_hvec_select_external_link_bitstr!(args...; kwargs...)
+end
 
 function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
     return Set(zip(sel_a, sel_b))
@@ -475,7 +479,6 @@ function run_sci_bitstr(mole::Mole;
         ham = JW_hamiltonian(mole; verbose=false)
         svd_groups = compress_by_svd(ham)
         all_axs, all_bxs = extract_ax_bx(svd_groups)
-        ax_bx_group_bucket = build_ax_bx_group_bucket(svd_groups)
         unique_axs = unique(all_axs)
         unique_bxs = unique(all_bxs)
         ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
@@ -498,9 +501,6 @@ function run_sci_bitstr(mole::Mole;
             tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
             tgt_diags = zeros(Float64, tgt.dim)
             get_diags_bitstr!(tgt, ham_otf, tgt_diags)
-            link_ctx = (select_mode == :external_link || select_mode == :auto || check_link_select) ?
-                ExternalLinkSelectContextBitstr(
-                    tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, ax_bx_group_bucket) : nothing
 
             if debug_compare_fci && verbose
                 cur_missing_a = count_missing_bitstrings(fci_astrs, basis.astrs)
@@ -526,7 +526,7 @@ function run_sci_bitstr(mole::Mole;
                 raw_sel = length(sel_v)
             elseif select_mode == :external_link || select_mode == :auto
                 t2 = @elapsed sci_hvec_select_external_link_all_blocks_bitstr!(
-                    link_ctx, tgt, basis, ham_otf, psi, tgt_diags,
+                    tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, psi, tgt_diags,
                     current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
                 raw_sel = length(sel_v)
             else
@@ -566,7 +566,7 @@ function run_sci_bitstr(mole::Mole;
                     append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
                 else
                     sci_hvec_select_external_link_all_blocks_bitstr!(
-                        link_ctx, tgt, basis, ham_otf, psi, tgt_diags,
+                        tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
                         current_energy, chunk_size, eps, link_a, link_b, link_v)
                 end
 
@@ -617,9 +617,6 @@ function run_sci_bitstr(mole::Mole;
 
             if nsel == 0
                 verbose && println("No new states, done.")
-                if link_ctx !== nothing
-                    destroy_external_link_select_context_bitstr(link_ctx)
-                end
                 destroy_sci_basis_manager_bitstr(tgt)
                 break
             end
@@ -641,9 +638,6 @@ function run_sci_bitstr(mole::Mole;
                                   verbose=false)
             verbose && @printf("E=%.10f  err=%.1e\n", E, abs(E - mole.e_scale))
 
-            if link_ctx !== nothing
-                destroy_external_link_select_context_bitstr(link_ctx)
-            end
             destroy_sci_basis_manager_bitstr(tgt)
             destroy_sci_basis_manager_bitstr(basis)
             basis, psi, diags = new_basis, psi_new, new_diags
