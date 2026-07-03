@@ -443,16 +443,12 @@ function run_sci_bitstr(mole::Mole;
     na, nb = mole.nelec
     num_irreps = SCI_BITSTR_NUM_IRREPS
 
-    verbose && print("Building OTF ... ")
-    t0 = @elapsed begin
-        ham = JW_hamiltonian(mole; verbose=false)
-        svd_groups = compress_by_svd(ham)
-        all_axs, all_bxs = extract_ax_bx(svd_groups)
-        unique_axs = unique(all_axs)
-        unique_bxs = unique(all_bxs)
-        ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
-    end
-    verbose && @printf("Done in %.4f s  (ngroups=%d)\n", t0, length(svd_groups))
+    ham = JW_hamiltonian(mole)
+    svd_groups = compress_by_svd(ham)
+    all_axs, all_bxs = extract_ax_bx(svd_groups)
+    unique_axs = unique(all_axs)
+    unique_bxs = unique(all_bxs)
+    ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
 
     hf_astr = UInt32((1 << na) - 1)
     hf_bstr = UInt32((1 << nb) - 1)
