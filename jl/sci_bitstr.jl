@@ -86,6 +86,18 @@ mutable struct ExternalLinkSelectContextBitstr
     ptr::Ptr{Cvoid}
 end
 
+struct ExternalLinkSelectBlockStatsBitstr
+    fallback::Int64
+    generated_edge_count::Int64
+    unique_accum_target_count::Int64
+    selected_count::Int64
+    link_build_time::Float64
+    accumulate_time::Float64
+    threshold_time::Float64
+end
+
+ExternalLinkSelectBlockStatsBitstr() = ExternalLinkSelectBlockStatsBitstr(0, 0, 0, 0, 0.0, 0.0, 0.0)
+
 function destroy_external_link_select_context_bitstr(ctx::ExternalLinkSelectContextBitstr)
     if ctx.ptr != C_NULL
         @ccall LIB_SCI_BITSTR.destroy_external_link_select_context_bitstr_f64(ctx.ptr::Ptr{Cvoid})::Cvoid
@@ -282,7 +294,8 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     ctx::ExternalLinkSelectContextBitstr, tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     psi::Vector{Float64}, candidate_diags::Vector{Float64},
     variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64};
+    stats::Union{Nothing,Vector{ExternalLinkSelectBlockStatsBitstr}}=nothing)
 
     max_entries = tgt.dim
     buf_a = Vector{UInt32}(undef, max_entries)
@@ -293,7 +306,8 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
         psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
         variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
         buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        Int64(max_entries)::Int64
+        Int64(max_entries)::Int64,
+        (stats === nothing ? Ptr{ExternalLinkSelectBlockStatsBitstr}(C_NULL) : stats)::Ptr{ExternalLinkSelectBlockStatsBitstr}
     )::Int64
     append!(sel_a, view(buf_a, 1:n))
     append!(sel_b, view(buf_b, 1:n))
@@ -427,7 +441,8 @@ function run_sci_bitstr(mole::Mole;
     debug_compare_fci::Bool=false, total_sym::Int64=0,
     use_external_select::Union{Bool,Nothing}=nothing,
     use_link_external_select::Bool=false,
-    select_mode::Symbol=:external_link, debug_external_select::Bool=false)
+    select_mode::Symbol=:external_link, debug_external_select::Bool=false,
+    print_select_perf::Bool=false)
 
     if use_external_select !== nothing
         select_mode = use_external_select ? :external_block : :full
@@ -442,6 +457,8 @@ function run_sci_bitstr(mole::Mole;
         error("select_mode must be one of :full, :external_block, :external_link, or :auto")
     end
     check_link_select = debug_external_select || get(ENV, "BINSIM_SCI_BITSTR_CHECK_LINK_SELECT", "") != ""
+    print_link_select_perf = print_select_perf || get(ENV, "BINSIM_SCI_BITSTR_PRINT_SELECT_PERF", "") != "" ||
+                             get(ENV, "BINSIM_SCI_BITSTR_PRINT_LINK_SELECT_PERF", "") != ""
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -525,9 +542,23 @@ function run_sci_bitstr(mole::Mole;
                 end
                 raw_sel = length(sel_v)
             elseif select_mode == :external_link || select_mode == :auto
+                link_select_stats = [ExternalLinkSelectBlockStatsBitstr() for _ in 1:tgt.num_blocks]
                 t2 = @elapsed sci_hvec_select_external_link_all_blocks_bitstr!(
                     link_ctx, tgt, basis, ham_otf, psi, tgt_diags,
-                    current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
+                    current_energy, chunk_size, eps, sel_a, sel_b, sel_v;
+                    stats=link_select_stats)
+                if print_link_select_perf
+                    generated_edges = sum(st.generated_edge_count for st in link_select_stats)
+                    unique_targets = sum(st.unique_accum_target_count for st in link_select_stats)
+                    selected_count = sum(st.selected_count for st in link_select_stats)
+                    fallback_blocks = sum(st.fallback != 0 for st in link_select_stats)
+                    accumulate_time = sum(st.accumulate_time for st in link_select_stats)
+                    threshold_time = sum(st.threshold_time for st in link_select_stats)
+                    link_build_time = isempty(link_select_stats) ? 0.0 : maximum(st.link_build_time for st in link_select_stats)
+                    @printf("[sci_bitstr link perf] iter=%d blocks=%d fallback_blocks=%d generated_target_edges=%d unique_accum_targets=%d selected_count=%d link_build_time=%.9f link_select_time=%.9f accumulate_time=%.9f threshold_time=%.9f\n",
+                            iter, tgt.num_blocks, fallback_blocks, generated_edges, unique_targets, selected_count,
+                            link_build_time, t2, accumulate_time, threshold_time)
+                end
                 raw_sel = length(sel_v)
             else
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1

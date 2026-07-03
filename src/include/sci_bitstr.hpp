@@ -60,6 +60,17 @@ static inline int64 count_spin_link_entries(
 
 
 
+struct ExternalLinkSelectBlockStats
+{
+    int64 fallback = 0;
+    int64 generated_edge_count = 0;
+    int64 unique_accum_target_count = 0;
+    int64 selected_count = 0;
+    double link_build_time = 0.0;
+    double accumulate_time = 0.0;
+    double threshold_time = 0.0;
+};
+
 template <typename Ti, typename Tv>
 struct ExternalLinkSelectContext
 {
@@ -362,17 +373,15 @@ int64 sci_hvec_select_external_link_block_bitstr(
     int chunk_size,
     double eps,
     BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
+    int64 max_entries,
+    ExternalLinkSelectBlockStats *stats = nullptr)
 {
     const BlockDesc<Ti> &full_block = tgt_basis->blocks[block_idx];
     const int64 num_a_total = full_block.num_a;
     const int64 num_b_total = full_block.num_b;
 
-    const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr ||
-                            std::getenv("BINSIM_SCI_BITSTR_PRINT_LINK_SELECT_PERF") != nullptr;
     const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr ||
                                  std::getenv("BINSIM_SCI_BITSTR_CHECK_LINK_SELECT") != nullptr;
-    const auto t0 = std::chrono::steady_clock::now();
 
     std::vector<Ti> new_astrs;
     std::vector<int64> new_a_idxs;
@@ -713,43 +722,15 @@ int64 sci_hvec_select_external_link_block_bitstr(
         }
     }
 
-    if (print_perf)
+    if (stats != nullptr)
     {
-        const auto t1 = std::chrono::steady_clock::now();
-        const double link_select_time = std::chrono::duration<double>(t1 - t0).count();
-        const double link_build_time = ctx->link_build_time;
-        const double accumulate_time = std::chrono::duration<double>(t_accumulate1 - t_accumulate0).count();
-        const double threshold_time = std::chrono::duration<double>(t_threshold1 - t_threshold0).count();
-        const int64 full_candidate_count = num_a_total * num_b_total;
-        std::fprintf(stderr,
-                     "[sci_bitstr link perf] "
-                     "num_unique_ax=%lld num_unique_bx=%lld num_ax_bx_buckets=%lld "
-                     "alpha_link_entries=%lld beta_link_entries=%lld "
-                     "alpha_new_link_entries=%lld beta_new_link_entries=%lld "
-                     "generated_target_edges=%lld unique_accum_targets=%lld selected_count=%lld "
-                     "link_build_time=%.9f link_select_time=%.9f accumulate_time=%.9f threshold_time=%.9f "
-                     "full_target_select_time=unmeasured external_block_select_time=unmeasured "
-                     "link_frontier_select_time=%.9f full_candidate_count=%lld "
-                     "external_block_candidate_count=%lld link_generated_edge_count=%lld "
-                     "space_model=link_csr_plus_unique_targets_no_Nstr_times_ngroups\n",
-                     (long long)ctx->unique_axs.size(),
-                     (long long)ctx->unique_bxs.size(),
-                     (long long)ctx->num_group_buckets,
-                     (long long)ctx->alpha_link_entries,
-                     (long long)ctx->beta_link_entries,
-                     (long long)ctx->alpha_new_link_entries,
-                     (long long)ctx->beta_new_link_entries,
-                     (long long)generated_target_edges,
-                     (long long)unique_accum_target_count,
-                     (long long)out_count,
-                     link_build_time,
-                     link_select_time,
-                     accumulate_time,
-                     threshold_time,
-                     link_select_time,
-                     (long long)full_candidate_count,
-                     (long long)external_candidate_count,
-                     (long long)generated_target_edges);
+        stats->fallback = use_dense_accumulator ? 0 : 1;
+        stats->generated_edge_count = generated_target_edges;
+        stats->unique_accum_target_count = unique_accum_target_count;
+        stats->selected_count = out_count;
+        stats->link_build_time = ctx->link_build_time;
+        stats->accumulate_time = std::chrono::duration<double>(t_accumulate1 - t_accumulate0).count();
+        stats->threshold_time = std::chrono::duration<double>(t_threshold1 - t_threshold0).count();
     }
 
     return out_count;
