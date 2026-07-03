@@ -101,7 +101,7 @@ function davidson(
                         file["v_best"] = xt 
                     end
                 end
-                (comm === nothing || MPI.Comm_rank(comm) == 0) && println("\nConvergence reached!")
+                verbose && (comm === nothing || MPI.Comm_rank(comm) == 0) && println("\nConvergence reached!")
                 return e_best, xt
             end
 
@@ -377,7 +377,7 @@ function davidson(
                         file["v_best"] = xt 
                     end
                 end
-                (comm === nothing || MPI.Comm_rank(comm) == 0) && println("\nConvergence reached!")
+                verbose && (comm === nothing || MPI.Comm_rank(comm) == 0) && println("\nConvergence reached!")
                 return e_best, xt
             end
 
@@ -638,7 +638,7 @@ function davidson2(
                         # 斩断: 不再提取和保存 xt
                     end
                 end
-                comm === nothing && println("\nConvergence reached!")
+                verbose && comm === nothing && println("\nConvergence reached!")
                 return e_best
             end
 
