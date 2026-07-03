@@ -457,11 +457,10 @@ function run_sci_bitstr(mole::Mole;
     diags = zeros(Float64, 1)
     get_diags_bitstr!(basis, ham_otf, diags)
     current_energy = diags[1]
-    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n", basis.dim, current_energy)
+    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n\n", basis.dim, current_energy)
 
     for iter in 1:max_iter
-        t1 = @elapsed dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(
-            basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym, num_irreps)
+        t1 = @elapsed dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym, num_irreps)
         tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
         tgt_diags = zeros(Float64, tgt.dim)
         get_diags_bitstr!(tgt, ham_otf, tgt_diags)
@@ -492,7 +491,11 @@ function run_sci_bitstr(mole::Mole;
         end
 
         nsel = length(sel_v)
-        verbose && @printf("[%d] Expand %d→%d  new_sel=%d  ", iter, basis.dim, tgt.dim, nsel)
+        if verbose
+            @printf("Iteration: %d\n", iter)
+            @printf("  Expand           %d → %d\n", basis.dim, tgt.dim)
+            @printf("  New pairs        %d\n", nsel)
+        end
 
         if nsel == 0
             verbose && println("No new states, done.")
@@ -500,10 +503,12 @@ function run_sci_bitstr(mole::Mole;
             break
         end
 
-        t4 = @elapsed new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs,
-            sel_a, sel_b, mole.orbsym, num_irreps)
+        t4 = @elapsed new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs, sel_a, sel_b, mole.orbsym, num_irreps)
         new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
-        verbose && @printf("merged=%d  ", new_basis.dim)
+
+        if verbose
+            @printf("  Merged           %d\n", new_basis.dim)
+        end
 
         new_psi = zeros(Float64, new_basis.dim)
         t5 = @elapsed remap_wavefunction_bitstr!(basis, psi, new_basis, new_psi, sel_a, sel_b, sel_v)
@@ -519,19 +524,24 @@ function run_sci_bitstr(mole::Mole;
             verbose=false
         )
 
-        verbose && @printf("E=%.10f  err=%.1e\n", E, abs(E - mole.e_scale))
+        if verbose
+            @printf("  Energy           %.14f\n", E)
+            @printf("  Error            %.3e\n\n", abs(E - mole.e_scale))
+        end
 
         destroy_sci_basis_manager_bitstr(tgt)
         destroy_sci_basis_manager_bitstr(basis)
         basis, psi, diags = new_basis, psi_new, new_diags
         current_energy = E
 
-        @printf("  Expand_bitstrings_bitstr:      % 10.4f seconds\n", t1)
-        @printf("  Sci_hvec_select:               % 10.4f seconds\n", t2)
-        @printf("  Merge_bitstrings:              % 10.4f seconds\n", t4)
-        @printf("  Remap_wavefunction:            % 10.4f seconds\n", t5)
-        @printf("  Get_diags:                     % 10.4f seconds\n", t6)
-        @printf("  Diag in subspace:              % 10.4f seconds\n\n", t7)
+        if verbose
+            @printf("  Expand           %-8.4f seconds\n", t1)
+            @printf("  Select           %-8.4f seconds\n", t2)
+            @printf("  Merge            %-8.4f seconds\n", t4)
+            @printf("  Remap            %-8.4f seconds\n", t5)
+            @printf("  Get_diags        %-8.4f seconds\n", t6)
+            @printf("  Diag             %-8.4f seconds\n\n", t7)
+        end
     end
 
     return basis, psi, diags
