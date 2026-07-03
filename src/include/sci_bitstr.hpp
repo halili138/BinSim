@@ -80,6 +80,44 @@ static inline int64 count_spin_link_entries(
     return total;
 }
 
+
+
+template <typename Ti>
+struct ExternalLinkSelectContext
+{
+    std::vector<Ti> unique_axs;
+    std::vector<Ti> unique_bxs;
+    SpinLinksByMask<Ti> full_links;
+    SpinLinksByMask<Ti> new_frontiers;
+    int64 alpha_link_entries = 0;
+    int64 beta_link_entries = 0;
+    int64 alpha_new_link_entries = 0;
+    int64 beta_new_link_entries = 0;
+    double link_build_time = 0.0;
+};
+
+template <typename Ti, typename Tv>
+ExternalLinkSelectContext<Ti> build_external_link_select_context(
+    const SciBasisManager<Ti> *src_basis,
+    const SciBasisManager<Ti> *tgt_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b)
+{
+    ExternalLinkSelectContext<Ti> ctx;
+    collect_unique_spin_masks(net, ctx.unique_axs, ctx.unique_bxs);
+    const auto t0 = std::chrono::steady_clock::now();
+    ctx.full_links = build_spin_links_by_mask(src_basis, tgt_basis, ctx.unique_axs, ctx.unique_bxs);
+    ctx.new_frontiers = build_new_frontier_links_by_mask(ctx.full_links, is_new_a, is_new_b);
+    const auto t1 = std::chrono::steady_clock::now();
+    ctx.link_build_time = std::chrono::duration<double>(t1 - t0).count();
+    ctx.alpha_link_entries = count_spin_link_entries(ctx.full_links.alpha_links_by_ax);
+    ctx.beta_link_entries = count_spin_link_entries(ctx.full_links.beta_links_by_bx);
+    ctx.alpha_new_link_entries = count_spin_link_entries(ctx.new_frontiers.alpha_links_by_ax);
+    ctx.beta_new_link_entries = count_spin_link_entries(ctx.new_frontiers.beta_links_by_bx);
+    return ctx;
+}
+
 template <typename Ti, typename Tv>
 int64 sci_hvec_select_for_block_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
@@ -250,7 +288,8 @@ int64 sci_hvec_select_external_block_bitstr(
 }
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_bitstr(
+int64 sci_hvec_select_external_link_block_bitstr(
+    const ExternalLinkSelectContext<Ti> *ctx,
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -303,19 +342,7 @@ int64 sci_hvec_select_external_link_bitstr(
                                  std::getenv("BINSIM_SCI_BITSTR_CHECK_LINK_SELECT") != nullptr;
     const auto t0 = std::chrono::steady_clock::now();
 
-    std::vector<Ti> unique_axs;
-    std::vector<Ti> unique_bxs;
-    collect_unique_spin_masks(net, unique_axs, unique_bxs);
-    const auto t_link_build0 = std::chrono::steady_clock::now();
-    SpinLinksByMask<Ti> full_links = build_spin_links_by_mask(src_basis, tgt_basis, unique_axs, unique_bxs);
-    SpinLinksByMask<Ti> new_frontiers = build_new_frontier_links_by_mask(full_links, is_new_a, is_new_b);
-    const auto t_link_build1 = std::chrono::steady_clock::now();
-
-    const int64 alpha_link_entries = count_spin_link_entries(full_links.alpha_links_by_ax);
-    const int64 beta_link_entries = count_spin_link_entries(full_links.beta_links_by_bx);
-    const int64 alpha_new_link_entries = count_spin_link_entries(new_frontiers.alpha_links_by_ax);
-    const int64 beta_new_link_entries = count_spin_link_entries(new_frontiers.beta_links_by_bx);
-    if (alpha_link_entries + beta_link_entries > max_link_entries)
+    if (ctx->alpha_link_entries + ctx->beta_link_entries > max_link_entries)
     {
         return sci_hvec_select_external_block_bitstr(
             tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
@@ -335,10 +362,10 @@ int64 sci_hvec_select_external_link_bitstr(
     new_bstrs.reserve(num_b_total);
     new_b_idxs.reserve(num_b_total);
 
-    append_block_frontier_targets(new_frontiers.alpha_links_by_ax,
+    append_block_frontier_targets(ctx->new_frontiers.alpha_links_by_ax,
                                   full_block.astrs, tgt_basis->all_astrs, num_a_total,
                                   new_astrs, new_a_idxs);
-    append_block_frontier_targets(new_frontiers.beta_links_by_bx,
+    append_block_frontier_targets(ctx->new_frontiers.beta_links_by_bx,
                                   full_block.bstrs, tgt_basis->all_bstrs, num_b_total,
                                   new_bstrs, new_b_idxs);
 
@@ -414,11 +441,11 @@ int64 sci_hvec_select_external_link_bitstr(
 
         for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
         {
-            const auto alpha_it = new_frontiers.alpha_links_by_ax.find(key.ax);
-            const auto beta_it = full_links.beta_links_by_bx.find(key.bx);
+            const auto alpha_it = ctx->new_frontiers.alpha_links_by_ax.find(key.ax);
+            const auto beta_it = ctx->full_links.beta_links_by_bx.find(key.bx);
             const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
-            if (alpha_it == new_frontiers.alpha_links_by_ax.end() ||
-                beta_it == full_links.beta_links_by_bx.end() ||
+            if (alpha_it == ctx->new_frontiers.alpha_links_by_ax.end() ||
+                beta_it == ctx->full_links.beta_links_by_bx.end() ||
                 groups_it == net->group_index.groups_by_ax_bx.end())
                 continue;
 
@@ -490,11 +517,11 @@ int64 sci_hvec_select_external_link_bitstr(
 
         for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
         {
-            const auto alpha_it = full_links.alpha_links_by_ax.find(key.ax);
-            const auto beta_it = new_frontiers.beta_links_by_bx.find(key.bx);
+            const auto alpha_it = ctx->full_links.alpha_links_by_ax.find(key.ax);
+            const auto beta_it = ctx->new_frontiers.beta_links_by_bx.find(key.bx);
             const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
-            if (alpha_it == full_links.alpha_links_by_ax.end() ||
-                beta_it == new_frontiers.beta_links_by_bx.end() ||
+            if (alpha_it == ctx->full_links.alpha_links_by_ax.end() ||
+                beta_it == ctx->new_frontiers.beta_links_by_bx.end() ||
                 groups_it == net->group_index.groups_by_ax_bx.end())
                 continue;
 
@@ -671,7 +698,7 @@ int64 sci_hvec_select_external_link_bitstr(
     {
         const auto t1 = std::chrono::steady_clock::now();
         const double link_select_time = std::chrono::duration<double>(t1 - t0).count();
-        const double link_build_time = std::chrono::duration<double>(t_link_build1 - t_link_build0).count();
+        const double link_build_time = ctx->link_build_time;
         const double accumulate_time = std::chrono::duration<double>(t_accumulate1 - t_accumulate0).count();
         const double threshold_time = std::chrono::duration<double>(t_threshold1 - t_threshold0).count();
         const int64 full_candidate_count = num_a_total * num_b_total;
@@ -686,13 +713,13 @@ int64 sci_hvec_select_external_link_bitstr(
                      "link_frontier_select_time=%.9f full_candidate_count=%lld "
                      "external_block_candidate_count=%lld link_generated_edge_count=%lld "
                      "space_model=link_csr_plus_unique_targets_no_Nstr_times_ngroups\n",
-                     (long long)unique_axs.size(),
-                     (long long)unique_bxs.size(),
+                     (long long)ctx->unique_axs.size(),
+                     (long long)ctx->unique_bxs.size(),
                      (long long)net->group_index.unique_ax_bx_pairs.size(),
-                     (long long)alpha_link_entries,
-                     (long long)beta_link_entries,
-                     (long long)alpha_new_link_entries,
-                     (long long)beta_new_link_entries,
+                     (long long)ctx->alpha_link_entries,
+                     (long long)ctx->beta_link_entries,
+                     (long long)ctx->alpha_new_link_entries,
+                     (long long)ctx->beta_new_link_entries,
                      (long long)generated_target_edges,
                      (long long)target_acc.size(),
                      (long long)out_count,
@@ -709,6 +736,56 @@ int64 sci_hvec_select_external_link_bitstr(
     return out_count;
 }
 
+
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_link_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    int64 block_idx,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    auto ctx = build_external_link_select_context(src_basis, tgt_basis, net, is_new_a, is_new_b);
+    return sci_hvec_select_external_link_block_bitstr(
+        &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
+        candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
+}
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_link_all_blocks_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    auto ctx = build_external_link_select_context(src_basis, tgt_basis, net, is_new_a, is_new_b);
+    int64 out_count = 0;
+    for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
+    {
+        out_count += sci_hvec_select_external_link_block_bitstr(
+            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
+            candidate_diags, variational_energy, chunk_size, eps,
+            out_entries + out_count, max_entries - out_count);
+    }
+    return out_count;
+}
 
 template <typename Ti, typename Tv>
 int64 sci_hvec_select_external_bitstr(
