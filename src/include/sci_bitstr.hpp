@@ -250,7 +250,7 @@ int64 sci_hvec_select_external_block_bitstr(
 }
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_bitstr(
+int64 sci_hvec_select_external_link_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -707,4 +707,28 @@ int64 sci_hvec_select_external_bitstr(
     }
 
     return out_count;
+}
+
+
+template <typename Ti, typename Tv>
+int64 sci_hvec_select_external_bitstr(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    int64 block_idx,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    // Backward-compatible entry point kept for existing PR/users; the
+    // implementation is the external-link optimized selector.
+    return sci_hvec_select_external_link_bitstr(
+        tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
+        candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
 }

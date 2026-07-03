@@ -221,7 +221,7 @@ function sci_hvec_select_external_bitstr!(
     return n
 end
 
-function sci_hvec_select_external_links_bitstr!(
+function sci_hvec_select_external_link_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
     blk::Integer, psi::Vector{Float64}, candidate_diags::Vector{Float64},
@@ -234,7 +234,7 @@ function sci_hvec_select_external_links_bitstr!(
     buf_v = Vector{Float64}(undef, max_per_block)
     mb64 = Int64(max_per_block)
     blk64 = Int64(blk)
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_links_bitstr_f64(
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_bitstr_f64(
         tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
         blk64::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
@@ -246,6 +246,10 @@ function sci_hvec_select_external_links_bitstr!(
     append!(sel_b, view(buf_b, 1:n))
     append!(sel_v, view(buf_v, 1:n))
     return n
+end
+
+function sci_hvec_select_external_links_bitstr!(args...; kwargs...)
+    return sci_hvec_select_external_link_bitstr!(args...; kwargs...)
 end
 
 function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
@@ -373,16 +377,19 @@ function run_sci_bitstr(mole::Mole;
     debug_compare_fci::Bool=false, total_sym::Int64=0,
     use_external_select::Union{Bool,Nothing}=nothing,
     use_link_external_select::Bool=false,
-    select_mode::Symbol=:auto, debug_external_select::Bool=false)
+    select_mode::Symbol=:external_link, debug_external_select::Bool=false)
 
     if use_external_select !== nothing
         select_mode = use_external_select ? :external_block : :full
     end
     if use_link_external_select
-        select_mode = :external_links
+        select_mode = :external_link
     end
-    if !(select_mode in (:full, :external_block, :external_links, :auto))
-        error("select_mode must be one of :full, :external_block, :external_links, or :auto")
+    if select_mode == :external_links
+        select_mode = :external_link
+    end
+    if !(select_mode in (:full, :external_block, :external_link, :auto))
+        error("select_mode must be one of :full, :external_block, :external_link, or :auto")
     end
     check_link_select = debug_external_select || get(ENV, "BINSIM_SCI_BITSTR_CHECK_LINK_SELECT", "") != ""
 
@@ -461,9 +468,9 @@ function run_sci_bitstr(mole::Mole;
                                                       chunk_size, eps, sel_a, sel_b, sel_v)
                 end
                 raw_sel = length(sel_v)
-            elseif select_mode == :external_links || select_mode == :auto
+            elseif select_mode == :external_link || select_mode == :auto
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1
-                    sci_hvec_select_external_links_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                    sci_hvec_select_external_link_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
                                                             blk, psi, tgt_diags, current_energy,
                                                             chunk_size, eps, sel_a, sel_b, sel_v)
                 end
@@ -501,11 +508,11 @@ function run_sci_bitstr(mole::Mole;
                 end
 
                 link_a = UInt32[]; link_b = UInt32[]; link_v = Float64[]
-                if select_mode == :external_links || select_mode == :auto
+                if select_mode == :external_link || select_mode == :auto
                     append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
                 else
                     for blk in 0:tgt.num_blocks-1
-                        sci_hvec_select_external_links_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                        sci_hvec_select_external_link_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
                                                                 blk, psi, tgt_diags, current_energy,
                                                                 chunk_size, eps, link_a, link_b, link_v)
                     end
@@ -517,20 +524,24 @@ function run_sci_bitstr(mole::Mole;
                 full_set = Set(keys(full_map))
                 block_set = Set(keys(block_map))
                 link_set = Set(keys(link_map))
-                block_missing = setdiff(full_set, block_set); block_extra = setdiff(block_set, full_set)
-                link_missing = setdiff(full_set, link_set); link_extra = setdiff(link_set, full_set)
-                block_match = isempty(block_missing) && isempty(block_extra)
-                link_match = isempty(link_missing) && isempty(link_extra)
-                block_hpsi_diff = selected_hpsi_max_abs_diff(full_map, block_map)
-                link_hpsi_diff = selected_hpsi_max_abs_diff(full_map, link_map)
-                @printf("[sci_bitstr link check] iter=%d full_count=%d external_block_count=%d link_count=%d block_selected_set_match=%d selected_set_match=%d block_hpsi_max_abs_diff=%.17g hpsi_max_abs_diff=%.17g block_missing=%d block_extra=%d missing=%d extra=%d\n",
+                full_block_missing = setdiff(full_set, block_set); full_block_extra = setdiff(block_set, full_set)
+                full_link_missing = setdiff(full_set, link_set); full_link_extra = setdiff(link_set, full_set)
+                block_link_missing = setdiff(block_set, link_set); block_link_extra = setdiff(link_set, block_set)
+                full_block_match = isempty(full_block_missing) && isempty(full_block_extra)
+                full_link_match = isempty(full_link_missing) && isempty(full_link_extra)
+                block_link_match = isempty(block_link_missing) && isempty(block_link_extra)
+                full_block_hpsi_diff = selected_hpsi_max_abs_diff(full_map, block_map)
+                full_link_hpsi_diff = selected_hpsi_max_abs_diff(full_map, link_map)
+                block_link_hpsi_diff = selected_hpsi_max_abs_diff(block_map, link_map)
+                @printf("[sci_bitstr select check] iter=%d full_count=%d external_block_count=%d external_link_count=%d full_vs_block_match=%d full_vs_link_match=%d block_vs_link_match=%d full_block_hpsi_max_abs_diff=%.17g full_link_hpsi_max_abs_diff=%.17g block_link_hpsi_max_abs_diff=%.17g full_block_missing=%d full_block_extra=%d full_link_missing=%d full_link_extra=%d block_link_missing=%d block_link_extra=%d\n",
                                    iter, length(full_set), length(block_set), length(link_set),
-                                   block_match ? 1 : 0, link_match ? 1 : 0,
-                                   block_hpsi_diff, link_hpsi_diff,
-                                   length(block_missing), length(block_extra),
-                                   length(link_missing), length(link_extra))
-                if debug_external_select && (!block_match || !link_match)
-                    error("external selection mismatch at iter $iter: block_missing=$(length(block_missing)) block_extra=$(length(block_extra)) link_missing=$(length(link_missing)) link_extra=$(length(link_extra))")
+                                   full_block_match ? 1 : 0, full_link_match ? 1 : 0, block_link_match ? 1 : 0,
+                                   full_block_hpsi_diff, full_link_hpsi_diff, block_link_hpsi_diff,
+                                   length(full_block_missing), length(full_block_extra),
+                                   length(full_link_missing), length(full_link_extra),
+                                   length(block_link_missing), length(block_link_extra))
+                if debug_external_select && (!full_block_match || !full_link_match || !block_link_match)
+                    error("external selection mismatch at iter $iter: full_block_missing=$(length(full_block_missing)) full_block_extra=$(length(full_block_extra)) full_link_missing=$(length(full_link_missing)) full_link_extra=$(length(full_link_extra)) block_link_missing=$(length(block_link_missing)) block_link_extra=$(length(block_link_extra))")
                 end
             end
 
