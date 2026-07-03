@@ -302,10 +302,6 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     return n
 end
 
-function sci_hvec_select_external_links_bitstr!(args...; kwargs...)
-    return sci_hvec_select_external_link_bitstr!(args...; kwargs...)
-end
-
 function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
     return Set(zip(sel_a, sel_b))
 end

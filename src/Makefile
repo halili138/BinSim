@@ -48,7 +48,7 @@ lib/libcudist.so: extern/cudist.cu | lib
 	$(CUXX) $(CUXXFLAGS) $(INC_FLAGS) -o $@ $<
 
 lib/libsci_otf_bitstr.so: extern/sci_otf_bitstr.cpp | lib
-	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -o $@ $<
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
 
 clean:
 	rm -rf lib/*.so

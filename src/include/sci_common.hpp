@@ -3,8 +3,7 @@
 #include "basis.hpp"
 #include "otf.hpp"
 #include "utils.hpp"
-#include <unordered_map>
-#include <unordered_set>
+#include <ankerl/unordered_dense.h>
 #include <vector>
 
 template <typename Ti, typename Tv>
@@ -23,8 +22,8 @@ struct SciBasisView
     int max_a_count, max_b_count;
     const int64 *block_map;
     int64 num_irreps;
-    const std::unordered_map<Ti, int> *a_idx_map;
-    const std::unordered_map<Ti, int> *b_idx_map;
+    const ankerl::unordered_dense::map<Ti, int> *a_idx_map;
+    const ankerl::unordered_dense::map<Ti, int> *b_idx_map;
     const int64 *src_offsets;
 };
 
@@ -52,8 +51,8 @@ struct SciBasisManager
     int max_a_count = {};
     int max_b_count = {};
 
-    std::unordered_map<Ti, int> a_idx_map;
-    std::unordered_map<Ti, int> b_idx_map;
+    ankerl::unordered_dense::map<Ti, int> a_idx_map;
+    ankerl::unordered_dense::map<Ti, int> b_idx_map;
 
     std::vector<int64> _src_offsets;
     SciBasisView<Ti> view;
@@ -77,19 +76,33 @@ struct SciBasisManager
 
     void clear()
     {
-        delete[] all_astrs; all_astrs = nullptr;
-        delete[] all_bstrs; all_bstrs = nullptr;
-        delete[] astrs_vec; astrs_vec = nullptr;
-        delete[] bstrs_vec; bstrs_vec = nullptr;
-        delete[] num_astrs; num_astrs = nullptr;
-        delete[] num_bstrs; num_bstrs = nullptr;
-        delete[] blocks; blocks = nullptr;
-        delete[] orbsym; orbsym = nullptr;
-        delete[] block_map; block_map = nullptr;
-        num_blocks = 0; num_irreps = 0; total_sym = 0;
-        dim = 0; norb = 0;
-        max_a_count = 0; max_b_count = 0;
-        a_idx_map.clear(); b_idx_map.clear();
+        delete[] all_astrs;
+        all_astrs = nullptr;
+        delete[] all_bstrs;
+        all_bstrs = nullptr;
+        delete[] astrs_vec;
+        astrs_vec = nullptr;
+        delete[] bstrs_vec;
+        bstrs_vec = nullptr;
+        delete[] num_astrs;
+        num_astrs = nullptr;
+        delete[] num_bstrs;
+        num_bstrs = nullptr;
+        delete[] blocks;
+        blocks = nullptr;
+        delete[] orbsym;
+        orbsym = nullptr;
+        delete[] block_map;
+        block_map = nullptr;
+        num_blocks = 0;
+        num_irreps = 0;
+        total_sym = 0;
+        dim = 0;
+        norb = 0;
+        max_a_count = 0;
+        max_b_count = 0;
+        a_idx_map.clear();
+        b_idx_map.clear();
         _src_offsets.clear();
     }
 
@@ -119,12 +132,14 @@ SciBasisManager<Ti> *create_sci_basis_manager(
         for (int64 i = 0; i < num_a_total; ++i)
         {
             int64 sym = get_string_sym(input_astrs[i], orbsym);
-            if (sym < num_irreps) basis->num_astrs[sym]++;
+            if (sym < num_irreps)
+                basis->num_astrs[sym]++;
         }
         for (int64 i = 0; i < num_b_total; ++i)
         {
             int64 sym = get_string_sym(input_bstrs[i], orbsym);
-            if (sym < num_irreps) basis->num_bstrs[sym]++;
+            if (sym < num_irreps)
+                basis->num_bstrs[sym]++;
         }
 
         for (int64 asym = 0; asym < num_irreps; ++asym)
@@ -136,8 +151,8 @@ SciBasisManager<Ti> *create_sci_basis_manager(
 
         basis->all_astrs = new Ti[num_a_total];
         basis->all_bstrs = new Ti[num_b_total];
-        basis->astrs_vec = new Ti*[num_irreps];
-        basis->bstrs_vec = new Ti*[num_irreps];
+        basis->astrs_vec = new Ti *[num_irreps];
+        basis->bstrs_vec = new Ti *[num_irreps];
         basis->blocks = new BlockDesc<Ti>[basis->num_blocks];
         basis->orbsym = new int64[norb];
         std::copy(orbsym, orbsym + norb, basis->orbsym);
@@ -158,14 +173,17 @@ SciBasisManager<Ti> *create_sci_basis_manager(
         for (int64 i = 0; i < num_a_total; ++i)
         {
             int64 sym = get_string_sym(input_astrs[i], orbsym);
-            if (sym < num_irreps) basis->astrs_vec[sym][a_idx[sym]++] = input_astrs[i];
+            if (sym < num_irreps)
+                basis->astrs_vec[sym][a_idx[sym]++] = input_astrs[i];
         }
         for (int64 i = 0; i < num_b_total; ++i)
         {
             int64 sym = get_string_sym(input_bstrs[i], orbsym);
-            if (sym < num_irreps) basis->bstrs_vec[sym][b_idx[sym]++] = input_bstrs[i];
+            if (sym < num_irreps)
+                basis->bstrs_vec[sym][b_idx[sym]++] = input_bstrs[i];
         }
-        delete[] a_idx; delete[] b_idx;
+        delete[] a_idx;
+        delete[] b_idx;
 
         for (int64 i = 0; i < num_irreps; ++i)
         {
@@ -179,11 +197,13 @@ SciBasisManager<Ti> *create_sci_basis_manager(
         for (int64 asym = 0; asym < num_irreps; ++asym)
         {
             int64 bsym = total_sym ^ asym;
-            if (bsym >= num_irreps) continue;
+            if (bsym >= num_irreps)
+                continue;
             if (basis->num_astrs[asym] > 0 && basis->num_bstrs[bsym] > 0)
             {
                 BlockDesc<Ti> &block = basis->blocks[block_counter];
-                block.asym = asym; block.bsym = bsym;
+                block.asym = asym;
+                block.bsym = bsym;
                 block.num_a = basis->num_astrs[asym];
                 block.num_b = basis->num_bstrs[bsym];
                 block.astrs = basis->astrs_vec[asym];
@@ -195,18 +215,23 @@ SciBasisManager<Ti> *create_sci_basis_manager(
             }
         }
 
-        basis->max_a_count = 0; basis->max_b_count = 0;
+        basis->max_a_count = 0;
+        basis->max_b_count = 0;
         for (int64 i = 0; i < basis->num_blocks; ++i)
         {
-            if (basis->blocks[i].num_a > basis->max_a_count) basis->max_a_count = basis->blocks[i].num_a;
-            if (basis->blocks[i].num_b > basis->max_b_count) basis->max_b_count = basis->blocks[i].num_b;
+            if (basis->blocks[i].num_a > basis->max_a_count)
+                basis->max_a_count = basis->blocks[i].num_a;
+            if (basis->blocks[i].num_b > basis->max_b_count)
+                basis->max_b_count = basis->blocks[i].num_b;
         }
 
         for (int64 i = 0; i < basis->num_blocks; ++i)
         {
             const BlockDesc<Ti> &blk = basis->blocks[i];
-            for (int a = 0; a < blk.num_a; ++a) basis->a_idx_map[blk.astrs[a]] = a;
-            for (int b = 0; b < blk.num_b; ++b) basis->b_idx_map[blk.bstrs[b]] = b;
+            for (int a = 0; a < blk.num_a; ++a)
+                basis->a_idx_map[blk.astrs[a]] = a;
+            for (int b = 0; b < blk.num_b; ++b)
+                basis->b_idx_map[blk.bstrs[b]] = b;
         }
 
         basis->_init_view();
@@ -243,12 +268,15 @@ void remap_wavefunction(
                 int64 old_pos = oblk.offset + (int64)a * oblk.num_b + b;
                 int64 sa = get_string_sym(astr, orsym);
                 int64 sb = get_string_sym(bstr, orsym);
-                if (sa >= nirp || sb >= nirp) continue;
+                if (sa >= nirp || sb >= nirp)
+                    continue;
                 int64 nbid = new_src->block_map[sa * nirp + sb];
-                if (nbid == -1) continue;
+                if (nbid == -1)
+                    continue;
                 auto it_a = new_src->a_idx_map.find(astr);
                 auto it_b = new_src->b_idx_map.find(bstr);
-                if (it_a == new_src->a_idx_map.end() || it_b == new_src->b_idx_map.end()) continue;
+                if (it_a == new_src->a_idx_map.end() || it_b == new_src->b_idx_map.end())
+                    continue;
                 const BlockDesc<Ti> &nblk = new_src->blocks[nbid];
                 int64 np = nblk.offset + (int64)it_a->second * nblk.num_b + it_b->second;
                 new_psi[np] = old_psi[old_pos];
@@ -262,12 +290,15 @@ void remap_wavefunction(
         {
             int64 sa = get_string_sym(e.astr, orsym);
             int64 sb = get_string_sym(e.bstr, orsym);
-            if (sa >= nirp || sb >= nirp) continue;
+            if (sa >= nirp || sb >= nirp)
+                continue;
             int64 nbid = new_src->block_map[sa * nirp + sb];
-            if (nbid == -1) continue;
+            if (nbid == -1)
+                continue;
             auto it_a = new_src->a_idx_map.find(e.astr);
             auto it_b = new_src->b_idx_map.find(e.bstr);
-            if (it_a == new_src->a_idx_map.end() || it_b == new_src->b_idx_map.end()) continue;
+            if (it_a == new_src->a_idx_map.end() || it_b == new_src->b_idx_map.end())
+                continue;
             const BlockDesc<Ti> &nblk = new_src->blocks[nbid];
             int64 np = nblk.offset + (int64)it_a->second * nblk.num_b + it_b->second;
             new_psi[np] = e.val;
@@ -282,9 +313,12 @@ void get_diags_elements_sci(
 {
     const SVDGroup_OTF<Ti, Tv> &group = net->diag_groups[0];
     const int rank = group.rank;
-    const Ti *zas = group.unique_zas; const Ti *zbs = group.unique_zbs;
-    const Tv *wa0 = group.wa; const Tv *wb0 = group.wb;
-    const int num_za = group.num_za; const int num_zb = group.num_zb;
+    const Ti *zas = group.unique_zas;
+    const Ti *zbs = group.unique_zbs;
+    const Tv *wa0 = group.wa;
+    const Tv *wb0 = group.wb;
+    const int num_za = group.num_za;
+    const int num_zb = group.num_zb;
     const BlockDesc<Ti> *blocks = basis->blocks;
     const int64 num_blocks = basis->num_blocks;
     const int max_a_count = basis->max_a_count;
@@ -300,16 +334,16 @@ void get_diags_elements_sci(
             Tv *pa0 = local_a_phase.data();
             Tv *pb0 = local_b_phase.data();
             for (int i = 0; i < blk.num_a; ++i)
-                precompute_phase<0,Ti,Tv>(blk.astrs[i], zas, num_za, wa0, pa0+i, max_a_count, rank);
+                precompute_phase<0, Ti, Tv>(blk.astrs[i], zas, num_za, wa0, pa0 + i, max_a_count, rank);
             for (int i = 0; i < blk.num_b; ++i)
-                precompute_phase<0,Ti,Tv>(blk.bstrs[i], zbs, num_zb, wb0, pb0+i, max_b_count, rank);
+                precompute_phase<0, Ti, Tv>(blk.bstrs[i], zbs, num_zb, wb0, pb0 + i, max_b_count, rank);
             const Tv *pa = local_a_phase.data();
             const Tv *pb = local_b_phase.data();
 #pragma omp for collapse(2) schedule(static) nowait
             for (int a = 0; a < blk.num_a; ++a)
                 for (int b = 0; b < blk.num_b; ++b)
                     diags[blk.offset + (int64)a * blk.num_b + b] +=
-                        compute_coeff<0,Tv>(a,b,pa,pb,max_a_count,max_b_count,rank);
+                        compute_coeff<0, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
         }
     }
 }

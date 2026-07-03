@@ -2,7 +2,6 @@
 
 #include "sci_common.hpp"
 #include "bitintegers.hpp"
-#include <unordered_map>
 #include <vector>
 
 template <typename Ti>
@@ -16,8 +15,8 @@ struct SpinLinkCSR
 template <typename Ti>
 struct SpinLinksByMask
 {
-    std::unordered_map<Ti, SpinLinkCSR<Ti>> alpha_links_by_ax;
-    std::unordered_map<Ti, SpinLinkCSR<Ti>> beta_links_by_bx;
+    ankerl::unordered_dense::map<Ti, SpinLinkCSR<Ti>> alpha_links_by_ax;
+    ankerl::unordered_dense::map<Ti, SpinLinkCSR<Ti>> beta_links_by_bx;
 
     void clear()
     {

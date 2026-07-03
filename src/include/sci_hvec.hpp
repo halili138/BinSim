@@ -3,7 +3,6 @@
 #include "otf.hpp"
 #include "utils.hpp"
 
-
 template <int Rank, typename Ti, typename Tv>
 FORCE_INLINE Tv compute_group_coeff_for_pair_rank(
     const SVDGroup_OTF<Ti, Tv> &group,
@@ -30,7 +29,6 @@ FORCE_INLINE Tv compute_group_coeff_for_pair_rank(
                                    group.wb, pb, 1, group.rank);
     return compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
 }
-
 
 template <typename Tv>
 FORCE_INLINE Tv compute_group_coeff_from_phases(
@@ -127,8 +125,7 @@ static inline void gather_diag_for_block(
                     continue;
 
                 const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                const Tv *sa_base = src_vec + src_block.offset
-                                    + (int64)src_a_idxs[a] * src_block.num_b;
+                const Tv *sa_base = src_vec + src_block.offset + (int64)src_a_idxs[a] * src_block.num_b;
                 Tv *da = dst_acc + a * tgt_block.num_b;
 
                 for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
@@ -251,8 +248,7 @@ static inline void gather_pure_a_for_block(
                     const Tv *pb = phase_b.data() + batch_idx * shift;
 
                     const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                    const Tv *sa = src_vec + src_block.offset
-                                   + (int64)src_a_idx * src_block.num_b;
+                    const Tv *sa = src_vec + src_block.offset + (int64)src_a_idx * src_block.num_b;
                     const int rank = group.rank;
 
 #pragma omp simd
@@ -366,8 +362,7 @@ static inline void gather_pure_b_for_block(
                     const Tv *pb = batch_phase.data() + batch_idx * shift;
                     const int *si = src_b_idxs_v.data() + batch_idx * tgt_num_b;
                     const int *di = dst_b_idxs.data() + batch_idx * tgt_num_b;
-                    const Tv *sa = src_vec + src_block.offset
-                                   + (int64)src_a_idxs[a] * src_block.num_b;
+                    const Tv *sa = src_vec + src_block.offset + (int64)src_a_idxs[a] * src_block.num_b;
                     const int rank = group.rank;
 
 #pragma omp simd
@@ -417,8 +412,7 @@ static inline void gather_mixed_for_block(
             for (int64 batch_idx = 0; batch_idx < cur_batch_size; ++batch_idx)
             {
                 const SVDGroup_OTF<Ti, Tv> &group = groups[batch_start + batch_idx];
-                const int64 h = (tgt_block.asym ^ group.asym) * num_irreps
-                                + (tgt_block.bsym ^ group.bsym);
+                const int64 h = (tgt_block.asym ^ group.asym) * num_irreps + (tgt_block.bsym ^ group.bsym);
                 const int64 sidx = src_basis->block_map[h];
                 src_block_idxs[batch_idx] = sidx;
 
@@ -492,8 +486,7 @@ static inline void gather_mixed_for_block(
                     const Tv *pb = batch_phase.data() + batch_idx * shift;
                     const int *si = src_b_idxs_v.data() + batch_idx * tgt_num_b;
                     const int *di = dst_b_idxs.data() + batch_idx * tgt_num_b;
-                    const Tv *sa = src_vec + src_block.offset
-                                   + (int64)src_a_idx * src_block.num_b;
+                    const Tv *sa = src_vec + src_block.offset + (int64)src_a_idx * src_block.num_b;
                     const int rank = group.rank;
 
 #pragma omp simd
