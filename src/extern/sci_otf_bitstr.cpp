@@ -104,7 +104,8 @@ extern "C"
         void *ctx, void *tgt, void *src, void *net,
         const double *src_vec, const double *candidate_diags,
         double variational_energy, int chunk_size, double eps,
-        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries,
+        ExternalLinkSelectBlockStats *stats)
     {
         auto *context = static_cast<ExternalLinkSelectContext<uint32,double>*>(ctx);
         auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
@@ -116,7 +117,8 @@ extern "C"
         {
             out_count += sci_hvec_select_external_link_block_bitstr<uint32,double>(
                 context, a, b, c, blk, src_vec, candidate_diags,
-                variational_energy, chunk_size, eps, entries + out_count, max_entries - out_count);
+                variational_energy, chunk_size, eps, entries + out_count, max_entries - out_count,
+                stats == nullptr ? nullptr : stats + blk);
         }
         for (int64 i = 0; i < out_count; ++i)
         { out_a[i] = entries[i].astr; out_b[i] = entries[i].bstr; out_v[i] = entries[i].val; }
