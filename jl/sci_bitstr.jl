@@ -373,7 +373,7 @@ function run_sci_bitstr(mole::Mole;
     debug_compare_fci::Bool=false, total_sym::Int64=0,
     use_external_select::Union{Bool,Nothing}=nothing,
     use_link_external_select::Bool=false,
-    select_mode::Symbol=:external_block, debug_external_select::Bool=false)
+    select_mode::Symbol=:auto, debug_external_select::Bool=false)
 
     if use_external_select !== nothing
         select_mode = use_external_select ? :external_block : :full
@@ -381,8 +381,8 @@ function run_sci_bitstr(mole::Mole;
     if use_link_external_select
         select_mode = :external_links
     end
-    if !(select_mode in (:full, :external_block, :external_links))
-        error("select_mode must be one of :full, :external_block, or :external_links")
+    if !(select_mode in (:full, :external_block, :external_links, :auto))
+        error("select_mode must be one of :full, :external_block, :external_links, or :auto")
     end
     check_link_select = debug_external_select || get(ENV, "BINSIM_SCI_BITSTR_CHECK_LINK_SELECT", "") != ""
 
@@ -461,7 +461,7 @@ function run_sci_bitstr(mole::Mole;
                                                       chunk_size, eps, sel_a, sel_b, sel_v)
                 end
                 raw_sel = length(sel_v)
-            elseif select_mode == :external_links
+            elseif select_mode == :external_links || select_mode == :auto
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1
                     sci_hvec_select_external_links_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
                                                             blk, psi, tgt_diags, current_energy,
@@ -501,7 +501,7 @@ function run_sci_bitstr(mole::Mole;
                 end
 
                 link_a = UInt32[]; link_b = UInt32[]; link_v = Float64[]
-                if select_mode == :external_links
+                if select_mode == :external_links || select_mode == :auto
                     append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
                 else
                     for blk in 0:tgt.num_blocks-1
