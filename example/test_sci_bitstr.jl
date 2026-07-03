@@ -19,5 +19,17 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.e_scale = n2_6_31g[1.0]
     mole.orbsym .%= 10
 
-    run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-5, verbose=true, debug_compare_fci=false, use_external_select=true)
+    select_mode = length(ARGS) >= 4 ? Symbol(ARGS[4]) : :external_block
+    run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-5, verbose=true,
+                   debug_compare_fci=false, select_mode=select_mode,
+                   debug_external_select=(select_mode != :full))
+
+    if get(ENV, "BINSIM_SCI_BITSTR_COMPARE_SELECT_MODES", "0") == "1"
+        for mode in (:full, :external_block, :external_links)
+            @printf("\n[SCI bitstr] comparing select_mode=%s\n", String(mode))
+            run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-5, verbose=true,
+                           debug_compare_fci=false, select_mode=mode,
+                           debug_external_select=(mode != :full))
+        end
+    end
 end

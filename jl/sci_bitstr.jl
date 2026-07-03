@@ -221,6 +221,33 @@ function sci_hvec_select_external_bitstr!(
     return n
 end
 
+function sci_hvec_select_external_links_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    blk::Integer, psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+
+    max_per_block = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_per_block)
+    buf_b = Vector{UInt32}(undef, max_per_block)
+    buf_v = Vector{Float64}(undef, max_per_block)
+    mb64 = Int64(max_per_block)
+    blk64 = Int64(blk)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_links_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        blk64::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        mb64::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
 function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
     return Set(zip(sel_a, sel_b))
 end
@@ -327,7 +354,19 @@ function run_sci_bitstr(mole::Mole;
     max_iter::Int=20, max_size::Int=10000, eps::Float64=1e-6,
     chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true,
     debug_compare_fci::Bool=false, total_sym::Int64=0,
-    use_external_select::Bool=true, debug_external_select::Bool=false)
+    use_external_select::Union{Bool,Nothing}=nothing,
+    use_link_external_select::Bool=false,
+    select_mode::Symbol=:external_block, debug_external_select::Bool=false)
+
+    if use_external_select !== nothing
+        select_mode = use_external_select ? :external_block : :full
+    end
+    if use_link_external_select
+        select_mode = :external_links
+    end
+    if !(select_mode in (:full, :external_block, :external_links))
+        error("select_mode must be one of :full, :external_block, or :external_links")
+    end
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -397,11 +436,18 @@ function run_sci_bitstr(mole::Mole;
 
             sel_a = UInt32[]; sel_b = UInt32[]; sel_v = Float64[]
             raw_sel = 0
-            if use_external_select
+            if select_mode == :external_block
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1
                     sci_hvec_select_external_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
                                                       blk, psi, tgt_diags, current_energy,
                                                       chunk_size, eps, sel_a, sel_b, sel_v)
+                end
+                raw_sel = length(sel_v)
+            elseif select_mode == :external_links
+                t2 = @elapsed for blk in 0:tgt.num_blocks-1
+                    sci_hvec_select_external_links_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                                                            blk, psi, tgt_diags, current_energy,
+                                                            chunk_size, eps, sel_a, sel_b, sel_v)
                 end
                 raw_sel = length(sel_v)
             else
@@ -431,8 +477,8 @@ function run_sci_bitstr(mole::Mole;
                     extra = setdiff(external_set, full_set)
                     error("external-only selection mismatch at iter $iter: missing=$(length(missing)) extra=$(length(extra))")
                 end
-                verbose && @printf("  [%d debug] external select matches full-target fallback (%d determinants)\n",
-                                   iter, length(external_set))
+                verbose && @printf("  [%d debug] %s select matches full-target fallback (%d determinants)\n",
+                                   iter, String(select_mode), length(external_set))
             end
 
             verbose && @printf("  [%d] expand %d→%d  raw_sel=%d  ",
