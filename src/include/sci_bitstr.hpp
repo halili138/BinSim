@@ -388,7 +388,6 @@ int64 sci_hvec_select_external_link_block_bitstr(
 
     int64 out_count = 0;
     int64 external_candidate_count = 0;
-    int64 contraction_candidate_count = 0;
     int64 generated_target_edges = 0;
 
     struct AccumTarget
@@ -398,18 +397,54 @@ int64 sci_hvec_select_external_link_block_bitstr(
         int64 b_full;
     };
 
-    std::unordered_map<int64, Tv> target_acc;
-    std::vector<AccumTarget> target_order;
-
-    auto accumulate_target = [&](int64 a_full, int64 b_full, Tv hpsi)
+    struct SourceStringInfo
     {
-        if (hpsi == Tv{}) return;
+        int64 sym = -1;
+        int64 local = -1;
+        bool valid = false;
+    };
 
+    struct GroupPtrRange
+    {
+        int64 begin = 0;
+        int64 end = 0;
+    };
+
+    struct LinkBucket
+    {
+        const SpinLinkCSR<Ti> *alpha_links = nullptr;
+        const SpinLinkCSR<Ti> *beta_links = nullptr;
+        GroupPtrRange groups;
+    };
+
+    struct AccumTask
+    {
+        int64 src_a_global;
+        int64 src_b_global;
+        int64 dst_a_global;
+        int64 dst_b_global;
+        int64 src_block_offset;
+        int64 src_block_num_b;
+        int64 src_a_local;
+        int64 src_b_local;
+        int64 target_slot;
+        GroupPtrRange groups;
+    };
+
+    std::vector<AccumTarget> target_order;
+    std::unordered_map<int64, int64> target_slots;
+    std::vector<Tv> target_acc;
+
+    auto target_slot_for = [&](int64 a_full, int64 b_full) -> int64
+    {
         const int64 target_global = full_block.offset + a_full * num_b_total + b_full;
-        auto inserted = target_acc.emplace(target_global, Tv{});
+        auto inserted = target_slots.emplace(target_global, (int64)target_order.size());
         if (inserted.second)
+        {
             target_order.push_back({target_global, a_full, b_full});
-        inserted.first->second += hpsi;
+            target_acc.push_back(Tv{});
+        }
+        return inserted.first->second;
     };
 
     auto group_from_original_idx = [&](int64 original_idx) -> const SVDGroup_OTF<Ti, Tv> *
@@ -432,130 +467,100 @@ int64 sci_hvec_select_external_link_block_bitstr(
         }
     };
 
-    auto accumulate_alpha_new_frontier = [&]()
+    std::vector<const SVDGroup_OTF<Ti, Tv> *> group_ptrs;
+    std::vector<LinkBucket> alpha_new_buckets;
+    std::vector<LinkBucket> beta_new_buckets;
+    alpha_new_buckets.reserve(net->group_index.unique_ax_bx_pairs.size());
+    beta_new_buckets.reserve(net->group_index.unique_ax_bx_pairs.size());
+
+    for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
     {
-        const int64 target_a_begin = full_block.astrs - tgt_basis->all_astrs;
-        const int64 target_a_end = target_a_begin + num_a_total;
-        const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
-        const int64 target_b_end = target_b_begin + num_b_total;
+        const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
+        if (groups_it == net->group_index.groups_by_ax_bx.end()) continue;
 
-        for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
+        const int64 group_begin = (int64)group_ptrs.size();
+        for (int64 original_idx : groups_it->second)
         {
-            const auto alpha_it = ctx->new_frontiers.alpha_links_by_ax.find(key.ax);
-            const auto beta_it = ctx->full_links.beta_links_by_bx.find(key.bx);
-            const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
-            if (alpha_it == ctx->new_frontiers.alpha_links_by_ax.end() ||
-                beta_it == ctx->full_links.beta_links_by_bx.end() ||
-                groups_it == net->group_index.groups_by_ax_bx.end())
-                continue;
-
-            const SpinLinkCSR<Ti> &alpha_links = alpha_it->second;
-            const SpinLinkCSR<Ti> &beta_links = beta_it->second;
-            const std::vector<int64> &group_original_idxs = groups_it->second;
-
-            const int64 num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
-            const int64 num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
-            for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
-            {
-                const int64 src_a_sym = get_string_sym(src_basis->all_astrs[src_a_global], src_basis->orbsym);
-                if (src_a_sym >= src_basis->num_irreps) continue;
-                const int64 src_a_local = src_a_global - (src_basis->astrs_vec[src_a_sym] - src_basis->all_astrs);
-                if (src_a_local < 0 || src_a_local >= src_basis->num_astrs[src_a_sym]) continue;
-
-                for (int64 pa = alpha_links.rowptr[src_a_global]; pa < alpha_links.rowptr[src_a_global + 1]; ++pa)
-                {
-                    const int64 dst_a_global = alpha_links.colidx[pa];
-                    if (dst_a_global < target_a_begin || dst_a_global >= target_a_end) continue;
-                    const int64 a_full = dst_a_global - target_a_begin;
-
-                    for (int64 src_b_global = 0; src_b_global < num_src_b; ++src_b_global)
-                    {
-                        const int64 src_b_sym = get_string_sym(src_basis->all_bstrs[src_b_global], src_basis->orbsym);
-                        if (src_b_sym >= src_basis->num_irreps) continue;
-                        const int64 src_block_idx = src_basis->block_map[src_a_sym * src_basis->num_irreps + src_b_sym];
-                        if (src_block_idx == -1) continue;
-                        const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                        const int64 src_b_local = src_b_global - (src_basis->bstrs_vec[src_b_sym] - src_basis->all_bstrs);
-                        if (src_b_local < 0 || src_b_local >= src_basis->num_bstrs[src_b_sym]) continue;
-                        const Tv src_amp = src_vec[src_block.offset + src_a_local * src_block.num_b + src_b_local];
-                        if (src_amp == Tv{}) continue;
-
-                        for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
-                        {
-                            ++generated_target_edges;
-                            const int64 dst_b_global = beta_links.colidx[pb];
-                            if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
-                            const int64 b_full = dst_b_global - target_b_begin;
-
-                            Tv hpsi = {};
-                            for (int64 original_idx : group_original_idxs)
-                            {
-                                const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
-                                if (group == nullptr) continue;
-
-                                hpsi += src_amp * compute_group_coeff_for_pair(
-                                    *group,
-                                    src_basis->all_astrs[src_a_global],
-                                    src_basis->all_bstrs[src_b_global],
-                                    tgt_basis->all_astrs[dst_a_global],
-                                    tgt_basis->all_bstrs[dst_b_global]);
-                            }
-                            accumulate_target(a_full, b_full, hpsi);
-                        }
-                    }
-                }
-            }
+            const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
+            if (group != nullptr) group_ptrs.push_back(group);
         }
-    };
+        const GroupPtrRange group_range{group_begin, (int64)group_ptrs.size()};
+        if (group_range.begin == group_range.end) continue;
 
-    auto accumulate_beta_new_frontier = [&]()
+        const auto alpha_new_it = ctx->new_frontiers.alpha_links_by_ax.find(key.ax);
+        const auto alpha_full_it = ctx->full_links.alpha_links_by_ax.find(key.ax);
+        const auto beta_new_it = ctx->new_frontiers.beta_links_by_bx.find(key.bx);
+        const auto beta_full_it = ctx->full_links.beta_links_by_bx.find(key.bx);
+
+        if (alpha_new_it != ctx->new_frontiers.alpha_links_by_ax.end() &&
+            beta_full_it != ctx->full_links.beta_links_by_bx.end())
+            alpha_new_buckets.push_back({&alpha_new_it->second, &beta_full_it->second, group_range});
+
+        if (alpha_full_it != ctx->full_links.alpha_links_by_ax.end() &&
+            beta_new_it != ctx->new_frontiers.beta_links_by_bx.end())
+            beta_new_buckets.push_back({&alpha_full_it->second, &beta_new_it->second, group_range});
+    }
+
+    int64 num_src_astrs_total = 0;
+    int64 num_src_bstrs_total = 0;
+    for (int64 sym = 0; sym < src_basis->num_irreps; ++sym)
     {
-        const int64 target_a_begin = full_block.astrs - tgt_basis->all_astrs;
-        const int64 target_a_end = target_a_begin + num_a_total;
-        const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
-        const int64 target_b_end = target_b_begin + num_b_total;
+        num_src_astrs_total += src_basis->num_astrs[sym];
+        num_src_bstrs_total += src_basis->num_bstrs[sym];
+    }
 
-        for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
+    std::vector<SourceStringInfo> src_a_info(num_src_astrs_total);
+    for (int64 src_a_global = 0; src_a_global < num_src_astrs_total; ++src_a_global)
+    {
+        SourceStringInfo &info = src_a_info[src_a_global];
+        info.sym = get_string_sym(src_basis->all_astrs[src_a_global], src_basis->orbsym);
+        if (info.sym >= src_basis->num_irreps) continue;
+        info.local = src_a_global - (src_basis->astrs_vec[info.sym] - src_basis->all_astrs);
+        info.valid = info.local >= 0 && info.local < src_basis->num_astrs[info.sym];
+    }
+
+    std::vector<SourceStringInfo> src_b_info(num_src_bstrs_total);
+    for (int64 src_b_global = 0; src_b_global < num_src_bstrs_total; ++src_b_global)
+    {
+        SourceStringInfo &info = src_b_info[src_b_global];
+        info.sym = get_string_sym(src_basis->all_bstrs[src_b_global], src_basis->orbsym);
+        if (info.sym >= src_basis->num_irreps) continue;
+        info.local = src_b_global - (src_basis->bstrs_vec[info.sym] - src_basis->all_bstrs);
+        info.valid = info.local >= 0 && info.local < src_basis->num_bstrs[info.sym];
+    }
+
+    const int64 target_a_begin = full_block.astrs - tgt_basis->all_astrs;
+    const int64 target_a_end = target_a_begin + num_a_total;
+    const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
+    const int64 target_b_end = target_b_begin + num_b_total;
+
+    std::vector<AccumTask> tasks;
+    auto append_tasks_for_buckets = [&](const std::vector<LinkBucket> &buckets, bool skip_new_alpha_targets)
+    {
+        for (const LinkBucket &bucket : buckets)
         {
-            const auto alpha_it = ctx->full_links.alpha_links_by_ax.find(key.ax);
-            const auto beta_it = ctx->new_frontiers.beta_links_by_bx.find(key.bx);
-            const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
-            if (alpha_it == ctx->full_links.alpha_links_by_ax.end() ||
-                beta_it == ctx->new_frontiers.beta_links_by_bx.end() ||
-                groups_it == net->group_index.groups_by_ax_bx.end())
-                continue;
-
-            const SpinLinkCSR<Ti> &alpha_links = alpha_it->second;
-            const SpinLinkCSR<Ti> &beta_links = beta_it->second;
-            const std::vector<int64> &group_original_idxs = groups_it->second;
-
+            const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
+            const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
             const int64 num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
             const int64 num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
             for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
             {
-                const int64 src_a_sym = get_string_sym(src_basis->all_astrs[src_a_global], src_basis->orbsym);
-                if (src_a_sym >= src_basis->num_irreps) continue;
-                const int64 src_a_local = src_a_global - (src_basis->astrs_vec[src_a_sym] - src_basis->all_astrs);
-                if (src_a_local < 0 || src_a_local >= src_basis->num_astrs[src_a_sym]) continue;
-
+                if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid) continue;
+                const SourceStringInfo &a_info = src_a_info[src_a_global];
                 for (int64 pa = alpha_links.rowptr[src_a_global]; pa < alpha_links.rowptr[src_a_global + 1]; ++pa)
                 {
                     const int64 dst_a_global = alpha_links.colidx[pa];
                     if (dst_a_global < target_a_begin || dst_a_global >= target_a_end) continue;
-                    if (is_new_a[dst_a_global]) continue;
+                    if (skip_new_alpha_targets && is_new_a[dst_a_global]) continue;
                     const int64 a_full = dst_a_global - target_a_begin;
 
                     for (int64 src_b_global = 0; src_b_global < num_src_b; ++src_b_global)
                     {
-                        const int64 src_b_sym = get_string_sym(src_basis->all_bstrs[src_b_global], src_basis->orbsym);
-                        if (src_b_sym >= src_basis->num_irreps) continue;
-                        const int64 src_block_idx = src_basis->block_map[src_a_sym * src_basis->num_irreps + src_b_sym];
+                        if (src_b_global >= (int64)src_b_info.size() || !src_b_info[src_b_global].valid) continue;
+                        const SourceStringInfo &b_info = src_b_info[src_b_global];
+                        const int64 src_block_idx = src_basis->block_map[a_info.sym * src_basis->num_irreps + b_info.sym];
                         if (src_block_idx == -1) continue;
                         const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                        const int64 src_b_local = src_b_global - (src_basis->bstrs_vec[src_b_sym] - src_basis->all_bstrs);
-                        if (src_b_local < 0 || src_b_local >= src_basis->num_bstrs[src_b_sym]) continue;
-                        const Tv src_amp = src_vec[src_block.offset + src_a_local * src_block.num_b + src_b_local];
-                        if (src_amp == Tv{}) continue;
 
                         for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
                         {
@@ -563,21 +568,10 @@ int64 sci_hvec_select_external_link_block_bitstr(
                             const int64 dst_b_global = beta_links.colidx[pb];
                             if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
                             const int64 b_full = dst_b_global - target_b_begin;
-
-                            Tv hpsi = {};
-                            for (int64 original_idx : group_original_idxs)
-                            {
-                                const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
-                                if (group == nullptr) continue;
-
-                                hpsi += src_amp * compute_group_coeff_for_pair(
-                                    *group,
-                                    src_basis->all_astrs[src_a_global],
-                                    src_basis->all_bstrs[src_b_global],
-                                    tgt_basis->all_astrs[dst_a_global],
-                                    tgt_basis->all_bstrs[dst_b_global]);
-                            }
-                            accumulate_target(a_full, b_full, hpsi);
+                            const int64 target_slot = target_slot_for(a_full, b_full);
+                            tasks.push_back({src_a_global, src_b_global, dst_a_global, dst_b_global,
+                                             src_block.offset, src_block.num_b,
+                                             a_info.local, b_info.local, target_slot, bucket.groups});
                         }
                     }
                 }
@@ -590,13 +584,12 @@ int64 sci_hvec_select_external_link_block_bitstr(
     // Contributions are accumulated by full target determinant before applying
     // the selection threshold so all source determinants and SVD groups that
     // reach the same external determinant contribute to the final Hψ value.
-    std::vector<int64> all_b_idxs(num_b_total);
-    for (int64 b = 0; b < num_b_total; ++b) all_b_idxs[b] = b;
-
     const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total
                                        + (int64)old_astrs.size() * (int64)new_bstrs.size();
+    target_slots.reserve((size_t)reachable_target_count);
     target_acc.reserve((size_t)reachable_target_count);
     target_order.reserve((size_t)reachable_target_count);
+    tasks.reserve((size_t)std::min<int64>(generated_target_edges + reachable_target_count, max_link_entries));
 
     // Alpha-new pass: traverse each (ax,bx) link-frontier bucket, keep only
     // alpha links whose dst_a is new, use the full beta source->target link,
@@ -604,29 +597,48 @@ int64 sci_hvec_select_external_link_block_bitstr(
     // A_new x B_new, so the beta-new pass below is restricted to A_old x B_new.
     const auto t_accumulate0 = std::chrono::steady_clock::now();
     external_candidate_count += (int64)new_astrs.size() * num_b_total;
-    accumulate_alpha_new_frontier();
+    append_tasks_for_buckets(alpha_new_buckets, false);
     external_candidate_count += (int64)old_astrs.size() * (int64)new_bstrs.size();
-    accumulate_beta_new_frontier();
+    append_tasks_for_buckets(beta_new_buckets, true);
+
+    for (const AccumTask &task : tasks)
+    {
+        const Tv src_amp = src_vec[task.src_block_offset + task.src_a_local * task.src_block_num_b + task.src_b_local];
+        if (src_amp == Tv{}) continue;
+
+        Tv hpsi = {};
+        for (int64 group_idx = task.groups.begin; group_idx < task.groups.end; ++group_idx)
+        {
+            hpsi += src_amp * compute_group_coeff_for_pair(
+                *group_ptrs[group_idx],
+                src_basis->all_astrs[task.src_a_global],
+                src_basis->all_bstrs[task.src_b_global],
+                tgt_basis->all_astrs[task.dst_a_global],
+                tgt_basis->all_bstrs[task.dst_b_global]);
+        }
+        if (hpsi != Tv{}) target_acc[task.target_slot] += hpsi;
+    }
     const auto t_accumulate1 = std::chrono::steady_clock::now();
 
     const auto t_threshold0 = std::chrono::steady_clock::now();
-    for (const AccumTarget &target : target_order)
+    for (int64 target_slot = 0; target_slot < (int64)target_order.size(); ++target_slot)
     {
         if (out_count >= max_entries) break;
-        const auto acc_it = target_acc.find(target.target_global);
-        if (acc_it == target_acc.end() || acc_it->second == Tv{}) continue;
+        const Tv acc = target_acc[target_slot];
+        if (acc == Tv{}) continue;
+        const AccumTarget &target = target_order[target_slot];
 
         const Tv haa = candidate_diags[target.target_global];
         const Tv denom = variational_energy - haa;
         const double denom_norm = std::sqrt(sqnorm(denom));
         if (denom_norm == 0.0) continue;
-        const Tv selection_amplitude = acc_it->second / denom;
+        const Tv selection_amplitude = acc / denom;
         const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
         if (selection_norm <= eps) continue;
 
         out_entries[out_count++] = {full_block.astrs[target.a_full],
                                     full_block.bstrs[target.b_full],
-                                    acc_it->second};
+                                    acc};
     }
 
     const auto t_threshold1 = std::chrono::steady_clock::now();
@@ -721,7 +733,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                      (long long)ctx->alpha_new_link_entries,
                      (long long)ctx->beta_new_link_entries,
                      (long long)generated_target_edges,
-                     (long long)target_acc.size(),
+                     (long long)target_order.size(),
                      (long long)out_count,
                      link_build_time,
                      link_select_time,
