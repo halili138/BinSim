@@ -69,6 +69,17 @@ static inline void append_block_frontier_targets(
     }
 }
 
+
+template <typename Ti>
+static inline int64 count_spin_link_entries(
+    const std::unordered_map<Ti, SpinLinkCSR<Ti>> &links_by_mask)
+{
+    int64 total = 0;
+    for (const auto &kv : links_by_mask)
+        total += (int64)kv.second.colidx.size();
+    return total;
+}
+
 template <typename Ti, typename Tv>
 int64 sci_hvec_select_for_block_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
@@ -196,7 +207,8 @@ int64 sci_hvec_select_external_bitstr(
     const int64 num_a_total = full_block.num_a;
     const int64 num_b_total = full_block.num_b;
 
-    const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr;
+    const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr ||
+                            std::getenv("BINSIM_SCI_BITSTR_PRINT_LINK_SELECT_PERF") != nullptr;
     const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr ||
                                  std::getenv("BINSIM_SCI_BITSTR_CHECK_LINK_SELECT") != nullptr;
     const auto t0 = std::chrono::steady_clock::now();
@@ -204,8 +216,15 @@ int64 sci_hvec_select_external_bitstr(
     std::vector<Ti> unique_axs;
     std::vector<Ti> unique_bxs;
     collect_unique_spin_masks(net, unique_axs, unique_bxs);
+    const auto t_link_build0 = std::chrono::steady_clock::now();
     SpinLinksByMask<Ti> full_links = build_spin_links_by_mask(src_basis, tgt_basis, unique_axs, unique_bxs);
     SpinLinksByMask<Ti> new_frontiers = build_new_frontier_links_by_mask(full_links, is_new_a, is_new_b);
+    const auto t_link_build1 = std::chrono::steady_clock::now();
+
+    const int64 alpha_link_entries = count_spin_link_entries(full_links.alpha_links_by_ax);
+    const int64 beta_link_entries = count_spin_link_entries(full_links.beta_links_by_bx);
+    const int64 alpha_new_link_entries = count_spin_link_entries(new_frontiers.alpha_links_by_ax);
+    const int64 beta_new_link_entries = count_spin_link_entries(new_frontiers.beta_links_by_bx);
 
     std::vector<Ti> new_astrs;
     std::vector<int64> new_a_idxs;
@@ -247,6 +266,7 @@ int64 sci_hvec_select_external_bitstr(
     int64 out_count = 0;
     int64 external_candidate_count = 0;
     int64 contraction_candidate_count = 0;
+    int64 generated_target_edges = 0;
 
     struct AccumTarget
     {
@@ -339,6 +359,7 @@ int64 sci_hvec_select_external_bitstr(
 
                         for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
                         {
+                            ++generated_target_edges;
                             const int64 dst_b_global = beta_links.colidx[pb];
                             if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
                             const int64 b_full = dst_b_global - target_b_begin;
@@ -415,6 +436,7 @@ int64 sci_hvec_select_external_bitstr(
 
                         for (int64 pb = beta_links.rowptr[src_b_global]; pb < beta_links.rowptr[src_b_global + 1]; ++pb)
                         {
+                            ++generated_target_edges;
                             const int64 dst_b_global = beta_links.colidx[pb];
                             if (dst_b_global < target_b_begin || dst_b_global >= target_b_end) continue;
                             const int64 b_full = dst_b_global - target_b_begin;
@@ -457,11 +479,14 @@ int64 sci_hvec_select_external_bitstr(
     // alpha links whose dst_a is new, use the full beta source->target link,
     // and accumulate all contributions to A_new x B_all.  This includes
     // A_new x B_new, so the beta-new pass below is restricted to A_old x B_new.
+    const auto t_accumulate0 = std::chrono::steady_clock::now();
     external_candidate_count += (int64)new_astrs.size() * num_b_total;
     accumulate_alpha_new_frontier();
     external_candidate_count += (int64)old_astrs.size() * (int64)new_bstrs.size();
     accumulate_beta_new_frontier();
+    const auto t_accumulate1 = std::chrono::steady_clock::now();
 
+    const auto t_threshold0 = std::chrono::steady_clock::now();
     for (const AccumTarget &target : target_order)
     {
         if (out_count >= max_entries) break;
@@ -480,6 +505,8 @@ int64 sci_hvec_select_external_bitstr(
                                     full_block.bstrs[target.b_full],
                                     acc_it->second};
     }
+
+    const auto t_threshold1 = std::chrono::steady_clock::now();
 
     if (check_mask_scan && out_count < max_entries)
     {
@@ -547,15 +574,40 @@ int64 sci_hvec_select_external_bitstr(
     if (print_perf)
     {
         const auto t1 = std::chrono::steady_clock::now();
-        const double true_external_time = std::chrono::duration<double>(t1 - t0).count();
+        const double link_select_time = std::chrono::duration<double>(t1 - t0).count();
+        const double link_build_time = std::chrono::duration<double>(t_link_build1 - t_link_build0).count();
+        const double accumulate_time = std::chrono::duration<double>(t_accumulate1 - t_accumulate0).count();
+        const double threshold_time = std::chrono::duration<double>(t_threshold1 - t_threshold0).count();
+        const int64 full_candidate_count = num_a_total * num_b_total;
         std::fprintf(stderr,
-                     "[sci_bitstr perf] full_target_select_time=unmeasured "
-                     "mask_scan_external_select_time=unmeasured "
-                     "true_external_block_select_time=%.9f "
-                     "external_candidate_count=%lld contraction_candidate_count=%lld\n",
-                     true_external_time,
+                     "[sci_bitstr link perf] "
+                     "num_unique_ax=%lld num_unique_bx=%lld num_ax_bx_buckets=%lld "
+                     "alpha_link_entries=%lld beta_link_entries=%lld "
+                     "alpha_new_link_entries=%lld beta_new_link_entries=%lld "
+                     "generated_target_edges=%lld unique_accum_targets=%lld selected_count=%lld "
+                     "link_build_time=%.9f link_select_time=%.9f accumulate_time=%.9f threshold_time=%.9f "
+                     "full_target_select_time=unmeasured external_block_select_time=unmeasured "
+                     "link_frontier_select_time=%.9f full_candidate_count=%lld "
+                     "external_block_candidate_count=%lld link_generated_edge_count=%lld "
+                     "space_model=link_csr_plus_unique_targets_no_Nstr_times_ngroups\n",
+                     (long long)unique_axs.size(),
+                     (long long)unique_bxs.size(),
+                     (long long)net->group_index.unique_ax_bx_pairs.size(),
+                     (long long)alpha_link_entries,
+                     (long long)beta_link_entries,
+                     (long long)alpha_new_link_entries,
+                     (long long)beta_new_link_entries,
+                     (long long)generated_target_edges,
+                     (long long)target_acc.size(),
+                     (long long)out_count,
+                     link_build_time,
+                     link_select_time,
+                     accumulate_time,
+                     threshold_time,
+                     link_select_time,
+                     (long long)full_candidate_count,
                      (long long)external_candidate_count,
-                     (long long)contraction_candidate_count);
+                     (long long)generated_target_edges);
     }
 
     return out_count;
