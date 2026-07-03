@@ -102,7 +102,6 @@ extern "C"
 
     int64 sci_hvec_select_external_link_all_blocks_with_context_bitstr_f64(
         void *ctx, void *tgt, void *src, void *net,
-        const bool *is_new_a, const bool *is_new_b,
         const double *src_vec, const double *candidate_diags,
         double variational_energy, int chunk_size, double eps,
         uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
@@ -116,7 +115,7 @@ extern "C"
         for (int64 blk = 0; blk < a->num_blocks && out_count < max_entries; ++blk)
         {
             out_count += sci_hvec_select_external_link_block_bitstr<uint32,double>(
-                context, a, b, c, is_new_a, is_new_b, blk, src_vec, candidate_diags,
+                context, a, b, c, blk, src_vec, candidate_diags,
                 variational_energy, chunk_size, eps, entries + out_count, max_entries - out_count);
         }
         for (int64 i = 0; i < out_count; ++i)

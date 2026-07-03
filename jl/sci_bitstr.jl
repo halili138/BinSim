@@ -280,7 +280,6 @@ end
 
 function sci_hvec_select_external_link_all_blocks_bitstr!(
     ctx::ExternalLinkSelectContextBitstr, tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
     psi::Vector{Float64}, candidate_diags::Vector{Float64},
     variational_energy::Float64, chunk_size::Int, eps::Float64,
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
@@ -291,7 +290,6 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     buf_v = Vector{Float64}(undef, max_entries)
     n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_context_bitstr_f64(
         ctx.ptr::Ptr{Cvoid}, tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
         psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
         variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
         buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
@@ -500,6 +498,9 @@ function run_sci_bitstr(mole::Mole;
             tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
             tgt_diags = zeros(Float64, tgt.dim)
             get_diags_bitstr!(tgt, ham_otf, tgt_diags)
+            link_ctx = (select_mode == :external_link || select_mode == :auto || check_link_select) ?
+                ExternalLinkSelectContextBitstr(
+                    tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, ax_bx_group_bucket) : nothing
 
             if debug_compare_fci && verbose
                 cur_missing_a = count_missing_bitstrings(fci_astrs, basis.astrs)
@@ -524,17 +525,9 @@ function run_sci_bitstr(mole::Mole;
                 end
                 raw_sel = length(sel_v)
             elseif select_mode == :external_link || select_mode == :auto
-                t2 = @elapsed begin
-                    link_ctx = ExternalLinkSelectContextBitstr(
-                        tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, ax_bx_group_bucket)
-                    try
-                        sci_hvec_select_external_link_all_blocks_bitstr!(
-                            link_ctx, tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
-                            current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
-                    finally
-                        destroy_external_link_select_context_bitstr(link_ctx)
-                    end
-                end
+                t2 = @elapsed sci_hvec_select_external_link_all_blocks_bitstr!(
+                    link_ctx, tgt, basis, ham_otf, psi, tgt_diags,
+                    current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
                 raw_sel = length(sel_v)
             else
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1
@@ -572,15 +565,9 @@ function run_sci_bitstr(mole::Mole;
                 if select_mode == :external_link || select_mode == :auto
                     append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
                 else
-                    link_ctx = ExternalLinkSelectContextBitstr(
-                        tgt, basis, ham_otf, is_new_a, is_new_b, unique_axs, unique_bxs, ax_bx_group_bucket)
-                    try
-                        sci_hvec_select_external_link_all_blocks_bitstr!(
-                            link_ctx, tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
-                            current_energy, chunk_size, eps, link_a, link_b, link_v)
-                    finally
-                        destroy_external_link_select_context_bitstr(link_ctx)
-                    end
+                    sci_hvec_select_external_link_all_blocks_bitstr!(
+                        link_ctx, tgt, basis, ham_otf, psi, tgt_diags,
+                        current_energy, chunk_size, eps, link_a, link_b, link_v)
                 end
 
                 full_map = selected_pair_hpsi_map(full_a, full_b, full_v)
@@ -630,6 +617,9 @@ function run_sci_bitstr(mole::Mole;
 
             if nsel == 0
                 verbose && println("No new states, done.")
+                if link_ctx !== nothing
+                    destroy_external_link_select_context_bitstr(link_ctx)
+                end
                 destroy_sci_basis_manager_bitstr(tgt)
                 break
             end
@@ -651,6 +641,9 @@ function run_sci_bitstr(mole::Mole;
                                   verbose=false)
             verbose && @printf("E=%.10f  err=%.1e\n", E, abs(E - mole.e_scale))
 
+            if link_ctx !== nothing
+                destroy_external_link_select_context_bitstr(link_ctx)
+            end
             destroy_sci_basis_manager_bitstr(tgt)
             destroy_sci_basis_manager_bitstr(basis)
             basis, psi, diags = new_basis, psi_new, new_diags

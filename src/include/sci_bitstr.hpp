@@ -79,6 +79,8 @@ struct ExternalLinkSelectContext
     std::vector<Ti> unique_axs;
     std::vector<Ti> unique_bxs;
     std::vector<const SVDGroup_OTF<Ti, Tv> *> group_ptrs;
+    std::vector<unsigned char> is_new_a;
+    std::vector<unsigned char> is_new_b;
     std::vector<LinkBucket> alpha_new_buckets;
     std::vector<LinkBucket> beta_new_buckets;
     SpinLinksByMask<Ti> full_links;
@@ -111,6 +113,8 @@ ExternalLinkSelectContext<Ti, Tv> build_external_link_select_context(
     ExternalLinkSelectContext<Ti, Tv> ctx;
     ctx.unique_axs.assign(unique_axs, unique_axs + num_unique_axs);
     ctx.unique_bxs.assign(unique_bxs, unique_bxs + num_unique_bxs);
+    ctx.is_new_a.assign(is_new_a, is_new_a + sci_num_alpha_strings(tgt_basis));
+    ctx.is_new_b.assign(is_new_b, is_new_b + sci_num_beta_strings(tgt_basis));
     const auto t0 = std::chrono::steady_clock::now();
     ctx.full_links = build_spin_links_by_mask(src_basis, tgt_basis, ctx.unique_axs, ctx.unique_bxs);
     ctx.new_frontiers = build_new_frontier_links_by_mask(ctx.full_links, is_new_a, is_new_b);
@@ -351,8 +355,6 @@ int64 sci_hvec_select_external_link_block_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
-    const bool *is_new_a,
-    const bool *is_new_b,
     int64 block_idx,
     const Tv *src_vec,
     const Tv *candidate_diags,
@@ -366,46 +368,11 @@ int64 sci_hvec_select_external_link_block_bitstr(
     const int64 num_a_total = full_block.num_a;
     const int64 num_b_total = full_block.num_b;
 
-    int64 block_new_a_count = 0;
-    int64 block_new_b_count = 0;
-    for (int64 a = 0; a < num_a_total; ++a)
-    {
-        const int64 a_external_idx = (full_block.astrs + a) - tgt_basis->all_astrs;
-        if (is_new_a[a_external_idx]) ++block_new_a_count;
-    }
-    for (int64 b = 0; b < num_b_total; ++b)
-    {
-        const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
-        if (is_new_b[b_external_idx]) ++block_new_b_count;
-    }
-    const int64 full_candidate_count_heuristic = num_a_total * num_b_total;
-    const int64 external_candidate_count_heuristic =
-        block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
-    constexpr int64 max_link_entries = 50000000;
-    constexpr double dense_threshold = 0.85;
-    const double external_candidate_ratio = full_candidate_count_heuristic == 0
-        ? 0.0
-        : (double)external_candidate_count_heuristic / (double)full_candidate_count_heuristic;
-
-    if (external_candidate_ratio > dense_threshold)
-    {
-        return sci_hvec_select_external_block_bitstr(
-            tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
-            candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
-    }
-
     const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr ||
                             std::getenv("BINSIM_SCI_BITSTR_PRINT_LINK_SELECT_PERF") != nullptr;
     const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr ||
                                  std::getenv("BINSIM_SCI_BITSTR_CHECK_LINK_SELECT") != nullptr;
     const auto t0 = std::chrono::steady_clock::now();
-
-    if (ctx->alpha_link_entries + ctx->beta_link_entries > max_link_entries)
-    {
-        return sci_hvec_select_external_block_bitstr(
-            tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
-            candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
-    }
 
     std::vector<Ti> new_astrs;
     std::vector<int64> new_a_idxs;
@@ -523,7 +490,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
     }
     else
     {
-        sparse_acc_pairs.reserve((size_t)std::min<int64>(reachable_target_count, max_link_entries));
+        sparse_acc_pairs.reserve((size_t)reachable_target_count);
     }
 
     auto append_accumulated_hpsi = [&](int64 target_global, Tv hpsi)
@@ -568,7 +535,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                 {
                     const int64 dst_a_global = alpha_links.colidx[pa];
                     if (dst_a_global < target_a_begin || dst_a_global >= target_a_end) continue;
-                    if (skip_new_alpha_targets && is_new_a[dst_a_global]) continue;
+                    if (skip_new_alpha_targets && ctx->is_new_a[dst_a_global]) continue;
                     const int64 a_full = dst_a_global - target_a_begin;
                     const Ti dst_astr = tgt_basis->all_astrs[dst_a_global];
 
@@ -709,12 +676,12 @@ int64 sci_hvec_select_external_link_block_bitstr(
             {
                 const int64 a_global = a_start + a;
                 const int64 a_external_idx = (full_block.astrs + a_global) - tgt_basis->all_astrs;
-                const bool new_a = is_new_a[a_external_idx];
+                const bool new_a = ctx->is_new_a[a_external_idx] != 0;
                 const Tv *row = chunk_acc.data() + a * num_b_total;
                 for (int64 b = 0; b < num_b_total; ++b)
                 {
                     const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
-                    if (!new_a && !is_new_b[b_external_idx]) continue;
+                    if (!new_a && !ctx->is_new_b[b_external_idx]) continue;
                     if (row[b] == Tv{}) continue;
 
                     const Tv haa = candidate_diags[full_block.offset + a_global * num_b_total + b];
