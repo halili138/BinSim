@@ -248,6 +248,32 @@ function sci_hvec_select_external_link_bitstr!(
     return n
 end
 
+
+function sci_hvec_select_external_link_all_blocks_bitstr!(
+    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
+    psi::Vector{Float64}, candidate_diags::Vector{Float64},
+    variational_energy::Float64, chunk_size::Int, eps::Float64,
+    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+
+    max_entries = tgt.dim
+    buf_a = Vector{UInt32}(undef, max_entries)
+    buf_b = Vector{UInt32}(undef, max_entries)
+    buf_v = Vector{Float64}(undef, max_entries)
+    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_bitstr_f64(
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
+        psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
+        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
+        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
+        Int64(max_entries)::Int64
+    )::Int64
+    append!(sel_a, view(buf_a, 1:n))
+    append!(sel_b, view(buf_b, 1:n))
+    append!(sel_v, view(buf_v, 1:n))
+    return n
+end
+
 function sci_hvec_select_external_links_bitstr!(args...; kwargs...)
     return sci_hvec_select_external_link_bitstr!(args...; kwargs...)
 end
@@ -469,11 +495,9 @@ function run_sci_bitstr(mole::Mole;
                 end
                 raw_sel = length(sel_v)
             elseif select_mode == :external_link || select_mode == :auto
-                t2 = @elapsed for blk in 0:tgt.num_blocks-1
-                    sci_hvec_select_external_link_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
-                                                            blk, psi, tgt_diags, current_energy,
-                                                            chunk_size, eps, sel_a, sel_b, sel_v)
-                end
+                t2 = @elapsed sci_hvec_select_external_link_all_blocks_bitstr!(
+                    tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
+                    current_energy, chunk_size, eps, sel_a, sel_b, sel_v)
                 raw_sel = length(sel_v)
             else
                 t2 = @elapsed for blk in 0:tgt.num_blocks-1
@@ -511,11 +535,9 @@ function run_sci_bitstr(mole::Mole;
                 if select_mode == :external_link || select_mode == :auto
                     append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
                 else
-                    for blk in 0:tgt.num_blocks-1
-                        sci_hvec_select_external_link_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
-                                                                blk, psi, tgt_diags, current_energy,
-                                                                chunk_size, eps, link_a, link_b, link_v)
-                    end
+                    sci_hvec_select_external_link_all_blocks_bitstr!(
+                        tgt, basis, ham_otf, is_new_a, is_new_b, psi, tgt_diags,
+                        current_energy, chunk_size, eps, link_a, link_b, link_v)
                 end
 
                 full_map = selected_pair_hpsi_map(full_a, full_b, full_v)
