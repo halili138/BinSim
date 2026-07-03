@@ -3,6 +3,51 @@
 #include "otf.hpp"
 #include "utils.hpp"
 
+
+template <int Rank, typename Ti, typename Tv>
+FORCE_INLINE Tv compute_group_coeff_for_pair_rank(
+    const SVDGroup_OTF<Ti, Tv> &group,
+    Ti src_astr, Ti src_bstr, Ti dst_astr, Ti dst_bstr)
+{
+    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+
+    Tv pa[MAX_RANK] = {};
+    Tv pb[MAX_RANK] = {};
+
+    // Match the block gather convention exactly: phases are evaluated on the
+    // source string for a spin sector changed by the group link, and on the
+    // target string for an unchanged spin sector.  Unchanged source/target
+    // strings are expected to be identical, but using the target mirrors the
+    // diag/pure gather paths and keeps this helper numerically aligned with
+    // gather_diag_for_block, gather_pure_a_for_block, gather_pure_b_for_block,
+    // and gather_mixed_for_block.
+    const Ti phase_astr = (group.ax == Ti{}) ? dst_astr : src_astr;
+    const Ti phase_bstr = (group.bx == Ti{}) ? dst_bstr : src_bstr;
+
+    precompute_phase<Rank, Ti, Tv>(phase_astr, group.unique_zas, group.num_za,
+                                   group.wa, pa, 1, group.rank);
+    precompute_phase<Rank, Ti, Tv>(phase_bstr, group.unique_zbs, group.num_zb,
+                                   group.wb, pb, 1, group.rank);
+    return compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
+}
+
+template <typename Ti, typename Tv>
+FORCE_INLINE Tv compute_group_coeff_for_pair(
+    const SVDGroup_OTF<Ti, Tv> &group,
+    Ti src_astr, Ti src_bstr, Ti dst_astr, Ti dst_bstr)
+{
+    const int dispatch_rank = (group.rank == 1 || group.rank == 2) ? group.rank : 0;
+    switch (dispatch_rank)
+    {
+    case 1:
+        return compute_group_coeff_for_pair_rank<1>(group, src_astr, src_bstr, dst_astr, dst_bstr);
+    case 2:
+        return compute_group_coeff_for_pair_rank<2>(group, src_astr, src_bstr, dst_astr, dst_bstr);
+    default:
+        return compute_group_coeff_for_pair_rank<0>(group, src_astr, src_bstr, dst_astr, dst_bstr);
+    }
+}
+
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_diag_for_block(
     const BlockDesc<Ti> &tgt_block,

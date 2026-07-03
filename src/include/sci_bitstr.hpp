@@ -348,15 +348,12 @@ int64 sci_hvec_select_external_bitstr(
                                 const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
                                 if (group == nullptr) continue;
 
-                                Tv pa_phase[RANK3] = {};
-                                Tv pb_phase[RANK3] = {};
-                                precompute_phase<0, Ti, Tv>(src_basis->all_astrs[src_a_global],
-                                                            group->unique_zas, group->num_za,
-                                                            group->wa, pa_phase, 1, group->rank);
-                                precompute_phase<0, Ti, Tv>(src_basis->all_bstrs[src_b_global],
-                                                            group->unique_zbs, group->num_zb,
-                                                            group->wb, pb_phase, 1, group->rank);
-                                hpsi += src_amp * compute_coeff<0, Tv>(0, pa_phase, pb_phase, 1, group->rank);
+                                hpsi += src_amp * compute_group_coeff_for_pair(
+                                    *group,
+                                    src_basis->all_astrs[src_a_global],
+                                    src_basis->all_bstrs[src_b_global],
+                                    tgt_basis->all_astrs[dst_a_global],
+                                    tgt_basis->all_bstrs[dst_b_global]);
                             }
                             accumulate_target(a_full, b_full, hpsi);
                         }
@@ -427,15 +424,12 @@ int64 sci_hvec_select_external_bitstr(
                                 const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
                                 if (group == nullptr) continue;
 
-                                Tv pa_phase[RANK3] = {};
-                                Tv pb_phase[RANK3] = {};
-                                precompute_phase<0, Ti, Tv>(src_basis->all_astrs[src_a_global],
-                                                            group->unique_zas, group->num_za,
-                                                            group->wa, pa_phase, 1, group->rank);
-                                precompute_phase<0, Ti, Tv>(src_basis->all_bstrs[src_b_global],
-                                                            group->unique_zbs, group->num_zb,
-                                                            group->wb, pb_phase, 1, group->rank);
-                                hpsi += src_amp * compute_coeff<0, Tv>(0, pa_phase, pb_phase, 1, group->rank);
+                                hpsi += src_amp * compute_group_coeff_for_pair(
+                                    *group,
+                                    src_basis->all_astrs[src_a_global],
+                                    src_basis->all_bstrs[src_b_global],
+                                    tgt_basis->all_astrs[dst_a_global],
+                                    tgt_basis->all_bstrs[dst_b_global]);
                             }
                             accumulate_target(a_full, b_full, hpsi);
                         }
