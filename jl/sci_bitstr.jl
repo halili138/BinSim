@@ -252,6 +252,23 @@ function selected_pair_set(sel_a::Vector{UInt32}, sel_b::Vector{UInt32})
     return Set(zip(sel_a, sel_b))
 end
 
+
+function selected_pair_hpsi_map(sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
+    result = Dict{Tuple{UInt32,UInt32},Float64}()
+    for i in eachindex(sel_a, sel_b, sel_v)
+        key = (sel_a[i], sel_b[i])
+        result[key] = get(result, key, 0.0) + sel_v[i]
+    end
+    return result
+end
+
+function selected_hpsi_max_abs_diff(left::Dict{Tuple{UInt32,UInt32},Float64},
+                                    right::Dict{Tuple{UInt32,UInt32},Float64})
+    common = intersect(keys(left), keys(right))
+    isempty(common) && return 0.0
+    return maximum(abs(left[key] - right[key]) for key in common)
+end
+
 function filter_new_selected(
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64},
     dst_a_idx_map::Dict{UInt32,Int}, dst_b_idx_map::Dict{UInt32,Int},
@@ -367,6 +384,7 @@ function run_sci_bitstr(mole::Mole;
     if !(select_mode in (:full, :external_block, :external_links))
         error("select_mode must be one of :full, :external_block, or :external_links")
     end
+    check_link_select = debug_external_select || get(ENV, "BINSIM_SCI_BITSTR_CHECK_LINK_SELECT", "") != ""
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -461,7 +479,7 @@ function run_sci_bitstr(mole::Mole;
                     sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
             end
 
-            if debug_external_select
+            if check_link_select
                 full_a = UInt32[]; full_b = UInt32[]; full_v = Float64[]
                 for blk in 0:tgt.num_blocks-1
                     sci_hvec_select_for_block_bitstr!(tgt, basis, ham_otf, blk, psi,
@@ -470,15 +488,50 @@ function run_sci_bitstr(mole::Mole;
                 end
                 full_a, full_b, full_v = filter_new_selected(
                     full_a, full_b, full_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
-                full_set = selected_pair_set(full_a, full_b)
-                external_set = selected_pair_set(sel_a, sel_b)
-                if full_set != external_set
-                    missing = setdiff(full_set, external_set)
-                    extra = setdiff(external_set, full_set)
-                    error("external-only selection mismatch at iter $iter: missing=$(length(missing)) extra=$(length(extra))")
+
+                block_a = UInt32[]; block_b = UInt32[]; block_v = Float64[]
+                if select_mode == :external_block
+                    append!(block_a, sel_a); append!(block_b, sel_b); append!(block_v, sel_v)
+                else
+                    for blk in 0:tgt.num_blocks-1
+                        sci_hvec_select_external_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                                                          blk, psi, tgt_diags, current_energy,
+                                                          chunk_size, eps, block_a, block_b, block_v)
+                    end
                 end
-                verbose && @printf("  [%d debug] %s select matches full-target fallback (%d determinants)\n",
-                                   iter, String(select_mode), length(external_set))
+
+                link_a = UInt32[]; link_b = UInt32[]; link_v = Float64[]
+                if select_mode == :external_links
+                    append!(link_a, sel_a); append!(link_b, sel_b); append!(link_v, sel_v)
+                else
+                    for blk in 0:tgt.num_blocks-1
+                        sci_hvec_select_external_links_bitstr!(tgt, basis, ham_otf, is_new_a, is_new_b,
+                                                                blk, psi, tgt_diags, current_energy,
+                                                                chunk_size, eps, link_a, link_b, link_v)
+                    end
+                end
+
+                full_map = selected_pair_hpsi_map(full_a, full_b, full_v)
+                block_map = selected_pair_hpsi_map(block_a, block_b, block_v)
+                link_map = selected_pair_hpsi_map(link_a, link_b, link_v)
+                full_set = Set(keys(full_map))
+                block_set = Set(keys(block_map))
+                link_set = Set(keys(link_map))
+                block_missing = setdiff(full_set, block_set); block_extra = setdiff(block_set, full_set)
+                link_missing = setdiff(full_set, link_set); link_extra = setdiff(link_set, full_set)
+                block_match = isempty(block_missing) && isempty(block_extra)
+                link_match = isempty(link_missing) && isempty(link_extra)
+                block_hpsi_diff = selected_hpsi_max_abs_diff(full_map, block_map)
+                link_hpsi_diff = selected_hpsi_max_abs_diff(full_map, link_map)
+                @printf("[sci_bitstr link check] iter=%d full_count=%d external_block_count=%d link_count=%d block_selected_set_match=%d selected_set_match=%d block_hpsi_max_abs_diff=%.17g hpsi_max_abs_diff=%.17g block_missing=%d block_extra=%d missing=%d extra=%d\n",
+                                   iter, length(full_set), length(block_set), length(link_set),
+                                   block_match ? 1 : 0, link_match ? 1 : 0,
+                                   block_hpsi_diff, link_hpsi_diff,
+                                   length(block_missing), length(block_extra),
+                                   length(link_missing), length(link_extra))
+                if debug_external_select && (!block_match || !link_match)
+                    error("external selection mismatch at iter $iter: block_missing=$(length(block_missing)) block_extra=$(length(block_extra)) link_missing=$(length(link_missing)) link_extra=$(length(link_extra))")
+                end
             end
 
             verbose && @printf("  [%d] expand %d→%d  raw_sel=%d  ",

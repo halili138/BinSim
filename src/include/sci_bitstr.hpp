@@ -197,7 +197,8 @@ int64 sci_hvec_select_external_bitstr(
     const int64 num_b_total = full_block.num_b;
 
     const bool print_perf = std::getenv("BINSIM_SCI_BITSTR_PRINT_SELECT_PERF") != nullptr;
-    const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr;
+    const bool check_mask_scan = std::getenv("BINSIM_SCI_BITSTR_CHECK_EXTERNAL_SELECT") != nullptr ||
+                                 std::getenv("BINSIM_SCI_BITSTR_CHECK_LINK_SELECT") != nullptr;
     const auto t0 = std::chrono::steady_clock::now();
 
     std::vector<Ti> unique_axs;
@@ -530,7 +531,7 @@ int64 sci_hvec_select_external_bitstr(
         if (block_selected != mask_selected)
         {
             std::fprintf(stderr,
-                         "[sci_bitstr check] external block select mismatch: "
+                         "[sci_bitstr link check] external block select mismatch: "
                          "true_external_selected=%lld mask_scan_selected=%lld\n",
                          (long long)block_selected.size(),
                          (long long)mask_selected.size());
@@ -538,7 +539,7 @@ int64 sci_hvec_select_external_bitstr(
         else
         {
             std::fprintf(stderr,
-                         "[sci_bitstr check] external block select matches mask-scan selected set: %lld entries\n",
+                         "[sci_bitstr link check] external block select matches mask-scan selected set: %lld entries\n",
                          (long long)block_selected.size());
         }
     }
