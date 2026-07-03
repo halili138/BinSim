@@ -60,22 +60,39 @@ static inline int64 count_spin_link_entries(
 
 
 
-template <typename Ti>
+template <typename Ti, typename Tv>
 struct ExternalLinkSelectContext
 {
+    struct GroupPtrRange
+    {
+        int64 begin = 0;
+        int64 end = 0;
+    };
+
+    struct LinkBucket
+    {
+        const SpinLinkCSR<Ti> *alpha_links = nullptr;
+        const SpinLinkCSR<Ti> *beta_links = nullptr;
+        GroupPtrRange groups;
+    };
+
     std::vector<Ti> unique_axs;
     std::vector<Ti> unique_bxs;
+    std::vector<const SVDGroup_OTF<Ti, Tv> *> group_ptrs;
+    std::vector<LinkBucket> alpha_new_buckets;
+    std::vector<LinkBucket> beta_new_buckets;
     SpinLinksByMask<Ti> full_links;
     SpinLinksByMask<Ti> new_frontiers;
     int64 alpha_link_entries = 0;
     int64 beta_link_entries = 0;
     int64 alpha_new_link_entries = 0;
     int64 beta_new_link_entries = 0;
+    int64 num_group_buckets = 0;
     double link_build_time = 0.0;
 };
 
 template <typename Ti, typename Tv>
-ExternalLinkSelectContext<Ti> build_external_link_select_context(
+ExternalLinkSelectContext<Ti, Tv> build_external_link_select_context(
     const SciBasisManager<Ti> *src_basis,
     const SciBasisManager<Ti> *tgt_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -84,9 +101,14 @@ ExternalLinkSelectContext<Ti> build_external_link_select_context(
     const Ti *unique_axs,
     int64 num_unique_axs,
     const Ti *unique_bxs,
-    int64 num_unique_bxs)
+    int64 num_unique_bxs,
+    const Ti *bucket_axs,
+    const Ti *bucket_bxs,
+    const int64 *bucket_offsets,
+    const int64 *bucket_group_ids,
+    int64 num_buckets)
 {
-    ExternalLinkSelectContext<Ti> ctx;
+    ExternalLinkSelectContext<Ti, Tv> ctx;
     ctx.unique_axs.assign(unique_axs, unique_axs + num_unique_axs);
     ctx.unique_bxs.assign(unique_bxs, unique_bxs + num_unique_bxs);
     const auto t0 = std::chrono::steady_clock::now();
@@ -98,6 +120,59 @@ ExternalLinkSelectContext<Ti> build_external_link_select_context(
     ctx.beta_link_entries = count_spin_link_entries(ctx.full_links.beta_links_by_bx);
     ctx.alpha_new_link_entries = count_spin_link_entries(ctx.new_frontiers.alpha_links_by_ax);
     ctx.beta_new_link_entries = count_spin_link_entries(ctx.new_frontiers.beta_links_by_bx);
+
+    auto group_from_original_idx = [&](int64 original_idx) -> const SVDGroup_OTF<Ti, Tv> *
+    {
+        if (original_idx < 0 || original_idx >= net->num_groups) return nullptr;
+        const int64 sorted_idx = net->sorted_idxs[original_idx];
+        if (sorted_idx < 0) return nullptr;
+        switch (net->excit_types[original_idx])
+        {
+        case 0:
+            return sorted_idx < (int64)net->diag_groups.size() ? &net->diag_groups[sorted_idx] : nullptr;
+        case 1:
+            return sorted_idx < (int64)net->pure_a_groups.size() ? &net->pure_a_groups[sorted_idx] : nullptr;
+        case 2:
+            return sorted_idx < (int64)net->pure_b_groups.size() ? &net->pure_b_groups[sorted_idx] : nullptr;
+        case 3:
+            return sorted_idx < (int64)net->mixed_groups.size() ? &net->mixed_groups[sorted_idx] : nullptr;
+        default:
+            return nullptr;
+        }
+    };
+
+    auto append_bucket = [&](const GroupAxBxKey<Ti> &key, const int64 *ids_begin, const int64 *ids_end)
+    {
+        const int64 group_begin = (int64)ctx.group_ptrs.size();
+        for (const int64 *id = ids_begin; id != ids_end; ++id)
+        {
+            const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(*id);
+            if (group != nullptr) ctx.group_ptrs.push_back(group);
+        }
+        const typename ExternalLinkSelectContext<Ti, Tv>::GroupPtrRange group_range{group_begin, (int64)ctx.group_ptrs.size()};
+        if (group_range.begin == group_range.end) return;
+        const auto alpha_new_it = ctx.new_frontiers.alpha_links_by_ax.find(key.ax);
+        const auto alpha_full_it = ctx.full_links.alpha_links_by_ax.find(key.ax);
+        const auto beta_new_it = ctx.new_frontiers.beta_links_by_bx.find(key.bx);
+        const auto beta_full_it = ctx.full_links.beta_links_by_bx.find(key.bx);
+
+        if (alpha_new_it != ctx.new_frontiers.alpha_links_by_ax.end() &&
+            beta_full_it != ctx.full_links.beta_links_by_bx.end())
+            ctx.alpha_new_buckets.push_back({&alpha_new_it->second, &beta_full_it->second, group_range});
+
+        if (alpha_full_it != ctx.full_links.alpha_links_by_ax.end() &&
+            beta_new_it != ctx.new_frontiers.beta_links_by_bx.end())
+            ctx.beta_new_buckets.push_back({&alpha_full_it->second, &beta_new_it->second, group_range});
+    };
+
+    ctx.num_group_buckets = num_buckets;
+    ctx.group_ptrs.reserve(bucket_offsets[num_buckets]);
+    ctx.alpha_new_buckets.reserve(num_buckets);
+    ctx.beta_new_buckets.reserve(num_buckets);
+    for (int64 i = 0; i < num_buckets; ++i)
+        append_bucket(GroupAxBxKey<Ti>{bucket_axs[i], bucket_bxs[i]},
+                      bucket_group_ids + bucket_offsets[i],
+                      bucket_group_ids + bucket_offsets[i + 1]);
     return ctx;
 }
 
@@ -272,7 +347,7 @@ int64 sci_hvec_select_external_block_bitstr(
 
 template <typename Ti, typename Tv>
 int64 sci_hvec_select_external_link_block_bitstr(
-    const ExternalLinkSelectContext<Ti> *ctx,
+    const ExternalLinkSelectContext<Ti, Tv> *ctx,
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -393,72 +468,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
         bool valid = false;
     };
 
-    struct GroupPtrRange
-    {
-        int64 begin = 0;
-        int64 end = 0;
-    };
-
-    struct LinkBucket
-    {
-        const SpinLinkCSR<Ti> *alpha_links = nullptr;
-        const SpinLinkCSR<Ti> *beta_links = nullptr;
-        GroupPtrRange groups;
-    };
-
-    auto group_from_original_idx = [&](int64 original_idx) -> const SVDGroup_OTF<Ti, Tv> *
-    {
-        if (original_idx < 0 || original_idx >= net->num_groups) return nullptr;
-        const int64 sorted_idx = net->sorted_idxs[original_idx];
-        if (sorted_idx < 0) return nullptr;
-        switch (net->excit_types[original_idx])
-        {
-        case 0:
-            return sorted_idx < (int64)net->diag_groups.size() ? &net->diag_groups[sorted_idx] : nullptr;
-        case 1:
-            return sorted_idx < (int64)net->pure_a_groups.size() ? &net->pure_a_groups[sorted_idx] : nullptr;
-        case 2:
-            return sorted_idx < (int64)net->pure_b_groups.size() ? &net->pure_b_groups[sorted_idx] : nullptr;
-        case 3:
-            return sorted_idx < (int64)net->mixed_groups.size() ? &net->mixed_groups[sorted_idx] : nullptr;
-        default:
-            return nullptr;
-        }
-    };
-
-    std::vector<const SVDGroup_OTF<Ti, Tv> *> group_ptrs;
-    std::vector<LinkBucket> alpha_new_buckets;
-    std::vector<LinkBucket> beta_new_buckets;
-    alpha_new_buckets.reserve(net->group_index.unique_ax_bx_pairs.size());
-    beta_new_buckets.reserve(net->group_index.unique_ax_bx_pairs.size());
-
-    for (const GroupAxBxKey<Ti> &key : net->group_index.unique_ax_bx_pairs)
-    {
-        const auto groups_it = net->group_index.groups_by_ax_bx.find(key);
-        if (groups_it == net->group_index.groups_by_ax_bx.end()) continue;
-
-        const int64 group_begin = (int64)group_ptrs.size();
-        for (int64 original_idx : groups_it->second)
-        {
-            const SVDGroup_OTF<Ti, Tv> *group = group_from_original_idx(original_idx);
-            if (group != nullptr) group_ptrs.push_back(group);
-        }
-        const GroupPtrRange group_range{group_begin, (int64)group_ptrs.size()};
-        if (group_range.begin == group_range.end) continue;
-
-        const auto alpha_new_it = ctx->new_frontiers.alpha_links_by_ax.find(key.ax);
-        const auto alpha_full_it = ctx->full_links.alpha_links_by_ax.find(key.ax);
-        const auto beta_new_it = ctx->new_frontiers.beta_links_by_bx.find(key.bx);
-        const auto beta_full_it = ctx->full_links.beta_links_by_bx.find(key.bx);
-
-        if (alpha_new_it != ctx->new_frontiers.alpha_links_by_ax.end() &&
-            beta_full_it != ctx->full_links.beta_links_by_bx.end())
-            alpha_new_buckets.push_back({&alpha_new_it->second, &beta_full_it->second, group_range});
-
-        if (alpha_full_it != ctx->full_links.alpha_links_by_ax.end() &&
-            beta_new_it != ctx->new_frontiers.beta_links_by_bx.end())
-            beta_new_buckets.push_back({&alpha_full_it->second, &beta_new_it->second, group_range});
-    }
+    using LinkBucket = typename ExternalLinkSelectContext<Ti, Tv>::LinkBucket;
 
     int64 num_src_astrs_total = 0;
     int64 num_src_bstrs_total = 0;
@@ -564,7 +574,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
 
                     for (int64 local_group_idx = 0; local_group_idx < group_count; ++local_group_idx)
                     {
-                        const SVDGroup_OTF<Ti, Tv> &group = *group_ptrs[bucket.groups.begin + local_group_idx];
+                        const SVDGroup_OTF<Ti, Tv> &group = *ctx->group_ptrs[bucket.groups.begin + local_group_idx];
                         const Ti phase_astr = (group.ax == Ti{}) ? dst_astr : src_astr;
                         precompute_phase<0, Ti, Tv>(phase_astr, group.unique_zas, group.num_za,
                                                     group.wa, phase_a.data() + (size_t)local_group_idx * max_rank,
@@ -593,7 +603,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                             Tv hpsi = {};
                             for (int64 local_group_idx = 0; local_group_idx < group_count; ++local_group_idx)
                             {
-                                const SVDGroup_OTF<Ti, Tv> &group = *group_ptrs[bucket.groups.begin + local_group_idx];
+                                const SVDGroup_OTF<Ti, Tv> &group = *ctx->group_ptrs[bucket.groups.begin + local_group_idx];
                                 const Ti phase_bstr = (group.bx == Ti{}) ? dst_bstr : src_bstr;
                                 Tv *pb_phase = phase_b.data() + (size_t)local_group_idx * max_rank;
                                 precompute_phase<0, Ti, Tv>(phase_bstr, group.unique_zbs, group.num_zb,
@@ -617,9 +627,9 @@ int64 sci_hvec_select_external_link_block_bitstr(
     // reach the same external determinant contribute to the final Hψ value.
     const auto t_accumulate0 = std::chrono::steady_clock::now();
     external_candidate_count += (int64)new_astrs.size() * num_b_total;
-    accumulate_for_buckets(alpha_new_buckets, false);
+    accumulate_for_buckets(ctx->alpha_new_buckets, false);
     external_candidate_count += (int64)old_astrs.size() * (int64)new_bstrs.size();
-    accumulate_for_buckets(beta_new_buckets, true);
+    accumulate_for_buckets(ctx->beta_new_buckets, true);
     const auto t_accumulate1 = std::chrono::steady_clock::now();
 
     const auto t_threshold0 = std::chrono::steady_clock::now();
@@ -757,7 +767,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                      "space_model=link_csr_plus_unique_targets_no_Nstr_times_ngroups\n",
                      (long long)ctx->unique_axs.size(),
                      (long long)ctx->unique_bxs.size(),
-                     (long long)net->group_index.unique_ax_bx_pairs.size(),
+                     (long long)ctx->num_group_buckets,
                      (long long)ctx->alpha_link_entries,
                      (long long)ctx->beta_link_entries,
                      (long long)ctx->alpha_new_link_entries,
@@ -781,122 +791,6 @@ int64 sci_hvec_select_external_link_block_bitstr(
 
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_bitstr(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    const bool *is_new_a,
-    const bool *is_new_b,
-    int64 block_idx,
-    const Tv *src_vec,
-    const Tv *candidate_diags,
-    Tv variational_energy,
-    int chunk_size,
-    double eps,
-    BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
-{
-    auto ctx = build_external_link_select_context(
-        src_basis, tgt_basis, net, is_new_a, is_new_b,
-        net->group_index.unique_axs.data(), (int64)net->group_index.unique_axs.size(),
-        net->group_index.unique_bxs.data(), (int64)net->group_index.unique_bxs.size());
-    return sci_hvec_select_external_link_block_bitstr(
-        &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
-        candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
-}
-
-template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_bitstr(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    const bool *is_new_a,
-    const bool *is_new_b,
-    const Ti *unique_axs,
-    int64 num_unique_axs,
-    const Ti *unique_bxs,
-    int64 num_unique_bxs,
-    int64 block_idx,
-    const Tv *src_vec,
-    const Tv *candidate_diags,
-    Tv variational_energy,
-    int chunk_size,
-    double eps,
-    BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
-{
-    auto ctx = build_external_link_select_context(
-        src_basis, tgt_basis, net, is_new_a, is_new_b,
-        unique_axs, num_unique_axs, unique_bxs, num_unique_bxs);
-    return sci_hvec_select_external_link_block_bitstr(
-        &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
-        candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
-}
-
-template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_all_blocks_bitstr(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    const bool *is_new_a,
-    const bool *is_new_b,
-    const Tv *src_vec,
-    const Tv *candidate_diags,
-    Tv variational_energy,
-    int chunk_size,
-    double eps,
-    BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
-{
-    auto ctx = build_external_link_select_context(
-        src_basis, tgt_basis, net, is_new_a, is_new_b,
-        net->group_index.unique_axs.data(), (int64)net->group_index.unique_axs.size(),
-        net->group_index.unique_bxs.data(), (int64)net->group_index.unique_bxs.size());
-    int64 out_count = 0;
-    for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
-    {
-        out_count += sci_hvec_select_external_link_block_bitstr(
-            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
-            candidate_diags, variational_energy, chunk_size, eps,
-            out_entries + out_count, max_entries - out_count);
-    }
-    return out_count;
-}
-
-template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_all_blocks_bitstr(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    const bool *is_new_a,
-    const bool *is_new_b,
-    const Ti *unique_axs,
-    int64 num_unique_axs,
-    const Ti *unique_bxs,
-    int64 num_unique_bxs,
-    const Tv *src_vec,
-    const Tv *candidate_diags,
-    Tv variational_energy,
-    int chunk_size,
-    double eps,
-    BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
-{
-    auto ctx = build_external_link_select_context(
-        src_basis, tgt_basis, net, is_new_a, is_new_b,
-        unique_axs, num_unique_axs, unique_bxs, num_unique_bxs);
-    int64 out_count = 0;
-    for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
-    {
-        out_count += sci_hvec_select_external_link_block_bitstr(
-            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
-            candidate_diags, variational_energy, chunk_size, eps,
-            out_entries + out_count, max_entries - out_count);
-    }
-    return out_count;
-}
-
-template <typename Ti, typename Tv>
 int64 sci_hvec_select_external_bitstr(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
@@ -912,9 +806,7 @@ int64 sci_hvec_select_external_bitstr(
     BufferedEntry<Ti, Tv> *out_entries,
     int64 max_entries)
 {
-    // Backward-compatible entry point kept for existing PR/users; the
-    // implementation is the external-link optimized selector.
-    return sci_hvec_select_external_link_bitstr(
+    return sci_hvec_select_external_block_bitstr(
         tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
         candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
 }
