@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <unordered_map>
 #include <unordered_set>
 
 template <typename Tv>
@@ -246,10 +247,31 @@ int64 sci_hvec_select_external_bitstr(
     int64 external_candidate_count = 0;
     int64 contraction_candidate_count = 0;
 
-    auto select_subblock = [&](const Ti *astrs, const int64 *a_idxs, int64 num_a,
-                               const Ti *bstrs, const int64 *b_idxs, int64 num_b)
+    struct AccumTarget
     {
-        if (num_a == 0 || num_b == 0 || out_count >= max_entries) return;
+        int64 target_global;
+        int64 a_full;
+        int64 b_full;
+    };
+
+    std::unordered_map<int64, Tv> target_acc;
+    std::vector<AccumTarget> target_order;
+
+    auto accumulate_target = [&](int64 a_full, int64 b_full, Tv hpsi)
+    {
+        if (hpsi == Tv{}) return;
+
+        const int64 target_global = full_block.offset + a_full * num_b_total + b_full;
+        auto inserted = target_acc.emplace(target_global, Tv{});
+        if (inserted.second)
+            target_order.push_back({target_global, a_full, b_full});
+        inserted.first->second += hpsi;
+    };
+
+    auto accumulate_subblock = [&](const Ti *astrs, const int64 *a_idxs, int64 num_a,
+                                   const Ti *bstrs, const int64 *b_idxs, int64 num_b)
+    {
+        if (num_a == 0 || num_b == 0) return;
         external_candidate_count += num_a * num_b;
 
         BlockDesc<Ti> subblock = full_block;
@@ -257,7 +279,7 @@ int64 sci_hvec_select_external_bitstr(
         subblock.num_b = num_b;
         subblock.offset = 0;
 
-        for (int64 a_start = 0; a_start < num_a && out_count < max_entries; a_start += chunk_size)
+        for (int64 a_start = 0; a_start < num_a; a_start += chunk_size)
         {
             const int64 a_end = std::min(a_start + (int64)chunk_size, num_a);
             const int64 cur_num_a = a_end - a_start;
@@ -269,24 +291,13 @@ int64 sci_hvec_select_external_bitstr(
             contract_hvec_sci_for_desc(subblock, src_basis, net, src_vec, chunk_acc.data());
             contraction_candidate_count += cur_num_a * num_b;
 
-            for (int64 a = 0; a < cur_num_a && out_count < max_entries; ++a)
+            for (int64 a = 0; a < cur_num_a; ++a)
             {
                 const int64 a_full = a_idxs[a_start + a];
                 const Tv *row = chunk_acc.data() + a * num_b;
-                for (int64 b = 0; b < num_b && out_count < max_entries; ++b)
+                for (int64 b = 0; b < num_b; ++b)
                 {
-                    if (row[b] == Tv{}) continue;
-
-                    const int64 b_full = b_idxs[b];
-                    const Tv haa = candidate_diags[full_block.offset + a_full * num_b_total + b_full];
-                    const Tv denom = variational_energy - haa;
-                    const double denom_norm = std::sqrt(sqnorm(denom));
-                    if (denom_norm == 0.0) continue;
-                    const Tv selection_amplitude = row[b] / denom;
-                    const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-                    if (selection_norm <= eps) continue;
-
-                    out_entries[out_count++] = {astrs[a_start + a], bstrs[b], row[b]};
+                    accumulate_target(a_full, b_idxs[b], row[b]);
                 }
             }
         }
@@ -294,13 +305,40 @@ int64 sci_hvec_select_external_bitstr(
 
     // External space = (A_new x B_all) union (A_old x B_new).  This assigns
     // A_new x B_new only to the first subspace, avoiding duplicate selection.
+    // Contributions are accumulated by full target determinant before applying
+    // the selection threshold so all source determinants and SVD groups that
+    // reach the same external determinant contribute to the final Hψ value.
     std::vector<int64> all_b_idxs(num_b_total);
     for (int64 b = 0; b < num_b_total; ++b) all_b_idxs[b] = b;
 
-    select_subblock(new_astrs.data(), new_a_idxs.data(), (int64)new_astrs.size(),
-                    full_block.bstrs, all_b_idxs.data(), num_b_total);
-    select_subblock(old_astrs.data(), old_a_idxs.data(), (int64)old_astrs.size(),
-                    new_bstrs.data(), new_b_idxs.data(), (int64)new_bstrs.size());
+    const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total
+                                       + (int64)old_astrs.size() * (int64)new_bstrs.size();
+    target_acc.reserve((size_t)reachable_target_count);
+    target_order.reserve((size_t)reachable_target_count);
+
+    accumulate_subblock(new_astrs.data(), new_a_idxs.data(), (int64)new_astrs.size(),
+                        full_block.bstrs, all_b_idxs.data(), num_b_total);
+    accumulate_subblock(old_astrs.data(), old_a_idxs.data(), (int64)old_astrs.size(),
+                        new_bstrs.data(), new_b_idxs.data(), (int64)new_bstrs.size());
+
+    for (const AccumTarget &target : target_order)
+    {
+        if (out_count >= max_entries) break;
+        const auto acc_it = target_acc.find(target.target_global);
+        if (acc_it == target_acc.end() || acc_it->second == Tv{}) continue;
+
+        const Tv haa = candidate_diags[target.target_global];
+        const Tv denom = variational_energy - haa;
+        const double denom_norm = std::sqrt(sqnorm(denom));
+        if (denom_norm == 0.0) continue;
+        const Tv selection_amplitude = acc_it->second / denom;
+        const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
+        if (selection_norm <= eps) continue;
+
+        out_entries[out_count++] = {full_block.astrs[target.a_full],
+                                    full_block.bstrs[target.b_full],
+                                    acc_it->second};
+    }
 
     if (check_mask_scan && out_count < max_entries)
     {
