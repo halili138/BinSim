@@ -74,58 +74,103 @@ extern "C"
         return n;
     }
 
-
-    void *create_external_link_select_context_bitstr_f64(
+    int64 sci_hvec_select_external_link_bitstr_f64(
         void *tgt, void *src, void *net,
         const bool *is_new_a, const bool *is_new_b,
-        const uint32 *unique_axs, int64 num_unique_axs,
-        const uint32 *unique_bxs, int64 num_unique_bxs,
-        const uint32 *bucket_axs, const uint32 *bucket_bxs,
-        const int64 *bucket_offsets, const int64 *bucket_group_ids,
-        int64 num_buckets)
-    {
-        auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
-        auto *b = static_cast<SciBasisManager<uint32>*>(src);
-        auto *c = static_cast<Network_OTF<uint32,double>*>(net);
-        auto ctx = new ExternalLinkSelectContext<uint32,double>(
-            build_external_link_select_context<uint32,double>(
-                b, a, c, is_new_a, is_new_b,
-                unique_axs, num_unique_axs, unique_bxs, num_unique_bxs,
-                bucket_axs, bucket_bxs, bucket_offsets, bucket_group_ids, num_buckets));
-        return static_cast<void*>(ctx);
-    }
-
-    void destroy_external_link_select_context_bitstr_f64(void *ctx)
-    {
-        delete static_cast<ExternalLinkSelectContext<uint32,double>*>(ctx);
-    }
-
-    int64 sci_hvec_select_external_link_all_blocks_with_context_bitstr_f64(
-        void *ctx, void *tgt, void *src, void *net,
-        const double *src_vec, const double *candidate_diags,
+        int64 blk, const double *src_vec, const double *candidate_diags,
         double variational_energy, int chunk_size, double eps,
-        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries,
-        ExternalLinkSelectBlockStats *stats)
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
     {
-        auto *context = static_cast<ExternalLinkSelectContext<uint32,double>*>(ctx);
         auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
         auto *b = static_cast<SciBasisManager<uint32>*>(src);
         auto *c = static_cast<Network_OTF<uint32,double>*>(net);
         auto *entries = new BufferedEntry<uint32,double>[max_entries];
-        int64 out_count = 0;
-        for (int64 blk = 0; blk < a->num_blocks && out_count < max_entries; ++blk)
-        {
-            out_count += sci_hvec_select_external_link_block_bitstr<uint32,double>(
-                context, a, b, c, blk, src_vec, candidate_diags,
-                variational_energy, chunk_size, eps, entries + out_count, max_entries - out_count,
-                stats == nullptr ? nullptr : stats + blk);
-        }
-        for (int64 i = 0; i < out_count; ++i)
+        int64 n = sci_hvec_select_external_link_bitstr<uint32,double>(
+            a, b, c, is_new_a, is_new_b, blk, src_vec, candidate_diags,
+            variational_energy, chunk_size, eps, entries, max_entries);
+        for (int64 i = 0; i < n; ++i)
         { out_a[i] = entries[i].astr; out_b[i] = entries[i].bstr; out_v[i] = entries[i].val; }
         delete[] entries;
-        return out_count;
+        return n;
     }
 
+    int64 sci_hvec_select_external_link_with_masks_bitstr_f64(
+        void *tgt, void *src, void *net,
+        const bool *is_new_a, const bool *is_new_b,
+        const uint32 *unique_axs, int64 num_unique_axs,
+        const uint32 *unique_bxs, int64 num_unique_bxs,
+        int64 blk, const double *src_vec, const double *candidate_diags,
+        double variational_energy, int chunk_size, double eps,
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
+    {
+        auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
+        auto *b = static_cast<SciBasisManager<uint32>*>(src);
+        auto *c = static_cast<Network_OTF<uint32,double>*>(net);
+        auto *entries = new BufferedEntry<uint32,double>[max_entries];
+        int64 n = sci_hvec_select_external_link_bitstr<uint32,double>(
+            a, b, c, is_new_a, is_new_b, unique_axs, num_unique_axs,
+            unique_bxs, num_unique_bxs, blk, src_vec, candidate_diags,
+            variational_energy, chunk_size, eps, entries, max_entries);
+        for (int64 i = 0; i < n; ++i)
+        { out_a[i] = entries[i].astr; out_b[i] = entries[i].bstr; out_v[i] = entries[i].val; }
+        delete[] entries;
+        return n;
+    }
+
+    int64 sci_hvec_select_external_links_bitstr_f64(
+        void *tgt, void *src, void *net,
+        const bool *is_new_a, const bool *is_new_b,
+        int64 blk, const double *src_vec, const double *candidate_diags,
+        double variational_energy, int chunk_size, double eps,
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
+    {
+        return sci_hvec_select_external_link_bitstr_f64(
+            tgt, src, net, is_new_a, is_new_b, blk, src_vec, candidate_diags,
+            variational_energy, chunk_size, eps, out_a, out_b, out_v, max_entries);
+    }
+
+    int64 sci_hvec_select_external_link_all_blocks_bitstr_f64(
+        void *tgt, void *src, void *net,
+        const bool *is_new_a, const bool *is_new_b,
+        const double *src_vec, const double *candidate_diags,
+        double variational_energy, int chunk_size, double eps,
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
+    {
+        auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
+        auto *b = static_cast<SciBasisManager<uint32>*>(src);
+        auto *c = static_cast<Network_OTF<uint32,double>*>(net);
+        auto *entries = new BufferedEntry<uint32,double>[max_entries];
+        int64 n = sci_hvec_select_external_link_all_blocks_bitstr<uint32,double>(
+            a, b, c, is_new_a, is_new_b, src_vec, candidate_diags,
+            variational_energy, chunk_size, eps, entries, max_entries);
+        for (int64 i = 0; i < n; ++i)
+        { out_a[i] = entries[i].astr; out_b[i] = entries[i].bstr; out_v[i] = entries[i].val; }
+        delete[] entries;
+        return n;
+    }
+
+    int64 sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
+        void *tgt, void *src, void *net,
+        const bool *is_new_a, const bool *is_new_b,
+        const uint32 *unique_axs, int64 num_unique_axs,
+        const uint32 *unique_bxs, int64 num_unique_bxs,
+        const double *src_vec, const double *candidate_diags,
+        double variational_energy, int chunk_size, double eps,
+        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
+    {
+        auto *a = static_cast<SciBasisManager<uint32>*>(tgt);
+        auto *b = static_cast<SciBasisManager<uint32>*>(src);
+        auto *c = static_cast<Network_OTF<uint32,double>*>(net);
+        auto *entries = new BufferedEntry<uint32,double>[max_entries];
+        int64 n = sci_hvec_select_external_link_all_blocks_bitstr<uint32,double>(
+            a, b, c, is_new_a, is_new_b, unique_axs, num_unique_axs,
+            unique_bxs, num_unique_bxs, src_vec, candidate_diags,
+            variational_energy, chunk_size, eps, entries, max_entries);
+        for (int64 i = 0; i < n; ++i)
+        { out_a[i] = entries[i].astr; out_b[i] = entries[i].bstr; out_v[i] = entries[i].val; }
+        delete[] entries;
+        return n;
+    }
 
 
     void remap_wavefunction_sci_bitstr_f64(
