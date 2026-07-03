@@ -103,6 +103,30 @@ extern "C"
                 bs, bs, n, blk, src, dst + bs->blocks[blk].offset);
     }
 
+    int64 network_otf_group_bucket_entries_bitstr_f64(void *ptr)
+    {
+        auto *net = static_cast<Network_OTF<uint32,double>*>(ptr);
+        return net->group_index.total_group_bucket_entries();
+    }
+
+    int64 network_otf_unique_ax_count_bitstr_f64(void *ptr)
+    {
+        auto *net = static_cast<Network_OTF<uint32,double>*>(ptr);
+        return (int64)net->group_index.unique_axs.size();
+    }
+
+    int64 network_otf_unique_bx_count_bitstr_f64(void *ptr)
+    {
+        auto *net = static_cast<Network_OTF<uint32,double>*>(ptr);
+        return (int64)net->group_index.unique_bxs.size();
+    }
+
+    int64 network_otf_unique_ax_bx_pair_count_bitstr_f64(void *ptr)
+    {
+        auto *net = static_cast<Network_OTF<uint32,double>*>(ptr);
+        return (int64)net->group_index.unique_ax_bx_pairs.size();
+    }
+
     int64 sci_basis_dim_bitstr(void *ptr) { return static_cast<SciBasisManager<uint32>*>(ptr)->dim; }
     int64 sci_basis_num_blocks_bitstr(void *ptr) { return static_cast<SciBasisManager<uint32>*>(ptr)->num_blocks; }
 
