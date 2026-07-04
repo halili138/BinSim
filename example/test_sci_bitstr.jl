@@ -15,5 +15,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.e_scale = n2_6_31g[1.0]
     mole.orbsym .%= 10
 
-    run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-3, verbose=true, select_mode=:external_link)
+    run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=1e-5, verbose=true, select_mode=:external_link)
 end

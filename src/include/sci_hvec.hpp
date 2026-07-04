@@ -3,33 +3,6 @@
 #include "otf.hpp"
 #include "utils.hpp"
 
-template <int Rank, typename Ti, typename Tv>
-FORCE_INLINE Tv compute_group_coeff_for_pair_rank(
-    const SVDGroup_OTF<Ti, Tv> &group,
-    Ti src_astr, Ti src_bstr, Ti dst_astr, Ti dst_bstr)
-{
-    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-    Tv pa[MAX_RANK] = {};
-    Tv pb[MAX_RANK] = {};
-
-    // Match the block gather convention exactly: phases are evaluated on the
-    // source string for a spin sector changed by the group link, and on the
-    // target string for an unchanged spin sector.  Unchanged source/target
-    // strings are expected to be identical, but using the target mirrors the
-    // diag/pure gather paths and keeps this helper numerically aligned with
-    // gather_diag_for_block, gather_pure_a_for_block, gather_pure_b_for_block,
-    // and gather_mixed_for_block.
-    const Ti phase_astr = (group.ax == Ti{}) ? dst_astr : src_astr;
-    const Ti phase_bstr = (group.bx == Ti{}) ? dst_bstr : src_bstr;
-
-    precompute_phase<Rank, Ti, Tv>(phase_astr, group.unique_zas, group.num_za,
-                                   group.wa, pa, 1, group.rank);
-    precompute_phase<Rank, Ti, Tv>(phase_bstr, group.unique_zbs, group.num_zb,
-                                   group.wb, pb, 1, group.rank);
-    return compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
-}
-
 template <typename Tv>
 FORCE_INLINE Tv compute_group_coeff_from_phases(
     const Tv *pa, const Tv *pb, int rank)
@@ -43,23 +16,6 @@ FORCE_INLINE Tv compute_group_coeff_from_phases(
         return compute_coeff<2, Tv>(0, pa, pb, 1, rank);
     default:
         return compute_coeff<0, Tv>(0, pa, pb, 1, rank);
-    }
-}
-
-template <typename Ti, typename Tv>
-FORCE_INLINE Tv compute_group_coeff_for_pair(
-    const SVDGroup_OTF<Ti, Tv> &group,
-    Ti src_astr, Ti src_bstr, Ti dst_astr, Ti dst_bstr)
-{
-    const int dispatch_rank = (group.rank == 1 || group.rank == 2) ? group.rank : 0;
-    switch (dispatch_rank)
-    {
-    case 1:
-        return compute_group_coeff_for_pair_rank<1>(group, src_astr, src_bstr, dst_astr, dst_bstr);
-    case 2:
-        return compute_group_coeff_for_pair_rank<2>(group, src_astr, src_bstr, dst_astr, dst_bstr);
-    default:
-        return compute_group_coeff_for_pair_rank<0>(group, src_astr, src_bstr, dst_astr, dst_bstr);
     }
 }
 
@@ -624,51 +580,4 @@ void contract_hvec_sci_for_block(
     const BlockDesc<Ti> &tgt_block = tgt_basis->blocks[tgt_block_idx];
 
     contract_hvec_sci_for_desc(tgt_block, src_basis, net, src_vec, dst_acc);
-}
-
-template <typename Ti, typename Tv, typename AccumFunc>
-void contract_hvec_sci_chunked(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    int64 tgt_block_idx,
-    const Tv *src_vec,
-    int chunk_size,
-    AccumFunc &&accum_func)
-{
-    const BlockDesc<Ti> &full_block = tgt_basis->blocks[tgt_block_idx];
-    const int64 num_a_total = full_block.num_a;
-    const int64 num_b = full_block.num_b;
-
-    for (int64 a_start = 0; a_start < num_a_total; a_start += chunk_size)
-    {
-        const int64 a_end = std::min(a_start + (int64)chunk_size, num_a_total);
-        const int64 cur_num_a = a_end - a_start;
-
-        BlockDesc<Ti> chunk_desc = full_block;
-        chunk_desc.astrs = full_block.astrs + a_start;
-        chunk_desc.num_a = cur_num_a;
-        chunk_desc.offset = 0;
-
-        Tv *chunk_acc = new Tv[cur_num_a * num_b];
-        std::fill_n(chunk_acc, cur_num_a * num_b, Tv{});
-
-        dispatch_chunks_for_block<0>(chunk_desc, src_basis, net->diag_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<1>(chunk_desc, src_basis, net->pure_a_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<2>(chunk_desc, src_basis, net->pure_b_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<3>(chunk_desc, src_basis, net->mixed_groups, src_vec, chunk_acc);
-
-        for (int a = 0; a < cur_num_a; ++a)
-        {
-            const int64 a_global = a_start + a;
-            const Tv *row = chunk_acc + a * num_b;
-            for (int b = 0; b < num_b; ++b)
-            {
-                if (row[b] != Tv{})
-                    accum_func(a_global, b, row[b]);
-            }
-        }
-
-        delete[] chunk_acc;
-    }
 }

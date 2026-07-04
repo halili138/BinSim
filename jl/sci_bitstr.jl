@@ -216,35 +216,6 @@ function sci_hvec_select_external_bitstr!(
     return n
 end
 
-function sci_hvec_select_external_link_bitstr!(
-    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    blk::Int, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    max_per_block = tgt.dim
-    buf_a = Vector{UInt32}(undef, max_per_block)
-    buf_b = Vector{UInt32}(undef, max_per_block)
-    buf_v = Vector{Float64}(undef, max_per_block)
-
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
-        blk::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
-        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
-        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        max_per_block::Int64
-    )::Int64
-
-    append!(sel_a, view(buf_a, 1:n))
-    append!(sel_b, view(buf_b, 1:n))
-    append!(sel_v, view(buf_v, 1:n))
-
-    return n
-end
-
-
 function sci_hvec_select_external_link_all_blocks_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
@@ -263,34 +234,6 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
         is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
         unique_axs::Ptr{UInt32}, length(unique_axs)::Int64,
         unique_bxs::Ptr{UInt32}, length(unique_bxs)::Int64,
-        psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
-        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
-        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        max_entries::Int64
-    )::Int64
-
-    append!(sel_a, view(buf_a, 1:n))
-    append!(sel_b, view(buf_b, 1:n))
-    append!(sel_v, view(buf_v, 1:n))
-
-    return n
-end
-
-function sci_hvec_select_external_link_all_blocks_bitstr!(
-    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    max_entries = tgt.dim
-    buf_a = Vector{UInt32}(undef, max_entries)
-    buf_b = Vector{UInt32}(undef, max_entries)
-    buf_v = Vector{Float64}(undef, max_entries)
-
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
         psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
         variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
         buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
@@ -367,22 +310,6 @@ function destroy_sci_basis_manager_bitstr(sb::SciBasisManagerBitstr)
         @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(sb.ptr::Ptr{Cvoid})::Cvoid
         sb.ptr = C_NULL
     end
-end
-
-function create_sci_basis_from_standard_bitstr(basis::BasisManager)
-    ptr = @ccall LIB_SCI_BITSTR.create_sci_basis_from_standard_bitstr_f64(basis.ptr::Ptr{Cvoid})::Ptr{Cvoid}
-    dim = @ccall LIB_SCI_BITSTR.sci_basis_dim_bitstr(ptr::Ptr{Cvoid})::Int64
-    nb = @ccall LIB_SCI_BITSTR.sci_basis_num_blocks_bitstr(ptr::Ptr{Cvoid})::Int64
-    obj = SciBasisManagerBitstr(ptr, dim, basis.norb, nb, -1, -1, UInt32[], UInt32[], Dict{UInt32,Int}(), Dict{UInt32,Int}())
-
-    finalizer(obj) do o
-        if o.ptr != C_NULL
-            @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(o.ptr::Ptr{Cvoid})::Cvoid
-            o.ptr = C_NULL
-        end
-    end
-
-    return obj
 end
 
 function select_full_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr,
@@ -487,7 +414,7 @@ function run_sci_bitstr(mole::Mole;
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
                 sel_a, sel_b, sel_v
             )
-            filter_new_selected(sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
+            sel_a, sel_b, sel_v = filter_new_selected(sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
         end
 
         nsel = length(sel_v)
