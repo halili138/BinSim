@@ -471,33 +471,56 @@ int64 sci_hvec_select_external_link_block_bitstr(
         }
     };
 
-    auto accumulate_for_buckets_impl = [&]<int Rank, typename AppendFn>(const LinkBucket<Ti, Tv> &bucket, bool skip_new_alpha_targets, AppendFn &&append_fn)
+    struct LinkBucketPhaseCache
+    {
+        int64 num_src_a = 0;
+        int64 num_src_b = 0;
+        std::vector<Tv> phase_a_by_str;
+        std::vector<Tv> phase_b_by_str;
+    };
+
+    auto build_phase_cache_for_bucket = [&]<int Rank>(const LinkBucket<Ti, Tv> &bucket)
     {
         constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
 
         const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
         const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
         const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
-        const int64 num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
-        const int64 num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
+        LinkBucketPhaseCache cache;
+        cache.num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
+        cache.num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
+        cache.phase_a_by_str.resize((size_t)cache.num_src_a * MAX_RANK);
+        cache.phase_b_by_str.resize((size_t)cache.num_src_b * MAX_RANK);
 
-        std::vector<Tv> phase_a_by_str((size_t)num_src_astrs_total * MAX_RANK);
-        std::vector<Tv> phase_b_by_str((size_t)num_src_bstrs_total * MAX_RANK);
-
-        for (int64 i = 0; i < num_src_astrs_total; ++i)
+        for (int64 i = 0; i < cache.num_src_a; ++i)
             precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
-                                           group.wa, phase_a_by_str.data() + (size_t)i * MAX_RANK, 1, group.rank);
+                                           group.wa, cache.phase_a_by_str.data() + (size_t)i * MAX_RANK, 1, group.rank);
 
-        for (int64 j = 0; j < num_src_bstrs_total; ++j)
+        for (int64 j = 0; j < cache.num_src_b; ++j)
             precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
-                                           group.wb, phase_b_by_str.data() + (size_t)j * MAX_RANK, 1, group.rank);
+                                           group.wb, cache.phase_b_by_str.data() + (size_t)j * MAX_RANK, 1, group.rank);
+
+        return cache;
+    };
+
+    auto accumulate_for_buckets_impl = [&]<int Rank, typename AppendFn>(const LinkBucket<Ti, Tv> &bucket, const LinkBucketPhaseCache &phase_cache, bool skip_new_alpha_targets, AppendFn &&append_fn)
+    {
+        constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+
+        const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
+        const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
+        const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
+        const int64 num_src_a = phase_cache.num_src_a;
+        const int64 num_src_b = phase_cache.num_src_b;
+        const Tv *phase_a_by_str = phase_cache.phase_a_by_str.data();
+        const Tv *phase_b_by_str = phase_cache.phase_b_by_str.data();
 
         for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
         {
             if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid)
                 continue;
             const SourceStringInfo &a_info = src_a_info[src_a_global];
-            const Tv *pa = phase_a_by_str.data() + (size_t)src_a_global * MAX_RANK;
+            const Tv *pa = phase_a_by_str + (size_t)src_a_global * MAX_RANK;
 
             for (int64 pa_ = alpha_links.rowptr[src_a_global]; pa_ < alpha_links.rowptr[src_a_global + 1]; ++pa_)
             {
@@ -521,7 +544,7 @@ int64 sci_hvec_select_external_link_block_bitstr(
                     if (src_amp == Tv{})
                         continue;
 
-                    const Tv *pb = phase_b_by_str.data() + (size_t)src_b_global * MAX_RANK;
+                    const Tv *pb = phase_b_by_str + (size_t)src_b_global * MAX_RANK;
 
                     for (int64 pb_ = beta_links.rowptr[src_b_global]; pb_ < beta_links.rowptr[src_b_global + 1]; ++pb_)
                     {
@@ -556,6 +579,24 @@ int64 sci_hvec_select_external_link_block_bitstr(
             int r = g->rank;
             return (r == 1 || r == 2) ? r : 0;
         };
+
+        std::vector<LinkBucketPhaseCache> phase_caches(all_buckets.size());
+        for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
+        {
+            const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
+            switch (dispatch_rank(bucket.group))
+            {
+            case 1:
+                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<1>(bucket);
+                break;
+            case 2:
+                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<2>(bucket);
+                break;
+            default:
+                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<0>(bucket);
+                break;
+            }
+        }
 
 #pragma omp parallel
         {
@@ -603,13 +644,13 @@ int64 sci_hvec_select_external_link_block_bitstr(
                 switch (dr)
                 {
                 case 1:
-                    accumulate_for_buckets_impl.template operator()<1>(bucket, skip, local_append);
+                    accumulate_for_buckets_impl.template operator()<1>(bucket, phase_caches[(size_t)i], skip, local_append);
                     break;
                 case 2:
-                    accumulate_for_buckets_impl.template operator()<2>(bucket, skip, local_append);
+                    accumulate_for_buckets_impl.template operator()<2>(bucket, phase_caches[(size_t)i], skip, local_append);
                     break;
                 default:
-                    accumulate_for_buckets_impl.template operator()<0>(bucket, skip, local_append);
+                    accumulate_for_buckets_impl.template operator()<0>(bucket, phase_caches[(size_t)i], skip, local_append);
                     break;
                 }
             }
