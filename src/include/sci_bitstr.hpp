@@ -422,8 +422,16 @@ int64 sci_hvec_select_external_link_block_bitstr(
         std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * RANK3);
         std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * RANK3);
 
-        struct DstAInfo { int a_full; int64 src_a_global; };
-        struct DstBInfo { int b_full; int64 src_b_global; };
+        struct DstAInfo
+        {
+            int a_full;
+            int64 src_a_global;
+        };
+        struct DstBInfo
+        {
+            int b_full;
+            int64 src_b_global;
+        };
         std::vector<DstAInfo> dst_a_list;
         std::vector<DstBInfo> dst_b_list;
         dst_a_list.reserve((size_t)num_a_total);
