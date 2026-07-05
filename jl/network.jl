@@ -353,10 +353,11 @@ mutable struct OTF
     ptr::Ptr{Cvoid}
     dim::Int64
     ngs::Int64
+    sci_ptr::Ptr{Cvoid}
 end
 
 function OTF()
-    return OTF(C_NULL, 0, 0)
+    return OTF(C_NULL, 0, 0, C_NULL)
 end
 
 function OTF(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e-12) where {Ti,Tv,K,V}
@@ -406,7 +407,7 @@ function OTF(basis::BasisManager, A::BinaryQubitAABB{Ti,Tv,K,V}, tol::Float64=1e
 
     ptr == C_NULL && error("Failed to create C++ OTFNET.")
 
-    obj = OTF(ptr, basis.dim, ngs)
+    obj = OTF(ptr, basis.dim, ngs, C_NULL)
 
     if Tv <: Complex
         finalizer(obj) do o
@@ -475,7 +476,7 @@ function OTF(basis::BasisManager, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, tol:
 
     ptr == C_NULL && error("Failed to create C++ OTFNET.")
 
-    obj = OTF(ptr, basis.dim, ngs)
+    obj = OTF(ptr, basis.dim, ngs, C_NULL)
 
     if Tv <: Complex
         finalizer(obj) do o
@@ -692,8 +693,8 @@ function OTF_Functions(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, p
     f_batchexpm = (idx, θ, mat, N, j)   -> nothing
     f_batchgrad = (lv, rv, grads, x)    -> nothing 
     f_batchtran = (lv, rv, trans)       -> nothing
-    ham_otf     = OTF(C_NULL, 0, 0)
-    pool_otf    = OTF(C_NULL, 0, 0)
+    ham_otf     = OTF(C_NULL, 0, 0, C_NULL)
+    pool_otf    = OTF(C_NULL, 0, 0, C_NULL)
 
     if !isempty(ham)
         info_print && print("Pre-compiling Ham OTF ... ")

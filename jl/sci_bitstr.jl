@@ -120,11 +120,17 @@ function OTF_bitstr(orbsym::Vector{Int64}, norb::Int64, A::BinaryQubitAABB{Ti,Tv
         flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv}
     )::Ptr{Cvoid}
     ptr == C_NULL && error("Failed to build bitstr OTF.")
-    obj = OTF(ptr, 0, ngs)
+    sci_ptr = @ccall LIB_SCI_BITSTR.build_network_sci_bitstr_f64(ptr::Ptr{Cvoid})::Ptr{Cvoid}
+    sci_ptr == C_NULL && error("Failed to build SCI network.")
+    obj = OTF(ptr, 0, ngs, sci_ptr)
     finalizer(obj) do o
         if o.ptr != C_NULL
             @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
             o.ptr = C_NULL
+        end
+        if o.sci_ptr != C_NULL
+            @ccall LIB_SCI_BITSTR.destroy_network_sci_bitstr_f64(o.sci_ptr::Ptr{Cvoid})::Cvoid
+            o.sci_ptr = C_NULL
         end
     end
     return obj
@@ -230,7 +236,7 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     buf_v = Vector{Float64}(undef, max_entries)
 
     n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, otf.sci_ptr::Ptr{Cvoid},
         is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
         unique_axs::Ptr{UInt32}, length(unique_axs)::Int64,
         unique_bxs::Ptr{UInt32}, length(unique_bxs)::Int64,

@@ -23,6 +23,17 @@ extern "C"
         return result;
     }
 
+    void *build_network_sci_bitstr_f64(void *net_ptr)
+    {
+        auto *net = static_cast<Network_OTF<uint32, double> *>(net_ptr);
+        return new NetworkSCI<uint32, double>(build_network_sci_from_otf<uint32, double>(*net));
+    }
+
+    void destroy_network_sci_bitstr_f64(void *ptr)
+    {
+        delete static_cast<NetworkSCI<uint32, double> *>(ptr);
+    }
+
     void *create_sci_basis_manager_bitstr_f64(
         const uint32 *astrs, int64 na,
         const uint32 *bstrs, int64 nb,
@@ -83,7 +94,7 @@ extern "C"
     }
 
     int64 sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
-        void *tgt, void *src, void *net,
+        void *tgt, void *src, void *net, void *net_sci,
         const bool *is_new_a, const bool *is_new_b,
         const uint32 *unique_axs, int64 num_unique_axs,
         const uint32 *unique_bxs, int64 num_unique_bxs,
@@ -94,9 +105,10 @@ extern "C"
         auto *a = static_cast<SciBasisManager<uint32> *>(tgt);
         auto *b = static_cast<SciBasisManager<uint32> *>(src);
         auto *c = static_cast<Network_OTF<uint32, double> *>(net);
+        auto *d = static_cast<NetworkSCI<uint32, double> *>(net_sci);
         auto *entries = new BufferedEntry<uint32, double>[max_entries];
         int64 n = sci_hvec_select_external_link_all_blocks_bitstr<uint32, double>(
-            a, b, c, is_new_a, is_new_b, unique_axs, num_unique_axs,
+            a, b, c, d, is_new_a, is_new_b, unique_axs, num_unique_axs,
             unique_bxs, num_unique_bxs, src_vec, candidate_diags,
             variational_energy, chunk_size, eps, entries, max_entries);
         for (int64 i = 0; i < n; ++i)

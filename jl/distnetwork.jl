@@ -119,7 +119,7 @@ function OTF_from_groups(basis::BasisManager, groups::Vector{SVDGroup{Ti,Tv}}) w
     )::Ptr{Cvoid}
 
     ptr == C_NULL && error("Failed to create sub OTFNET.")
-    obj = OTF(ptr, basis.dim, ngs)
+    obj = OTF(ptr, basis.dim, ngs, C_NULL)
     finalizer(obj) do o
         o.ptr != C_NULL && @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
     end
