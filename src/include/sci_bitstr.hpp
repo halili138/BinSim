@@ -405,6 +405,9 @@ int64 sci_hvec_select_external_link_block_bitstr(
             auto it = tgt_basis->a_idx_map.find(src_astrs[i]);
             if (it == tgt_basis->a_idx_map.end())
                 continue;
+            const int64 dst_a_global = (tgt_basis->astrs_vec[full_block.asym] - tgt_basis->all_astrs) + it->second;
+            if (is_new_a[dst_a_global])
+                continue;
             old_astrs.push_back(src_astrs[i]);
             old_a_idxs.push_back(it->second);
         }
@@ -501,46 +504,59 @@ int64 sci_hvec_select_external_link_block_bitstr(
         return acc;
     };
 
+    const int64 block_a_begin = full_block.astrs - tgt_basis->all_astrs;
+    const int64 block_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
+
 #pragma omp parallel
     {
         const int tid = omp_get_thread_num();
         std::vector<BufferedEntry<Ti, Tv>> &local_entries = thread_entries[(size_t)tid];
-#pragma omp for schedule(dynamic)
-        for (int64 a = 0; a < num_a_total; ++a)
+
+        auto process_candidate = [&](int64 a, int64 b, bool beta_new_det)
         {
-            const int64 dst_a_global = (full_block.astrs + a) - tgt_basis->all_astrs;
-            const bool new_a = is_new_a[dst_a_global];
-            for (int64 b = 0; b < num_b_total; ++b)
+            const int64 dst_a_global = block_a_begin + a;
+            const int64 dst_b_global = block_b_begin + b;
+            Tv acc = {};
+            for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
             {
-                const int64 dst_b_global = (full_block.bstrs + b) - tgt_basis->all_bstrs;
-                const bool new_b = is_new_b[dst_b_global];
-                if (!new_a && !new_b)
+                if (all_buckets[i].beta_new_pass != beta_new_det)
                     continue;
-                const bool beta_new_det = !new_a && new_b;
-                Tv acc = {};
-                for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
+                const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
+                switch (dispatch_rank(bucket.group))
                 {
-                    if (all_buckets[i].beta_new_pass != beta_new_det)
-                        continue;
-                    const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
-                    switch (dispatch_rank(bucket.group))
-                    {
-                    case 1: acc += accumulate_bucket_for_dst.template operator()<1>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
-                    case 2: acc += accumulate_bucket_for_dst.template operator()<2>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
-                    default: acc += accumulate_bucket_for_dst.template operator()<0>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
-                    }
+                case 1: acc += accumulate_bucket_for_dst.template operator()<1>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
+                case 2: acc += accumulate_bucket_for_dst.template operator()<2>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
+                default: acc += accumulate_bucket_for_dst.template operator()<0>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
                 }
-                if (acc == Tv{})
-                    continue;
-                const int64 target_global = full_block.offset + a * num_b_total + b;
-                const Tv denom = variational_energy - candidate_diags[target_global];
-                if (std::sqrt(sqnorm(denom)) == 0.0)
-                    continue;
-                const Tv selection_amplitude = acc / denom;
-                if (std::sqrt(sqnorm(selection_amplitude)) <= eps)
-                    continue;
-                local_entries.push_back({full_block.astrs[a], full_block.bstrs[b], acc});
             }
+            if (acc == Tv{})
+                return;
+            const int64 target_global = full_block.offset + a * num_b_total + b;
+            const Tv denom = variational_energy - candidate_diags[target_global];
+            if (std::sqrt(sqnorm(denom)) == 0.0)
+                return;
+            const Tv selection_amplitude = acc / denom;
+            if (std::sqrt(sqnorm(selection_amplitude)) <= eps)
+                return;
+            local_entries.push_back({full_block.astrs[a], full_block.bstrs[b], acc});
+        };
+
+        // Alpha-new covers A_new x B_all, including A_new x B_new.
+#pragma omp for schedule(dynamic) nowait
+        for (int64 ia = 0; ia < (int64)new_a_idxs.size(); ++ia)
+        {
+            const int64 a = new_a_idxs[(size_t)ia];
+            for (int64 b = 0; b < num_b_total; ++b)
+                process_candidate(a, b, false);
+        }
+
+        // Beta-new covers only A_old x B_new so A_new x B_new is not repeated.
+#pragma omp for schedule(dynamic)
+        for (int64 ia = 0; ia < (int64)old_a_idxs.size(); ++ia)
+        {
+            const int64 a = old_a_idxs[(size_t)ia];
+            for (int64 ib = 0; ib < (int64)new_b_idxs.size(); ++ib)
+                process_candidate(a, new_b_idxs[(size_t)ib], true);
         }
     }
 
