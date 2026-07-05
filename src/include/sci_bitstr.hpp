@@ -33,11 +33,13 @@ static inline void append_block_frontier_targets(
     for (const auto &kv : frontiers_by_mask)
     {
         const SpinLinkCSR<Ti> &frontier = kv.second;
-        for (int dst_global_idx : frontier.colidx)
+        for (int64 dst_global_idx = block_begin; dst_global_idx < block_end; ++dst_global_idx)
         {
-            if (dst_global_idx < block_begin || dst_global_idx >= block_end)
+            if (dst_global_idx + 1 >= (int64)frontier.rowptr.size())
                 continue;
-            const int64 local_idx = (int64)dst_global_idx - block_begin;
+            if (frontier.rowptr[dst_global_idx] == frontier.rowptr[dst_global_idx + 1])
+                continue;
+            const int64 local_idx = dst_global_idx - block_begin;
             if (seen[local_idx])
                 continue;
             seen[local_idx] = 1;
@@ -408,325 +410,150 @@ int64 sci_hvec_select_external_link_block_bitstr(
         }
     }
 
-    int64 out_count = 0;
-
-    struct AccumPair
-    {
-        int64 target_global;
-        Tv hpsi;
-    };
-
-    struct DenseAccumState
-    {
-        std::vector<Tv> values;
-        std::vector<unsigned char> touched;
-        std::vector<int64> touched_targets;
-    };
-
-    const int64 target_a_begin = full_block.astrs - tgt_basis->all_astrs;
-    const int64 target_a_end = target_a_begin + num_a_total;
-    const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
-    const int64 target_b_end = target_b_begin + num_b_total;
-
-    const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total + (int64)old_astrs.size() * (int64)new_bstrs.size();
-    constexpr size_t max_dense_accumulator_bytes = (size_t)512 * 1024 * 1024;
-    const bool dense_accumulator_entry_count_fits = num_a_total >= 0 && num_b_total >= 0 &&
-                                                    (num_b_total == 0 || (size_t)num_a_total <= std::numeric_limits<size_t>::max() / (size_t)num_b_total);
-    const size_t dense_accumulator_entries = dense_accumulator_entry_count_fits
-                                                 ? (size_t)num_a_total * (size_t)num_b_total
-                                                 : std::numeric_limits<size_t>::max();
-    const bool use_dense_accumulator = dense_accumulator_entries <= max_dense_accumulator_bytes / sizeof(Tv);
-
-    DenseAccumState dense_acc;
-    std::vector<AccumPair> sparse_acc_pairs;
-    if (use_dense_accumulator)
-    {
-        dense_acc.values.assign(dense_accumulator_entries, Tv{});
-        dense_acc.touched.assign(dense_accumulator_entries, 0);
-        dense_acc.touched_targets.reserve((size_t)reachable_target_count);
-    }
-    else
-    {
-        sparse_acc_pairs.reserve((size_t)std::min<int64>(reachable_target_count, max_link_entries));
-    }
-
-    auto append_accumulated_hpsi = [&](int64 target_global, Tv hpsi)
-    {
-        if (hpsi == Tv{})
-            return;
-        if (use_dense_accumulator)
-        {
-            const int64 local_target = target_global - full_block.offset;
-            Tv &acc = dense_acc.values[(size_t)local_target];
-            if (!dense_acc.touched[(size_t)local_target])
-            {
-                dense_acc.touched[(size_t)local_target] = 1;
-                dense_acc.touched_targets.push_back(target_global);
-            }
-            acc += hpsi;
-        }
-        else
-        {
-            sparse_acc_pairs.push_back({target_global, hpsi});
-        }
-    };
-
     struct LinkBucketPhaseCache
     {
-        int64 num_src_a = 0;
-        int64 num_src_b = 0;
-        std::vector<Tv> phase_a_by_str;
-        std::vector<Tv> phase_b_by_str;
+        std::vector<Tv> phase_a_by_src;
+        std::vector<Tv> phase_b_by_src;
+    };
+
+    auto dispatch_rank = [](const SVDGroup_OTF<Ti, Tv> *g) -> int
+    {
+        int r = g->rank;
+        return (r == 1 || r == 2) ? r : 0;
     };
 
     auto build_phase_cache_for_bucket = [&]<int Rank>(const LinkBucket<Ti, Tv> &bucket)
     {
         constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-        const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
-        const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
         const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
         LinkBucketPhaseCache cache;
-        cache.num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
-        cache.num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
-        cache.phase_a_by_str.resize((size_t)cache.num_src_a * MAX_RANK);
-        cache.phase_b_by_str.resize((size_t)cache.num_src_b * MAX_RANK);
-
-        for (int64 i = 0; i < cache.num_src_a; ++i)
+        cache.phase_a_by_src.resize((size_t)num_src_astrs_total * MAX_RANK);
+        cache.phase_b_by_src.resize((size_t)num_src_bstrs_total * MAX_RANK);
+        for (int64 i = 0; i < num_src_astrs_total; ++i)
             precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
-                                           group.wa, cache.phase_a_by_str.data() + (size_t)i * MAX_RANK, 1, group.rank);
-
-        for (int64 j = 0; j < cache.num_src_b; ++j)
+                                           group.wa, cache.phase_a_by_src.data() + (size_t)i * MAX_RANK, 1, group.rank);
+        for (int64 j = 0; j < num_src_bstrs_total; ++j)
             precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
-                                           group.wb, cache.phase_b_by_str.data() + (size_t)j * MAX_RANK, 1, group.rank);
-
+                                           group.wb, cache.phase_b_by_src.data() + (size_t)j * MAX_RANK, 1, group.rank);
         return cache;
     };
 
-    auto accumulate_for_buckets_impl = [&]<int Rank, typename AppendFn>(const LinkBucket<Ti, Tv> &bucket, const LinkBucketPhaseCache &phase_cache, bool skip_new_alpha_targets, AppendFn &&append_fn)
-    {
-        constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-        const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
-        const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
-        const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
-        const int64 num_src_a = phase_cache.num_src_a;
-        const int64 num_src_b = phase_cache.num_src_b;
-        const Tv *phase_a_by_str = phase_cache.phase_a_by_str.data();
-        const Tv *phase_b_by_str = phase_cache.phase_b_by_str.data();
-
-        for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
-        {
-            if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid)
-                continue;
-            const SourceStringInfo &a_info = src_a_info[src_a_global];
-            const Tv *pa = phase_a_by_str + (size_t)src_a_global * MAX_RANK;
-
-            for (int64 pa_ = alpha_links.rowptr[src_a_global]; pa_ < alpha_links.rowptr[src_a_global + 1]; ++pa_)
-            {
-                const int64 dst_a_global = alpha_links.colidx[pa_];
-                if (dst_a_global < target_a_begin || dst_a_global >= target_a_end)
-                    continue;
-                if (skip_new_alpha_targets && is_new_a[dst_a_global])
-                    continue;
-                const int64 a_full = dst_a_global - target_a_begin;
-
-                for (int64 src_b_global = 0; src_b_global < num_src_b; ++src_b_global)
-                {
-                    if (src_b_global >= (int64)src_b_info.size() || !src_b_info[src_b_global].valid)
-                        continue;
-                    const SourceStringInfo &b_info = src_b_info[src_b_global];
-                    const int64 src_block_idx = src_basis->block_map[a_info.sym * src_basis->num_irreps + b_info.sym];
-                    if (src_block_idx == -1)
-                        continue;
-                    const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                    const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
-                    if (src_amp == Tv{})
-                        continue;
-
-                    const Tv *pb = phase_b_by_str + (size_t)src_b_global * MAX_RANK;
-
-                    for (int64 pb_ = beta_links.rowptr[src_b_global]; pb_ < beta_links.rowptr[src_b_global + 1]; ++pb_)
-                    {
-                        const int64 dst_b_global = beta_links.colidx[pb_];
-                        if (dst_b_global < target_b_begin || dst_b_global >= target_b_end)
-                            continue;
-                        const int64 b_full = dst_b_global - target_b_begin;
-
-                        Tv hpsi = src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
-                        append_fn(full_block.offset + a_full * num_b_total + b_full, hpsi);
-                    }
-                }
-            }
-        }
-    };
-
-    // External space = (A_new x B_all) union (A_old x B_new).  This assigns
-    // A_new x B_new only to the first subspace, avoiding duplicate selection.
-    // Contributions are accumulated by full target determinant before applying
-    // the selection threshold so all source determinants and SVD groups that
-    // reach the same external determinant contribute to the final Hψ value.
-    struct BucketTask { LinkBucket<Ti, Tv> bucket; bool skip; };
+    struct BucketTask { LinkBucket<Ti, Tv> bucket; bool beta_new_pass; };
     std::vector<BucketTask> all_buckets;
     all_buckets.reserve(alpha_new_buckets.size() + beta_new_buckets.size());
     for (const auto &b : alpha_new_buckets) all_buckets.push_back({b, false});
     for (const auto &b : beta_new_buckets)  all_buckets.push_back({b, true});
 
-    if (!all_buckets.empty())
+    std::vector<LinkBucketPhaseCache> phase_caches(all_buckets.size());
+    for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
     {
-        auto dispatch_rank = [](const SVDGroup_OTF<Ti, Tv> *g) -> int
+        const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
+        switch (dispatch_rank(bucket.group))
         {
-            int r = g->rank;
-            return (r == 1 || r == 2) ? r : 0;
-        };
-
-        std::vector<LinkBucketPhaseCache> phase_caches(all_buckets.size());
-        for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
-        {
-            const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
-            switch (dispatch_rank(bucket.group))
-            {
-            case 1:
-                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<1>(bucket);
-                break;
-            case 2:
-                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<2>(bucket);
-                break;
-            default:
-                phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<0>(bucket);
-                break;
-            }
-        }
-
-#pragma omp parallel
-        {
-            DenseAccumState local_dense;
-            std::vector<AccumPair> local_sparse;
-
-            if (use_dense_accumulator)
-            {
-                local_dense.values.assign(dense_accumulator_entries, Tv{});
-                local_dense.touched.assign(dense_accumulator_entries, 0);
-                local_dense.touched_targets.reserve((size_t)(reachable_target_count / omp_get_num_threads() + 1));
-            }
-            else
-            {
-                local_sparse.reserve((size_t)std::min<int64>(reachable_target_count / omp_get_num_threads() + 1, max_link_entries));
-            }
-
-            auto local_append = [&](int64 target_global, Tv hpsi)
-            {
-                if (hpsi == Tv{})
-                    return;
-                if (use_dense_accumulator)
-                {
-                    const int64 local_target = target_global - full_block.offset;
-                    Tv &acc = local_dense.values[(size_t)local_target];
-                    if (!local_dense.touched[(size_t)local_target])
-                    {
-                        local_dense.touched[(size_t)local_target] = 1;
-                        local_dense.touched_targets.push_back(target_global);
-                    }
-                    acc += hpsi;
-                }
-                else
-                {
-                    local_sparse.push_back({target_global, hpsi});
-                }
-            };
-
-#pragma omp for schedule(dynamic)
-            for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
-            {
-                const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
-                bool skip = all_buckets[i].skip;
-                int dr = dispatch_rank(bucket.group);
-                switch (dr)
-                {
-                case 1:
-                    accumulate_for_buckets_impl.template operator()<1>(bucket, phase_caches[(size_t)i], skip, local_append);
-                    break;
-                case 2:
-                    accumulate_for_buckets_impl.template operator()<2>(bucket, phase_caches[(size_t)i], skip, local_append);
-                    break;
-                default:
-                    accumulate_for_buckets_impl.template operator()<0>(bucket, phase_caches[(size_t)i], skip, local_append);
-                    break;
-                }
-            }
-
-#pragma omp critical
-            {
-                if (use_dense_accumulator)
-                {
-                    for (int64 target_global : local_dense.touched_targets)
-                    {
-                        const int64 local_target = target_global - full_block.offset;
-                        if (!dense_acc.touched[(size_t)local_target])
-                        {
-                            dense_acc.touched[(size_t)local_target] = 1;
-                            dense_acc.touched_targets.push_back(target_global);
-                        }
-                        dense_acc.values[(size_t)local_target] += local_dense.values[(size_t)local_target];
-                    }
-                }
-                else
-                {
-                    sparse_acc_pairs.insert(sparse_acc_pairs.end(), local_sparse.begin(), local_sparse.end());
-                }
-            }
+        case 1: phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<1>(bucket); break;
+        case 2: phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<2>(bucket); break;
+        default: phase_caches[(size_t)i] = build_phase_cache_for_bucket.template operator()<0>(bucket); break;
         }
     }
 
-    auto emit_if_selected = [&](int64 target_global, const Tv &acc)
-    {
-        if (out_count >= max_entries || acc == Tv{})
-            return;
-        const Tv haa = candidate_diags[target_global];
-        const Tv denom = variational_energy - haa;
-        const double denom_norm = std::sqrt(sqnorm(denom));
-        if (denom_norm == 0.0)
-            return;
-        const Tv selection_amplitude = acc / denom;
-        const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-        if (selection_norm <= eps)
-            return;
+    std::vector<std::vector<BufferedEntry<Ti, Tv>>> thread_entries;
+    const int max_threads = omp_get_max_threads();
+    thread_entries.resize((size_t)max_threads);
 
-        const int64 local_target = target_global - full_block.offset;
-        const int64 a_full = local_target / num_b_total;
-        const int64 b_full = local_target - a_full * num_b_total;
-        out_entries[out_count++] = {full_block.astrs[a_full], full_block.bstrs[b_full], acc};
+    auto accumulate_bucket_for_dst = [&]<int Rank>(const LinkBucket<Ti, Tv> &bucket,
+                                                   const LinkBucketPhaseCache &cache,
+                                                   int64 dst_a_global,
+                                                   int64 dst_b_global) -> Tv
+    {
+        constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+        const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
+        const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
+        const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
+        if (dst_a_global + 1 >= (int64)alpha_links.rowptr.size() ||
+            dst_b_global + 1 >= (int64)beta_links.rowptr.size())
+            return Tv{};
+
+        Tv acc = {};
+        for (int64 pa_ = alpha_links.rowptr[dst_a_global]; pa_ < alpha_links.rowptr[dst_a_global + 1]; ++pa_)
+        {
+            const int64 src_a_global = alpha_links.colidx[pa_];
+            if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid)
+                continue;
+            const SourceStringInfo &a_info = src_a_info[src_a_global];
+            const Tv *pa = cache.phase_a_by_src.data() + (size_t)src_a_global * MAX_RANK;
+            for (int64 pb_ = beta_links.rowptr[dst_b_global]; pb_ < beta_links.rowptr[dst_b_global + 1]; ++pb_)
+            {
+                const int64 src_b_global = beta_links.colidx[pb_];
+                if (src_b_global >= (int64)src_b_info.size() || !src_b_info[src_b_global].valid)
+                    continue;
+                const SourceStringInfo &b_info = src_b_info[src_b_global];
+                const int64 src_block_idx = src_basis->block_map[a_info.sym * src_basis->num_irreps + b_info.sym];
+                if (src_block_idx == -1)
+                    continue;
+                const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
+                const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
+                if (src_amp == Tv{})
+                    continue;
+                const Tv *pb = cache.phase_b_by_src.data() + (size_t)src_b_global * MAX_RANK;
+                acc += src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
+            }
+        }
+        return acc;
     };
 
-    if (use_dense_accumulator)
+#pragma omp parallel
     {
-        for (int64 target_global : dense_acc.touched_targets)
+        const int tid = omp_get_thread_num();
+        std::vector<BufferedEntry<Ti, Tv>> &local_entries = thread_entries[(size_t)tid];
+#pragma omp for schedule(dynamic)
+        for (int64 a = 0; a < num_a_total; ++a)
         {
-            if (out_count >= max_entries)
-                break;
-            emit_if_selected(target_global, dense_acc.values[(size_t)(target_global - full_block.offset)]);
-        }
-    }
-    else
-    {
-        std::sort(sparse_acc_pairs.begin(), sparse_acc_pairs.end(),
-                  [](const AccumPair &lhs, const AccumPair &rhs)
-                  {
-                      return lhs.target_global < rhs.target_global;
-                  });
-        for (int64 i = 0; i < (int64)sparse_acc_pairs.size() && out_count < max_entries;)
-        {
-            const int64 target_global = sparse_acc_pairs[i].target_global;
-            Tv acc = {};
-            do
+            const int64 dst_a_global = (full_block.astrs + a) - tgt_basis->all_astrs;
+            const bool new_a = is_new_a[dst_a_global];
+            for (int64 b = 0; b < num_b_total; ++b)
             {
-                acc += sparse_acc_pairs[i].hpsi;
-                ++i;
-            } while (i < (int64)sparse_acc_pairs.size() && sparse_acc_pairs[i].target_global == target_global);
-            emit_if_selected(target_global, acc);
+                const int64 dst_b_global = (full_block.bstrs + b) - tgt_basis->all_bstrs;
+                const bool new_b = is_new_b[dst_b_global];
+                if (!new_a && !new_b)
+                    continue;
+                const bool beta_new_det = !new_a && new_b;
+                Tv acc = {};
+                for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
+                {
+                    if (all_buckets[i].beta_new_pass != beta_new_det)
+                        continue;
+                    const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
+                    switch (dispatch_rank(bucket.group))
+                    {
+                    case 1: acc += accumulate_bucket_for_dst.template operator()<1>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
+                    case 2: acc += accumulate_bucket_for_dst.template operator()<2>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
+                    default: acc += accumulate_bucket_for_dst.template operator()<0>(bucket, phase_caches[(size_t)i], dst_a_global, dst_b_global); break;
+                    }
+                }
+                if (acc == Tv{})
+                    continue;
+                const int64 target_global = full_block.offset + a * num_b_total + b;
+                const Tv denom = variational_energy - candidate_diags[target_global];
+                if (std::sqrt(sqnorm(denom)) == 0.0)
+                    continue;
+                const Tv selection_amplitude = acc / denom;
+                if (std::sqrt(sqnorm(selection_amplitude)) <= eps)
+                    continue;
+                local_entries.push_back({full_block.astrs[a], full_block.bstrs[b], acc});
+            }
         }
     }
 
+    int64 out_count = 0;
+    for (std::vector<BufferedEntry<Ti, Tv>> &local_entries : thread_entries)
+    {
+        for (const auto &entry : local_entries)
+        {
+            if (out_count >= max_entries)
+                return out_count;
+            out_entries[out_count++] = entry;
+        }
+    }
     return out_count;
 }
 
