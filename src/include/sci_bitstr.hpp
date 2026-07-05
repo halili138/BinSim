@@ -2,8 +2,8 @@
 #include "sci_common.hpp"
 #include "sci_links.hpp"
 #include "sci_hvec.hpp"
+#include "otf.hpp"
 #include <cmath>
-#include <limits>
 
 template <typename Tv>
 FORCE_INLINE auto sqnorm(const Tv &v)
@@ -14,47 +14,16 @@ FORCE_INLINE auto sqnorm(const Tv &v)
         return v.real() * v.real() + v.imag() * v.imag();
 }
 
-template <typename Ti>
-static inline void append_block_frontier_targets(
-    const ankerl::unordered_dense::map<Ti, SpinLinkCSR<Ti>> &frontiers_by_mask,
-    const Ti *block_strings,
-    const Ti *all_strings,
-    int64 num_block_strings,
-    std::vector<Ti> &strings,
-    std::vector<int64> &block_idxs)
+template <typename Tv>
+FORCE_INLINE bool sci_eps_check(Tv acc, Tv haa, Tv e_var, double eps)
 {
-    if (num_block_strings == 0)
-        return;
-
-    const int64 block_begin = block_strings - all_strings;
-    const int64 block_end = block_begin + num_block_strings;
-    std::vector<unsigned char> seen(num_block_strings, 0);
-
-    for (const auto &kv : frontiers_by_mask)
-    {
-        const SpinLinkCSR<Ti> &frontier = kv.second;
-        for (int dst_global_idx : frontier.colidx)
-        {
-            if (dst_global_idx < block_begin || dst_global_idx >= block_end)
-                continue;
-            const int64 local_idx = (int64)dst_global_idx - block_begin;
-            if (seen[local_idx])
-                continue;
-            seen[local_idx] = 1;
-            strings.push_back(block_strings[local_idx]);
-            block_idxs.push_back(local_idx);
-        }
-    }
-}
-
-template <typename Ti>
-static inline int64 count_spin_link_entries(
-    const ankerl::unordered_dense::map<Ti, SpinLinkCSR<Ti>> &links_by_mask)
-{
-    int64 total = 0;
-    for (const auto &kv : links_by_mask)
-        total += (int64)kv.second.colidx.size();
-    return total;
+    if (acc == Tv{})
+        return false;
+    Tv denom = e_var - haa;
+    double dn_sq = sqnorm(denom);
+    if (dn_sq == 0.0)
+        return false;
+    return sqnorm(acc) / dn_sq > eps * eps;
 }
 
 template <typename Ti, typename Tv>
@@ -82,6 +51,27 @@ struct NetworkSCI
     };
     std::vector<Bucket> buckets;
 };
+
+template <typename Ti>
+struct ExternalLinkSelectContext
+{
+    std::vector<Ti> unique_axs;
+    std::vector<Ti> unique_bxs;
+    SpinLinksByMask<Ti> full_links;
+    SpinLinksByMask<Ti> new_frontiers;
+    int64 alpha_link_entries = 0;
+    int64 beta_link_entries = 0;
+};
+
+template <typename Ti>
+static inline int excitation_type_code(Ti ax, Ti bx)
+{
+    if (ax != Ti{} && bx == Ti{})
+        return 1;
+    if (ax == Ti{} && bx != Ti{})
+        return 2;
+    return 3;
+}
 
 template <typename Ti, typename Tv>
 NetworkSCI<Ti, Tv> build_network_sci_from_otf(const Network_OTF<Ti, Tv> &net)
@@ -128,15 +118,13 @@ NetworkSCI<Ti, Tv> build_network_sci_from_otf(const Network_OTF<Ti, Tv> &net)
 }
 
 template <typename Ti>
-struct ExternalLinkSelectContext
+static inline int64 count_spin_link_entries(const ankerl::unordered_dense::map<Ti, SpinLinkCSR<Ti>> &links_by_mask)
 {
-    std::vector<Ti> unique_axs;
-    std::vector<Ti> unique_bxs;
-    SpinLinksByMask<Ti> full_links;
-    SpinLinksByMask<Ti> new_frontiers;
-    int64 alpha_link_entries = 0;
-    int64 beta_link_entries = 0;
-};
+    int64 total = 0;
+    for (const auto &kv : links_by_mask)
+        total += (int64)kv.second.colidx.size();
+    return total;
+}
 
 template <typename Ti, typename Tv>
 ExternalLinkSelectContext<Ti> build_external_link_select_context(
@@ -160,90 +148,461 @@ ExternalLinkSelectContext<Ti> build_external_link_select_context(
     return ctx;
 }
 
-template <typename Ti, typename Tv>
-int64 sci_hvec_select_for_block_bitstr(
-    const SciBasisManager<Ti> *tgt_basis,
+template <typename Ti>
+static inline void build_src_info_vec(
     const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    int64 block_idx,
-    const Tv *src_vec,
-    const Tv *candidate_diags,
-    Tv variational_energy,
-    int chunk_size,
-    double eps,
-    BufferedEntry<Ti, Tv> *out_entries,
-    int64 max_entries)
+    int64 num_src_astrs_total,
+    int64 num_src_bstrs_total,
+    std::vector<SourceStringInfo> &src_a_info,
+    std::vector<SourceStringInfo> &src_b_info)
 {
-    const BlockDesc<Ti> &full_block = tgt_basis->blocks[block_idx];
-    const int64 num_a_total = full_block.num_a;
-    const int64 num_b = full_block.num_b;
-
-    int64 out_count = 0;
-
-    for (int64 a_start = 0; a_start < num_a_total; a_start += chunk_size)
+    src_a_info.resize(num_src_astrs_total);
+    for (int64 i = 0; i < num_src_astrs_total; ++i)
     {
-        const int64 a_end = std::min(a_start + (int64)chunk_size, num_a_total);
-        const int64 cur_num_a = a_end - a_start;
-
-        BlockDesc<Ti> chunk_desc = full_block;
-        chunk_desc.astrs = full_block.astrs + a_start;
-        chunk_desc.num_a = cur_num_a;
-        chunk_desc.offset = 0;
-
-        Tv *chunk_acc = new Tv[cur_num_a * num_b];
-        std::fill_n(chunk_acc, cur_num_a * num_b, Tv{});
-
-        dispatch_chunks_for_block<0>(chunk_desc, src_basis, net->diag_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<1>(chunk_desc, src_basis, net->pure_a_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<2>(chunk_desc, src_basis, net->pure_b_groups, src_vec, chunk_acc);
-        dispatch_chunks_for_block<3>(chunk_desc, src_basis, net->mixed_groups, src_vec, chunk_acc);
-
-        for (int a = 0; a < cur_num_a && out_count < max_entries; ++a)
-        {
-            const int64 a_global = a_start + a;
-            const Tv *row = chunk_acc + a * num_b;
-
-            for (int b = 0; b < num_b && out_count < max_entries; ++b)
-            {
-                if (row[b] == Tv{})
-                    continue;
-
-                const Ti candidate_astr = full_block.astrs[a_global];
-                const Ti candidate_bstr = full_block.bstrs[b];
-                const int64 src_block_idx =
-                    (full_block.asym < src_basis->num_irreps && full_block.bsym < src_basis->num_irreps)
-                        ? src_basis->block_map[full_block.asym * src_basis->num_irreps + full_block.bsym]
-                        : -1;
-                const auto src_a_it = src_basis->a_idx_map.find(candidate_astr);
-                const auto src_b_it = src_basis->b_idx_map.find(candidate_bstr);
-                const bool candidate_in_src_basis =
-                    src_a_it != src_basis->a_idx_map.end() && src_a_it->second != -1 &&
-                    src_b_it != src_basis->b_idx_map.end() && src_b_it->second != -1 &&
-                    src_block_idx != -1;
-
-                const Tv haa = candidate_diags[full_block.offset + a_global * num_b + b];
-                const Tv denom = variational_energy - haa;
-                const double denom_norm = std::sqrt(sqnorm(denom));
-                if (denom_norm == 0.0)
-                    continue;
-                const Tv selection_amplitude = row[b] / denom;
-                const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-                const bool passes_eps = selection_norm > eps;
-
-                if (!passes_eps)
-                    continue;
-                out_entries[out_count++] = {candidate_astr, candidate_bstr, row[b]};
-            }
-        }
-
-        delete[] chunk_acc;
+        SourceStringInfo &info = src_a_info[i];
+        info.sym = get_string_sym(src_basis->all_astrs[i], src_basis->orbsym);
+        if (info.sym >= src_basis->num_irreps)
+            continue;
+        info.local = i - (src_basis->astrs_vec[info.sym] - src_basis->all_astrs);
+        info.valid = info.local >= 0 && info.local < src_basis->num_astrs[info.sym];
     }
 
-    return out_count;
+    src_b_info.resize(num_src_bstrs_total);
+    for (int64 j = 0; j < num_src_bstrs_total; ++j)
+    {
+        SourceStringInfo &info = src_b_info[j];
+        info.sym = get_string_sym(src_basis->all_bstrs[j], src_basis->orbsym);
+        if (info.sym >= src_basis->num_irreps)
+            continue;
+        info.local = j - (src_basis->bstrs_vec[info.sym] - src_basis->all_bstrs);
+        info.valid = info.local >= 0 && info.local < src_basis->num_bstrs[info.sym];
+    }
+}
+
+struct DstAInfo
+{
+    int a_full;
+    int64 src_a_global;
+};
+
+struct DstBInfo
+{
+    int b_full;
+    int64 src_b_global;
+};
+
+template <int Rank, typename Ti, typename Tv>
+static inline void sci_link_pure_a_batched_impl(
+    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const SciBasisManager<Ti> *src_basis,
+    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, int64 num_src_bstrs_total,
+    int64 tgt_a_begin, int64 tgt_b_begin,
+    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
+    const bool *is_new_a, bool skip_new_alpha,
+    const Tv *src_vec, Tv *dst_acc)
+{
+    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+    const int64 num_irreps = src_basis->num_irreps;
+    const int64 *block_map = src_basis->block_map;
+
+#pragma omp parallel
+    {
+        std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
+        std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
+
+        std::vector<DstAInfo> dst_a_list;
+        std::vector<DstBInfo> dst_b_list;
+        dst_a_list.reserve((size_t)num_a);
+        dst_b_list.reserve((size_t)num_b);
+
+        for (int64 bucket_idx = 0; bucket_idx < num_buckets; ++bucket_idx)
+        {
+            const LinkBucket<Ti, Tv> &bucket = buckets[bucket_idx];
+            const auto &alpha_links = *bucket.alpha_links;
+            const auto &beta_links = *bucket.beta_links;
+            const auto &group = *bucket.group;
+
+            for (int64 i = 0; i < num_src_astrs_total; ++i)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
+                                               group.wa, phase_a_buf.data() + (size_t)i * MAX_RANK, 1, group.rank);
+            for (int64 j = 0; j < num_src_bstrs_total; ++j)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
+                                               group.wb, phase_b_buf.data() + (size_t)j * MAX_RANK, 1, group.rank);
+
+            dst_a_list.clear();
+            for (int64 dst_global = tgt_a_begin; dst_global < tgt_a_begin + num_a; ++dst_global)
+            {
+                if (skip_new_alpha && is_new_a[dst_global])
+                    continue;
+                for (int64 p = alpha_links.rowptr[dst_global]; p < alpha_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_a_global = alpha_links.colidx[p];
+                    if (src_a_global >= num_src_astrs_total || !src_a_info[src_a_global].valid)
+                        continue;
+                    dst_a_list.push_back({(int)(dst_global - tgt_a_begin), src_a_global});
+                    break;
+                }
+            }
+
+            dst_b_list.clear();
+            for (int64 dst_global = tgt_b_begin; dst_global < tgt_b_begin + num_b; ++dst_global)
+            {
+                for (int64 p = beta_links.rowptr[dst_global]; p < beta_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_b_global = beta_links.colidx[p];
+                    if (src_b_global >= num_src_bstrs_total || !src_b_info[src_b_global].valid)
+                        continue;
+                    dst_b_list.push_back({(int)(dst_global - tgt_b_begin), src_b_global});
+                    break;
+                }
+            }
+
+            if (dst_a_list.empty() || dst_b_list.empty())
+                continue;
+
+#pragma omp for schedule(dynamic)
+            for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
+            {
+                int a_full = dst_a_list[ai].a_full;
+                int64 src_a_global = dst_a_list[ai].src_a_global;
+                const SourceStringInfo &a_info = src_a_info[src_a_global];
+                const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
+                Tv *da = dst_acc + (int64)a_full * num_b;
+
+                for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
+                {
+                    int b_full = dst_b_list[bi].b_full;
+                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    const SourceStringInfo &b_info = src_b_info[src_b_global];
+                    const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
+
+                    int64 src_block_idx = block_map[a_info.sym * num_irreps + b_info.sym];
+                    if (src_block_idx == -1)
+                        continue;
+                    const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
+                    const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
+                    if (src_amp == Tv{})
+                        continue;
+
+                    da[b_full] += src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
+                }
+            }
+        }
+    }
+}
+
+template <int Rank, typename Ti, typename Tv>
+static inline void sci_link_pure_b_batched_impl(
+    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const SciBasisManager<Ti> *src_basis,
+    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, int64 num_src_bstrs_total,
+    int64 tgt_a_begin, int64 tgt_b_begin,
+    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
+    const bool *is_new_a, const Tv *src_vec, Tv *dst_acc)
+{
+    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+    const int64 num_irreps = src_basis->num_irreps;
+    const int64 *block_map = src_basis->block_map;
+
+#pragma omp parallel
+    {
+        std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
+        std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
+
+        std::vector<DstAInfo> dst_a_list;
+        std::vector<DstBInfo> dst_b_list;
+        dst_a_list.reserve((size_t)num_a);
+        dst_b_list.reserve((size_t)num_b);
+
+        for (int64 bucket_idx = 0; bucket_idx < num_buckets; ++bucket_idx)
+        {
+            const LinkBucket<Ti, Tv> &bucket = buckets[bucket_idx];
+            const auto &alpha_links = *bucket.alpha_links;
+            const auto &beta_links = *bucket.beta_links;
+            const auto &group = *bucket.group;
+
+            for (int64 i = 0; i < num_src_astrs_total; ++i)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
+                                               group.wa, phase_a_buf.data() + (size_t)i * MAX_RANK, 1, group.rank);
+            for (int64 j = 0; j < num_src_bstrs_total; ++j)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
+                                               group.wb, phase_b_buf.data() + (size_t)j * MAX_RANK, 1, group.rank);
+
+            dst_a_list.clear();
+            for (int64 dst_global = tgt_a_begin; dst_global < tgt_a_begin + num_a; ++dst_global)
+            {
+                for (int64 p = alpha_links.rowptr[dst_global]; p < alpha_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_a_global = alpha_links.colidx[p];
+                    if (src_a_global >= num_src_astrs_total || !src_a_info[src_a_global].valid)
+                        continue;
+                    dst_a_list.push_back({(int)(dst_global - tgt_a_begin), src_a_global});
+                    break;
+                }
+            }
+
+            dst_b_list.clear();
+            for (int64 dst_global = tgt_b_begin; dst_global < tgt_b_begin + num_b; ++dst_global)
+            {
+                for (int64 p = beta_links.rowptr[dst_global]; p < beta_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_b_global = beta_links.colidx[p];
+                    if (src_b_global >= num_src_bstrs_total || !src_b_info[src_b_global].valid)
+                        continue;
+                    dst_b_list.push_back({(int)(dst_global - tgt_b_begin), src_b_global});
+                    break;
+                }
+            }
+
+            if (dst_a_list.empty() || dst_b_list.empty())
+                continue;
+
+#pragma omp for schedule(dynamic)
+            for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
+            {
+                int a_full = dst_a_list[ai].a_full;
+                int64 src_a_global = dst_a_list[ai].src_a_global;
+                const SourceStringInfo &a_info = src_a_info[src_a_global];
+                const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
+                Tv *da = dst_acc + (int64)a_full * num_b;
+
+                for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
+                {
+                    int b_full = dst_b_list[bi].b_full;
+                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    const SourceStringInfo &b_info = src_b_info[src_b_global];
+                    const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
+
+                    int64 src_block_idx = block_map[a_info.sym * num_irreps + b_info.sym];
+                    if (src_block_idx == -1)
+                        continue;
+                    const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
+                    const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
+                    if (src_amp == Tv{})
+                        continue;
+
+                    da[b_full] += src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
+                }
+            }
+        }
+    }
+}
+
+template <int Rank, typename Ti, typename Tv>
+static inline void sci_link_mixed_batched_impl(
+    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const SciBasisManager<Ti> *src_basis,
+    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, int64 num_src_bstrs_total,
+    int64 tgt_a_begin, int64 tgt_b_begin,
+    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
+    const bool *is_new_a, bool skip_new_alpha,
+    const Tv *src_vec, Tv *dst_acc)
+{
+    constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
+    const int64 num_irreps = src_basis->num_irreps;
+    const int64 *block_map = src_basis->block_map;
+
+#pragma omp parallel
+    {
+        std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
+        std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
+
+        std::vector<DstAInfo> dst_a_list;
+        std::vector<DstBInfo> dst_b_list;
+        dst_a_list.reserve((size_t)num_a);
+        dst_b_list.reserve((size_t)num_b);
+
+        for (int64 bucket_idx = 0; bucket_idx < num_buckets; ++bucket_idx)
+        {
+            const LinkBucket<Ti, Tv> &bucket = buckets[bucket_idx];
+            const auto &alpha_links = *bucket.alpha_links;
+            const auto &beta_links = *bucket.beta_links;
+            const auto &group = *bucket.group;
+
+            for (int64 i = 0; i < num_src_astrs_total; ++i)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
+                                               group.wa, phase_a_buf.data() + (size_t)i * MAX_RANK, 1, group.rank);
+            for (int64 j = 0; j < num_src_bstrs_total; ++j)
+                precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
+                                               group.wb, phase_b_buf.data() + (size_t)j * MAX_RANK, 1, group.rank);
+
+            dst_a_list.clear();
+            for (int64 dst_global = tgt_a_begin; dst_global < tgt_a_begin + num_a; ++dst_global)
+            {
+                if (skip_new_alpha && is_new_a[dst_global])
+                    continue;
+                for (int64 p = alpha_links.rowptr[dst_global]; p < alpha_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_a_global = alpha_links.colidx[p];
+                    if (src_a_global >= num_src_astrs_total || !src_a_info[src_a_global].valid)
+                        continue;
+                    dst_a_list.push_back({(int)(dst_global - tgt_a_begin), src_a_global});
+                    break;
+                }
+            }
+
+            dst_b_list.clear();
+            for (int64 dst_global = tgt_b_begin; dst_global < tgt_b_begin + num_b; ++dst_global)
+            {
+                for (int64 p = beta_links.rowptr[dst_global]; p < beta_links.rowptr[dst_global + 1]; ++p)
+                {
+                    int64 src_b_global = beta_links.colidx[p];
+                    if (src_b_global >= num_src_bstrs_total || !src_b_info[src_b_global].valid)
+                        continue;
+                    dst_b_list.push_back({(int)(dst_global - tgt_b_begin), src_b_global});
+                    break;
+                }
+            }
+
+            if (dst_a_list.empty() || dst_b_list.empty())
+                continue;
+
+#pragma omp for schedule(dynamic)
+            for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
+            {
+                int a_full = dst_a_list[ai].a_full;
+                int64 src_a_global = dst_a_list[ai].src_a_global;
+                const SourceStringInfo &a_info = src_a_info[src_a_global];
+                const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
+                Tv *da = dst_acc + (int64)a_full * num_b;
+
+                for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
+                {
+                    int b_full = dst_b_list[bi].b_full;
+                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    const SourceStringInfo &b_info = src_b_info[src_b_global];
+                    const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
+
+                    int64 src_block_idx = block_map[a_info.sym * num_irreps + b_info.sym];
+                    if (src_block_idx == -1)
+                        continue;
+                    const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
+                    const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
+                    if (src_amp == Tv{})
+                        continue;
+
+                    da[b_full] += src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
+                }
+            }
+        }
+    }
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static inline void dispatch_link_chunks_by_rank(
+    const std::vector<LinkBucket<Ti, Tv>> &buckets,
+    const SciBasisManager<Ti> *src_basis,
+    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, int64 num_src_bstrs_total,
+    int64 tgt_a_begin, int64 tgt_b_begin,
+    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
+    const bool *is_new_a, bool skip_new_alpha,
+    const Tv *src_vec, Tv *dst_acc)
+{
+    const int64 total_buckets = (int64)buckets.size();
+    if (total_buckets == 0)
+        return;
+
+    int64 start = 0;
+    while (start < total_buckets)
+    {
+        const int current_rank = buckets[start].group->rank;
+        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
+
+        int64 end = start + 1;
+        while (end < total_buckets)
+        {
+            const int next_rank = buckets[end].group->rank;
+            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
+            if (next_dispatch_rank != dispatch_rank)
+                break;
+            end++;
+        }
+
+        const int64 chunk_size = end - start;
+        const LinkBucket<Ti, Tv> *chunk_ptr = buckets.data() + start;
+
+        if constexpr (TypeCode == 1)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                sci_link_pure_a_batched_impl<1>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            case 2:
+                sci_link_pure_a_batched_impl<2>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            default:
+                sci_link_pure_a_batched_impl<0>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 2)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                sci_link_pure_b_batched_impl<1>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, src_vec, dst_acc);
+                break;
+            case 2:
+                sci_link_pure_b_batched_impl<2>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, src_vec, dst_acc);
+                break;
+            default:
+                sci_link_pure_b_batched_impl<0>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                                num_src_astrs_total, num_src_bstrs_total,
+                                                tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                                is_new_a, src_vec, dst_acc);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 3)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                sci_link_mixed_batched_impl<1>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                               num_src_astrs_total, num_src_bstrs_total,
+                                               tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                               is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            case 2:
+                sci_link_mixed_batched_impl<2>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                               num_src_astrs_total, num_src_bstrs_total,
+                                               tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                               is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            default:
+                sci_link_mixed_batched_impl<0>(chunk_ptr, chunk_size, src_basis, src_a_info, src_b_info,
+                                               num_src_astrs_total, num_src_bstrs_total,
+                                               tgt_a_begin, tgt_b_begin, num_a, num_b, tgt_asym, tgt_bsym,
+                                               is_new_a, skip_new_alpha, src_vec, dst_acc);
+                break;
+            }
+        }
+        start = end;
+    }
 }
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_block_bitstr(
+int64 sci_select_external_block(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -274,7 +633,9 @@ int64 sci_hvec_select_external_block_bitstr(
         chunk_desc.offset = 0;
 
         std::vector<Tv> chunk_acc((size_t)cur_num_a * (size_t)num_b, Tv{});
-        contract_hvec_sci_for_desc(chunk_desc, src_basis, net, src_vec, chunk_acc.data());
+        dispatch_chunks_for_block<1>(chunk_desc, src_basis, net->pure_a_groups, src_vec, chunk_acc.data());
+        dispatch_chunks_for_block<2>(chunk_desc, src_basis, net->pure_b_groups, src_vec, chunk_acc.data());
+        dispatch_chunks_for_block<3>(chunk_desc, src_basis, net->mixed_groups, src_vec, chunk_acc.data());
 
         for (int64 a = 0; a < cur_num_a && out_count < max_entries; ++a)
         {
@@ -282,6 +643,7 @@ int64 sci_hvec_select_external_block_bitstr(
             const int64 a_external_idx = (full_block.astrs + a_global) - tgt_basis->all_astrs;
             const bool new_a = is_new_a[a_external_idx];
             const Tv *row = chunk_acc.data() + a * num_b;
+
             for (int64 b = 0; b < num_b && out_count < max_entries; ++b)
             {
                 const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
@@ -290,17 +652,11 @@ int64 sci_hvec_select_external_block_bitstr(
                 if (row[b] == Tv{})
                     continue;
 
-                const Tv haa = candidate_diags[full_block.offset + a_global * num_b + b];
-                const Tv denom = variational_energy - haa;
-                const double denom_norm = std::sqrt(sqnorm(denom));
-                if (denom_norm == 0.0)
-                    continue;
-                const Tv selection_amplitude = row[b] / denom;
-                const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-                if (selection_norm <= eps)
-                    continue;
-
-                out_entries[out_count++] = {full_block.astrs[a_global], full_block.bstrs[b], row[b]};
+                if (sci_eps_check(row[b], candidate_diags[full_block.offset + a_global * num_b + b],
+                                  variational_energy, eps))
+                {
+                    out_entries[out_count++] = {full_block.astrs[a_global], full_block.bstrs[b], row[b]};
+                }
             }
         }
     }
@@ -308,7 +664,7 @@ int64 sci_hvec_select_external_block_bitstr(
 }
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_block_bitstr(
+int64 sci_select_external_link_block(
     const ExternalLinkSelectContext<Ti> *ctx,
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
@@ -323,8 +679,10 @@ int64 sci_hvec_select_external_link_block_bitstr(
     double eps,
     BufferedEntry<Ti, Tv> *out_entries,
     int64 max_entries,
-    const std::vector<LinkBucket<Ti, Tv>> &alpha_new_buckets,
-    const std::vector<LinkBucket<Ti, Tv>> &beta_new_buckets,
+    const std::vector<LinkBucket<Ti, Tv>> &buckets_type1,
+    const std::vector<LinkBucket<Ti, Tv>> &buckets_type2,
+    const std::vector<LinkBucket<Ti, Tv>> &buckets_type3,
+    bool skip_new_alpha,
     const std::vector<SourceStringInfo> &src_a_info,
     const std::vector<SourceStringInfo> &src_b_info,
     int64 num_src_astrs_total,
@@ -334,363 +692,93 @@ int64 sci_hvec_select_external_link_block_bitstr(
     const int64 num_a_total = full_block.num_a;
     const int64 num_b_total = full_block.num_b;
 
+    const int64 full_candidate_count = num_a_total * num_b_total;
+
     int64 block_new_a_count = 0;
     int64 block_new_b_count = 0;
     for (int64 a = 0; a < num_a_total; ++a)
     {
-        const int64 a_external_idx = (full_block.astrs + a) - tgt_basis->all_astrs;
-        if (is_new_a[a_external_idx])
+        const int64 a_ext = (full_block.astrs + a) - tgt_basis->all_astrs;
+        if (is_new_a[a_ext])
             ++block_new_a_count;
     }
     for (int64 b = 0; b < num_b_total; ++b)
     {
-        const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
-        if (is_new_b[b_external_idx])
+        const int64 b_ext = (full_block.bstrs + b) - tgt_basis->all_bstrs;
+        if (is_new_b[b_ext])
             ++block_new_b_count;
     }
-    const int64 full_candidate_count_heuristic = num_a_total * num_b_total;
-    const int64 external_candidate_count_heuristic = block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
-    constexpr int64 max_link_entries = 50000000;
-    constexpr double dense_threshold = 0.85;
-    const double external_candidate_ratio = full_candidate_count_heuristic == 0
-                                                ? 0.0
-                                                : (double)external_candidate_count_heuristic / (double)full_candidate_count_heuristic;
 
-    if (external_candidate_ratio > dense_threshold)
+    const int64 external_candidate_count =
+        block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
+    constexpr double dense_threshold = 0.85;
+    const double external_ratio = full_candidate_count == 0
+                                      ? 0.0
+                                      : (double)external_candidate_count / (double)full_candidate_count;
+
+    if (external_ratio > dense_threshold)
     {
-        return sci_hvec_select_external_block_bitstr(
+        return sci_select_external_block(
             tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
             candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
     }
 
+    constexpr int64 max_link_entries = 50000000;
     if (ctx->alpha_link_entries + ctx->beta_link_entries > max_link_entries)
     {
-        return sci_hvec_select_external_block_bitstr(
+        return sci_select_external_block(
             tgt_basis, src_basis, net, is_new_a, is_new_b, block_idx, src_vec,
             candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
     }
 
-    std::vector<Ti> new_astrs;
-    std::vector<int64> new_a_idxs;
-    std::vector<Ti> old_astrs;
-    std::vector<int64> old_a_idxs;
-    std::vector<Ti> new_bstrs;
-    std::vector<int64> new_b_idxs;
-    new_astrs.reserve(num_a_total);
-    new_a_idxs.reserve(num_a_total);
-    old_astrs.reserve(num_a_total);
-    old_a_idxs.reserve(num_a_total);
-    new_bstrs.reserve(num_b_total);
-    new_b_idxs.reserve(num_b_total);
+    const int64 tgt_a_begin = full_block.astrs - tgt_basis->all_astrs;
+    const int64 tgt_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
 
-    append_block_frontier_targets(ctx->new_frontiers.alpha_links_by_ax,
-                                  full_block.astrs, tgt_basis->all_astrs, num_a_total,
-                                  new_astrs, new_a_idxs);
-    append_block_frontier_targets(ctx->new_frontiers.beta_links_by_bx,
-                                  full_block.bstrs, tgt_basis->all_bstrs, num_b_total,
-                                  new_bstrs, new_b_idxs);
+    std::vector<Tv> dst_acc((size_t)num_a_total * (size_t)num_b_total, Tv{});
 
-    // The beta-new pass is A_old x B_new.  A_old is exactly the source alpha
-    // strings in this symmetry, so build it from src_basis instead of scanning
-    // every target alpha string.  This also makes A_new x B_new absent from the
-    // beta-new pass and leaves those determinants to the alpha-new pass.
-    if (full_block.asym < src_basis->num_irreps)
-    {
-        const Ti *src_astrs = src_basis->astrs_vec[full_block.asym];
-        const int64 num_src_astrs = src_basis->num_astrs[full_block.asym];
-        for (int64 i = 0; i < num_src_astrs; ++i)
-        {
-            auto it = tgt_basis->a_idx_map.find(src_astrs[i]);
-            if (it == tgt_basis->a_idx_map.end())
-                continue;
-            old_astrs.push_back(src_astrs[i]);
-            old_a_idxs.push_back(it->second);
-        }
-    }
+    dispatch_link_chunks_by_rank<1>(buckets_type1, src_basis, src_a_info.data(), src_b_info.data(),
+                                    num_src_astrs_total, num_src_bstrs_total,
+                                    tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
+                                    full_block.asym, full_block.bsym,
+                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
+
+    dispatch_link_chunks_by_rank<2>(buckets_type2, src_basis, src_a_info.data(), src_b_info.data(),
+                                    num_src_astrs_total, num_src_bstrs_total,
+                                    tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
+                                    full_block.asym, full_block.bsym,
+                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
+
+    dispatch_link_chunks_by_rank<3>(buckets_type3, src_basis, src_a_info.data(), src_b_info.data(),
+                                    num_src_astrs_total, num_src_bstrs_total,
+                                    tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
+                                    full_block.asym, full_block.bsym,
+                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
 
     int64 out_count = 0;
-
-    struct AccumPair
+    for (int64 a = 0; a < num_a_total && out_count < max_entries; ++a)
     {
-        int64 target_global;
-        Tv hpsi;
-    };
+        int64 a_global = tgt_a_begin + a;
+        bool new_a = is_new_a[a_global];
+        Tv *row = dst_acc.data() + a * num_b_total;
 
-    struct DenseAccumState
-    {
-        std::vector<Tv> values;
-        std::vector<unsigned char> touched;
-        std::vector<int64> touched_targets;
-    };
-
-    const int64 target_a_begin = full_block.astrs - tgt_basis->all_astrs;
-    const int64 target_a_end = target_a_begin + num_a_total;
-    const int64 target_b_begin = full_block.bstrs - tgt_basis->all_bstrs;
-    const int64 target_b_end = target_b_begin + num_b_total;
-
-    const int64 reachable_target_count = (int64)new_astrs.size() * num_b_total + (int64)old_astrs.size() * (int64)new_bstrs.size();
-    constexpr size_t max_dense_accumulator_bytes = (size_t)512 * 1024 * 1024;
-    const bool dense_accumulator_entry_count_fits = num_a_total >= 0 && num_b_total >= 0 &&
-                                                    (num_b_total == 0 || (size_t)num_a_total <= std::numeric_limits<size_t>::max() / (size_t)num_b_total);
-    const size_t dense_accumulator_entries = dense_accumulator_entry_count_fits
-                                                 ? (size_t)num_a_total * (size_t)num_b_total
-                                                 : std::numeric_limits<size_t>::max();
-    const bool use_dense_accumulator = dense_accumulator_entries <= max_dense_accumulator_bytes / sizeof(Tv);
-
-    DenseAccumState dense_acc;
-    std::vector<AccumPair> sparse_acc_pairs;
-    if (use_dense_accumulator)
-    {
-        dense_acc.values.assign(dense_accumulator_entries, Tv{});
-        dense_acc.touched.assign(dense_accumulator_entries, 0);
-        dense_acc.touched_targets.reserve((size_t)reachable_target_count);
-    }
-    else
-    {
-        sparse_acc_pairs.reserve((size_t)std::min<int64>(reachable_target_count, max_link_entries));
-    }
-
-    auto append_accumulated_hpsi = [&](int64 target_global, Tv hpsi)
-    {
-        if (hpsi == Tv{})
-            return;
-        if (use_dense_accumulator)
+        for (int64 b = 0; b < num_b_total && out_count < max_entries; ++b)
         {
-            const int64 local_target = target_global - full_block.offset;
-            Tv &acc = dense_acc.values[(size_t)local_target];
-            if (!dense_acc.touched[(size_t)local_target])
-            {
-                dense_acc.touched[(size_t)local_target] = 1;
-                dense_acc.touched_targets.push_back(target_global);
-            }
-            acc += hpsi;
-        }
-        else
-        {
-            sparse_acc_pairs.push_back({target_global, hpsi});
-        }
-    };
-
-    auto accumulate_for_buckets_impl = [&]<int Rank, typename AppendFn>(const LinkBucket<Ti, Tv> &bucket, bool skip_new_alpha_targets, AppendFn &&append_fn)
-    {
-        constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
-
-        const SpinLinkCSR<Ti> &alpha_links = *bucket.alpha_links;
-        const SpinLinkCSR<Ti> &beta_links = *bucket.beta_links;
-        const SVDGroup_OTF<Ti, Tv> &group = *bucket.group;
-        const int64 num_src_a = alpha_links.rowptr.empty() ? 0 : (int64)alpha_links.rowptr.size() - 1;
-        const int64 num_src_b = beta_links.rowptr.empty() ? 0 : (int64)beta_links.rowptr.size() - 1;
-
-        std::vector<Tv> phase_a_by_str((size_t)num_src_astrs_total * MAX_RANK);
-        std::vector<Tv> phase_b_by_str((size_t)num_src_bstrs_total * MAX_RANK);
-
-        for (int64 i = 0; i < num_src_astrs_total; ++i)
-            precompute_phase<Rank, Ti, Tv>(src_basis->all_astrs[i], group.unique_zas, group.num_za,
-                                           group.wa, phase_a_by_str.data() + (size_t)i * MAX_RANK, 1, group.rank);
-
-        for (int64 j = 0; j < num_src_bstrs_total; ++j)
-            precompute_phase<Rank, Ti, Tv>(src_basis->all_bstrs[j], group.unique_zbs, group.num_zb,
-                                           group.wb, phase_b_by_str.data() + (size_t)j * MAX_RANK, 1, group.rank);
-
-        for (int64 src_a_global = 0; src_a_global < num_src_a; ++src_a_global)
-        {
-            if (src_a_global >= (int64)src_a_info.size() || !src_a_info[src_a_global].valid)
+            int64 b_global = tgt_b_begin + b;
+            if (!new_a && !is_new_b[b_global])
                 continue;
-            const SourceStringInfo &a_info = src_a_info[src_a_global];
-            const Tv *pa = phase_a_by_str.data() + (size_t)src_a_global * MAX_RANK;
 
-            for (int64 pa_ = alpha_links.rowptr[src_a_global]; pa_ < alpha_links.rowptr[src_a_global + 1]; ++pa_)
+            if (sci_eps_check(row[b], candidate_diags[full_block.offset + a * num_b_total + b],
+                              variational_energy, eps))
             {
-                const int64 dst_a_global = alpha_links.colidx[pa_];
-                if (dst_a_global < target_a_begin || dst_a_global >= target_a_end)
-                    continue;
-                if (skip_new_alpha_targets && is_new_a[dst_a_global])
-                    continue;
-                const int64 a_full = dst_a_global - target_a_begin;
-
-                for (int64 src_b_global = 0; src_b_global < num_src_b; ++src_b_global)
-                {
-                    if (src_b_global >= (int64)src_b_info.size() || !src_b_info[src_b_global].valid)
-                        continue;
-                    const SourceStringInfo &b_info = src_b_info[src_b_global];
-                    const int64 src_block_idx = src_basis->block_map[a_info.sym * src_basis->num_irreps + b_info.sym];
-                    if (src_block_idx == -1)
-                        continue;
-                    const BlockDesc<Ti> &src_block = src_basis->blocks[src_block_idx];
-                    const Tv src_amp = src_vec[src_block.offset + a_info.local * src_block.num_b + b_info.local];
-                    if (src_amp == Tv{})
-                        continue;
-
-                    const Tv *pb = phase_b_by_str.data() + (size_t)src_b_global * MAX_RANK;
-
-                    for (int64 pb_ = beta_links.rowptr[src_b_global]; pb_ < beta_links.rowptr[src_b_global + 1]; ++pb_)
-                    {
-                        const int64 dst_b_global = beta_links.colidx[pb_];
-                        if (dst_b_global < target_b_begin || dst_b_global >= target_b_end)
-                            continue;
-                        const int64 b_full = dst_b_global - target_b_begin;
-
-                        Tv hpsi = src_amp * compute_coeff<Rank, Tv>(0, pa, pb, 1, group.rank);
-                        append_fn(full_block.offset + a_full * num_b_total + b_full, hpsi);
-                    }
-                }
-            }
-        }
-    };
-
-    // External space = (A_new x B_all) union (A_old x B_new).  This assigns
-    // A_new x B_new only to the first subspace, avoiding duplicate selection.
-    // Contributions are accumulated by full target determinant before applying
-    // the selection threshold so all source determinants and SVD groups that
-    // reach the same external determinant contribute to the final Hψ value.
-    struct BucketTask { LinkBucket<Ti, Tv> bucket; bool skip; };
-    std::vector<BucketTask> all_buckets;
-    all_buckets.reserve(alpha_new_buckets.size() + beta_new_buckets.size());
-    for (const auto &b : alpha_new_buckets) all_buckets.push_back({b, false});
-    for (const auto &b : beta_new_buckets)  all_buckets.push_back({b, true});
-
-    if (!all_buckets.empty())
-    {
-        auto dispatch_rank = [](const SVDGroup_OTF<Ti, Tv> *g) -> int
-        {
-            int r = g->rank;
-            return (r == 1 || r == 2) ? r : 0;
-        };
-
-#pragma omp parallel
-        {
-            DenseAccumState local_dense;
-            std::vector<AccumPair> local_sparse;
-
-            if (use_dense_accumulator)
-            {
-                local_dense.values.assign(dense_accumulator_entries, Tv{});
-                local_dense.touched.assign(dense_accumulator_entries, 0);
-                local_dense.touched_targets.reserve((size_t)(reachable_target_count / omp_get_num_threads() + 1));
-            }
-            else
-            {
-                local_sparse.reserve((size_t)std::min<int64>(reachable_target_count / omp_get_num_threads() + 1, max_link_entries));
-            }
-
-            auto local_append = [&](int64 target_global, Tv hpsi)
-            {
-                if (hpsi == Tv{})
-                    return;
-                if (use_dense_accumulator)
-                {
-                    const int64 local_target = target_global - full_block.offset;
-                    Tv &acc = local_dense.values[(size_t)local_target];
-                    if (!local_dense.touched[(size_t)local_target])
-                    {
-                        local_dense.touched[(size_t)local_target] = 1;
-                        local_dense.touched_targets.push_back(target_global);
-                    }
-                    acc += hpsi;
-                }
-                else
-                {
-                    local_sparse.push_back({target_global, hpsi});
-                }
-            };
-
-#pragma omp for schedule(dynamic)
-            for (int64 i = 0; i < (int64)all_buckets.size(); ++i)
-            {
-                const LinkBucket<Ti, Tv> &bucket = all_buckets[i].bucket;
-                bool skip = all_buckets[i].skip;
-                int dr = dispatch_rank(bucket.group);
-                switch (dr)
-                {
-                case 1:
-                    accumulate_for_buckets_impl.template operator()<1>(bucket, skip, local_append);
-                    break;
-                case 2:
-                    accumulate_for_buckets_impl.template operator()<2>(bucket, skip, local_append);
-                    break;
-                default:
-                    accumulate_for_buckets_impl.template operator()<0>(bucket, skip, local_append);
-                    break;
-                }
-            }
-
-#pragma omp critical
-            {
-                if (use_dense_accumulator)
-                {
-                    for (int64 target_global : local_dense.touched_targets)
-                    {
-                        const int64 local_target = target_global - full_block.offset;
-                        if (!dense_acc.touched[(size_t)local_target])
-                        {
-                            dense_acc.touched[(size_t)local_target] = 1;
-                            dense_acc.touched_targets.push_back(target_global);
-                        }
-                        dense_acc.values[(size_t)local_target] += local_dense.values[(size_t)local_target];
-                    }
-                }
-                else
-                {
-                    sparse_acc_pairs.insert(sparse_acc_pairs.end(), local_sparse.begin(), local_sparse.end());
-                }
+                out_entries[out_count++] = {full_block.astrs[a], full_block.bstrs[b], row[b]};
             }
         }
     }
-
-    auto emit_if_selected = [&](int64 target_global, const Tv &acc)
-    {
-        if (out_count >= max_entries || acc == Tv{})
-            return;
-        const Tv haa = candidate_diags[target_global];
-        const Tv denom = variational_energy - haa;
-        const double denom_norm = std::sqrt(sqnorm(denom));
-        if (denom_norm == 0.0)
-            return;
-        const Tv selection_amplitude = acc / denom;
-        const double selection_norm = std::sqrt(sqnorm(selection_amplitude));
-        if (selection_norm <= eps)
-            return;
-
-        const int64 local_target = target_global - full_block.offset;
-        const int64 a_full = local_target / num_b_total;
-        const int64 b_full = local_target - a_full * num_b_total;
-        out_entries[out_count++] = {full_block.astrs[a_full], full_block.bstrs[b_full], acc};
-    };
-
-    if (use_dense_accumulator)
-    {
-        for (int64 target_global : dense_acc.touched_targets)
-        {
-            if (out_count >= max_entries)
-                break;
-            emit_if_selected(target_global, dense_acc.values[(size_t)(target_global - full_block.offset)]);
-        }
-    }
-    else
-    {
-        std::sort(sparse_acc_pairs.begin(), sparse_acc_pairs.end(),
-                  [](const AccumPair &lhs, const AccumPair &rhs)
-                  {
-                      return lhs.target_global < rhs.target_global;
-                  });
-        for (int64 i = 0; i < (int64)sparse_acc_pairs.size() && out_count < max_entries;)
-        {
-            const int64 target_global = sparse_acc_pairs[i].target_global;
-            Tv acc = {};
-            do
-            {
-                acc += sparse_acc_pairs[i].hpsi;
-                ++i;
-            } while (i < (int64)sparse_acc_pairs.size() && sparse_acc_pairs[i].target_global == target_global);
-            emit_if_selected(target_global, acc);
-        }
-    }
-
     return out_count;
 }
 
 template <typename Ti, typename Tv>
-int64 sci_hvec_select_external_link_all_blocks_bitstr(
+int64 sci_select_external_link_all_blocks(
     const SciBasisManager<Ti> *tgt_basis,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -713,13 +801,13 @@ int64 sci_hvec_select_external_link_all_blocks_bitstr(
         src_basis, tgt_basis, net, is_new_a, is_new_b,
         unique_axs, num_unique_axs, unique_bxs, num_unique_bxs);
 
-    std::vector<LinkBucket<Ti, Tv>> alpha_new_buckets;
-    std::vector<LinkBucket<Ti, Tv>> beta_new_buckets;
-    alpha_new_buckets.reserve(net_sci->buckets.size());
-    beta_new_buckets.reserve(net_sci->buckets.size());
+    std::vector<LinkBucket<Ti, Tv>> alpha_new[4];
+    std::vector<LinkBucket<Ti, Tv>> beta_new[4];
 
     for (const auto &bkt : net_sci->buckets)
     {
+        int tc = excitation_type_code<Ti>(bkt.ax, bkt.bx);
+
         const auto alpha_new_it = ctx.new_frontiers.alpha_links_by_ax.find(bkt.ax);
         const auto alpha_full_it = ctx.full_links.alpha_links_by_ax.find(bkt.ax);
         const auto beta_new_it = ctx.new_frontiers.beta_links_by_bx.find(bkt.bx);
@@ -727,11 +815,19 @@ int64 sci_hvec_select_external_link_all_blocks_bitstr(
 
         if (alpha_new_it != ctx.new_frontiers.alpha_links_by_ax.end() &&
             beta_full_it != ctx.full_links.beta_links_by_bx.end())
-            alpha_new_buckets.push_back({&alpha_new_it->second, &beta_full_it->second, bkt.group});
+            alpha_new[tc].push_back({&alpha_new_it->second, &beta_full_it->second, bkt.group});
 
         if (alpha_full_it != ctx.full_links.alpha_links_by_ax.end() &&
             beta_new_it != ctx.new_frontiers.beta_links_by_bx.end())
-            beta_new_buckets.push_back({&alpha_full_it->second, &beta_new_it->second, bkt.group});
+            beta_new[tc].push_back({&alpha_full_it->second, &beta_new_it->second, bkt.group});
+    }
+
+    auto rank_cmp = [](const LinkBucket<Ti, Tv> &a, const LinkBucket<Ti, Tv> &b)
+    { return a.group->rank < b.group->rank; };
+    for (int tc = 1; tc <= 3; ++tc)
+    {
+        std::sort(alpha_new[tc].begin(), alpha_new[tc].end(), rank_cmp);
+        std::sort(beta_new[tc].begin(), beta_new[tc].end(), rank_cmp);
     }
 
     int64 num_src_astrs_total = 0;
@@ -742,37 +838,29 @@ int64 sci_hvec_select_external_link_all_blocks_bitstr(
         num_src_bstrs_total += src_basis->num_bstrs[sym];
     }
 
-    std::vector<SourceStringInfo> src_a_info(num_src_astrs_total);
-    for (int64 src_a_global = 0; src_a_global < num_src_astrs_total; ++src_a_global)
-    {
-        SourceStringInfo &info = src_a_info[src_a_global];
-        info.sym = get_string_sym(src_basis->all_astrs[src_a_global], src_basis->orbsym);
-        if (info.sym >= src_basis->num_irreps)
-            continue;
-        info.local = src_a_global - (src_basis->astrs_vec[info.sym] - src_basis->all_astrs);
-        info.valid = info.local >= 0 && info.local < src_basis->num_astrs[info.sym];
-    }
-
-    std::vector<SourceStringInfo> src_b_info(num_src_bstrs_total);
-    for (int64 src_b_global = 0; src_b_global < num_src_bstrs_total; ++src_b_global)
-    {
-        SourceStringInfo &info = src_b_info[src_b_global];
-        info.sym = get_string_sym(src_basis->all_bstrs[src_b_global], src_basis->orbsym);
-        if (info.sym >= src_basis->num_irreps)
-            continue;
-        info.local = src_b_global - (src_basis->bstrs_vec[info.sym] - src_basis->all_bstrs);
-        info.valid = info.local >= 0 && info.local < src_basis->num_bstrs[info.sym];
-    }
+    std::vector<SourceStringInfo> src_a_info, src_b_info;
+    build_src_info_vec(src_basis, num_src_astrs_total, num_src_bstrs_total, src_a_info, src_b_info);
 
     int64 out_count = 0;
     for (int64 blk = 0; blk < tgt_basis->num_blocks && out_count < max_entries; ++blk)
     {
-        out_count += sci_hvec_select_external_link_block_bitstr(
+        out_count += sci_select_external_link_block(
             &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
             candidate_diags, variational_energy, chunk_size, eps,
             out_entries + out_count, max_entries - out_count,
-            alpha_new_buckets, beta_new_buckets,
+            alpha_new[1], alpha_new[2], alpha_new[3], false,
+            src_a_info, src_b_info, num_src_astrs_total, num_src_bstrs_total);
+
+        if (out_count >= max_entries)
+            break;
+
+        out_count += sci_select_external_link_block(
+            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
+            candidate_diags, variational_energy, chunk_size, eps,
+            out_entries + out_count, max_entries - out_count,
+            beta_new[1], beta_new[2], beta_new[3], true,
             src_a_info, src_b_info, num_src_astrs_total, num_src_bstrs_total);
     }
+
     return out_count;
 }

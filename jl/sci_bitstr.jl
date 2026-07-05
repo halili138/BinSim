@@ -168,32 +168,6 @@ function expand_bitstrings_bitstr(
     return dst_astrs, dst_bstrs, is_new_a, is_new_b
 end
 
-function sci_hvec_select_for_block_bitstr!(
-    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    blk::Int, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    max_per_block = tgt.dim
-    buf_a = Vector{UInt32}(undef, max_per_block)
-    buf_b = Vector{UInt32}(undef, max_per_block)
-    buf_v = Vector{Float64}(undef, max_per_block)
-
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_for_block_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        blk::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
-        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
-        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        max_per_block::Int64
-    )::Int64
-
-    append!(sel_a, view(buf_a, 1:n))
-    append!(sel_b, view(buf_b, 1:n))
-    append!(sel_v, view(buf_v, 1:n))
-
-    return n
-end
-
 function sci_hvec_select_external_bitstr!(
     tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
@@ -253,29 +227,6 @@ function sci_hvec_select_external_link_all_blocks_bitstr!(
     return n
 end
 
-function filter_new_selected(
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64},
-    dst_a_idx_map::Dict{UInt32,Int}, dst_b_idx_map::Dict{UInt32,Int},
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool})
-
-    new_a = UInt32[]
-    new_b = UInt32[]
-    new_v = Float64[]
-    for i in 1:length(sel_a)
-        a_local = get(dst_a_idx_map, sel_a[i], -1)
-        b_local = get(dst_b_idx_map, sel_b[i], -1)
-        if a_local == -1 || b_local == -1
-            continue
-        end
-        if is_new_a[a_local+1] || is_new_b[b_local+1]
-            push!(new_a, sel_a[i])
-            push!(new_b, sel_b[i])
-            push!(new_v, sel_v[i])
-        end
-    end
-    return new_a, new_b, new_v
-end
-
 function merge_bitstrings(
     src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32},
@@ -315,21 +266,6 @@ function destroy_sci_basis_manager_bitstr(sb::SciBasisManagerBitstr)
     if sb.ptr != C_NULL
         @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(sb.ptr::Ptr{Cvoid})::Cvoid
         sb.ptr = C_NULL
-    end
-end
-
-function select_full_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr,
-    otf::OTF, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    for blk in 0:tgt.num_blocks-1
-        sci_hvec_select_for_block_bitstr!(
-            tgt, src, otf, blk, psi,
-            candidate_diags, variational_energy,
-            chunk_size, eps, sel_a, sel_b, sel_v
-        )
     end
 end
 
@@ -402,25 +338,18 @@ function run_sci_bitstr(mole::Mole;
         sel_b = UInt32[]
         sel_v = Float64[]
 
-        t2 = @elapsed if select_mode == :external_link || select_mode == :auto
-            select_external_link_bitstr!(
-                tgt, basis, ham_otf, psi, tgt_diags,
-                current_energy, chunk_size, eps, is_new_a, is_new_b,
-                unique_axs, unique_bxs, sel_a, sel_b, sel_v
-            )
-        elseif select_mode == :external_block
+        t2 = @elapsed if select_mode == :external_block
             select_external_block_bitstr!(
                 tgt, basis, ham_otf, psi, tgt_diags,
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
                 sel_a, sel_b, sel_v
             )
         else
-            select_full_bitstr!(
+            select_external_link_bitstr!(
                 tgt, basis, ham_otf, psi, tgt_diags,
                 current_energy, chunk_size, eps, is_new_a, is_new_b,
-                sel_a, sel_b, sel_v
+                unique_axs, unique_bxs, sel_a, sel_b, sel_v
             )
-            sel_a, sel_b, sel_v = filter_new_selected(sel_a, sel_b, sel_v, tgt.a_idx_map, tgt.b_idx_map, is_new_a, is_new_b)
         end
 
         nsel = length(sel_v)

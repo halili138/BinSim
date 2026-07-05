@@ -55,48 +55,48 @@ SpinLinkCSR<Ti> build_alpha_spin_link_csr(
     const SciBasisManager<Ti> *tgt_basis,
     Ti ax)
 {
-    const int64 num_src = sci_num_alpha_strings(src_basis);
+    const int64 num_tgt = sci_num_alpha_strings(tgt_basis);
     SpinLinkCSR<Ti> link;
     link.mask = ax;
-    link.rowptr.resize(num_src + 1, 0);
-    link.colidx.reserve(num_src);
+    link.rowptr.resize(num_tgt + 1, 0);
+    link.colidx.reserve(num_tgt);
 
     if (ax == Ti{})
     {
-        for (int64 src_a_idx = 0; src_a_idx < num_src; ++src_a_idx)
+        for (int64 dst_global = 0; dst_global < num_tgt; ++dst_global)
         {
-            link.rowptr[src_a_idx] = (int64)link.colidx.size();
-            const Ti dst_a = src_basis->all_astrs[src_a_idx];
-            const int64 dst_sym = get_string_sym(dst_a, tgt_basis->orbsym);
-            if (dst_sym >= tgt_basis->num_irreps)
+            link.rowptr[dst_global] = (int64)link.colidx.size();
+            const Ti dst_a = tgt_basis->all_astrs[dst_global];
+            const int64 src_sym = get_string_sym(dst_a, src_basis->orbsym);
+            if (src_sym >= src_basis->num_irreps)
                 continue;
-            const auto dst_it = tgt_basis->a_idx_map.find(dst_a);
-            if (dst_it == tgt_basis->a_idx_map.end())
+            const auto src_it = src_basis->a_idx_map.find(dst_a);
+            if (src_it == src_basis->a_idx_map.end())
                 continue;
-            const int64 dst_global_idx = (tgt_basis->astrs_vec[dst_sym] - tgt_basis->all_astrs) + dst_it->second;
-            link.colidx.push_back((int)dst_global_idx);
+            const int64 src_global = (src_basis->astrs_vec[src_sym] - src_basis->all_astrs) + src_it->second;
+            link.colidx.push_back((int)src_global);
         }
-        link.rowptr[num_src] = (int64)link.colidx.size();
+        link.rowptr[num_tgt] = (int64)link.colidx.size();
         return link;
     }
 
-    for (int64 src_a_idx = 0; src_a_idx < num_src; ++src_a_idx)
+    for (int64 dst_global = 0; dst_global < num_tgt; ++dst_global)
     {
-        link.rowptr[src_a_idx] = (int64)link.colidx.size();
-        const Ti src_a = src_basis->all_astrs[src_a_idx];
-        const Ti dst_a = src_a ^ ax;
-        if (sci_link_popcnt(dst_a) != sci_link_popcnt(src_a))
+        link.rowptr[dst_global] = (int64)link.colidx.size();
+        const Ti dst_a = tgt_basis->all_astrs[dst_global];
+        const Ti src_a = dst_a ^ ax;
+        if (sci_link_popcnt(src_a) != sci_link_popcnt(dst_a))
             continue;
-        const int64 dst_sym = get_string_sym(dst_a, tgt_basis->orbsym);
-        if (dst_sym >= tgt_basis->num_irreps)
+        const int64 src_sym = get_string_sym(src_a, src_basis->orbsym);
+        if (src_sym >= src_basis->num_irreps)
             continue;
-        const auto dst_it = tgt_basis->a_idx_map.find(dst_a);
-        if (dst_it == tgt_basis->a_idx_map.end())
+        const auto src_it = src_basis->a_idx_map.find(src_a);
+        if (src_it == src_basis->a_idx_map.end())
             continue;
-        const int64 dst_global_idx = (tgt_basis->astrs_vec[dst_sym] - tgt_basis->all_astrs) + dst_it->second;
-        link.colidx.push_back((int)dst_global_idx);
+        const int64 src_global = (src_basis->astrs_vec[src_sym] - src_basis->all_astrs) + src_it->second;
+        link.colidx.push_back((int)src_global);
     }
-    link.rowptr[num_src] = (int64)link.colidx.size();
+    link.rowptr[num_tgt] = (int64)link.colidx.size();
     return link;
 }
 
@@ -106,51 +106,50 @@ SpinLinkCSR<Ti> build_beta_spin_link_csr(
     const SciBasisManager<Ti> *tgt_basis,
     Ti bx)
 {
-    const int64 num_src = sci_num_beta_strings(src_basis);
+    const int64 num_tgt = sci_num_beta_strings(tgt_basis);
     SpinLinkCSR<Ti> link;
     link.mask = bx;
-    link.rowptr.resize(num_src + 1, 0);
-    link.colidx.reserve(num_src);
+    link.rowptr.resize(num_tgt + 1, 0);
+    link.colidx.reserve(num_tgt);
 
     if (bx == Ti{})
     {
-        for (int64 src_b_idx = 0; src_b_idx < num_src; ++src_b_idx)
+        for (int64 dst_global = 0; dst_global < num_tgt; ++dst_global)
         {
-            link.rowptr[src_b_idx] = (int64)link.colidx.size();
-            const Ti dst_b = src_basis->all_bstrs[src_b_idx];
-            const int64 dst_sym = get_string_sym(dst_b, tgt_basis->orbsym);
-            if (dst_sym >= tgt_basis->num_irreps)
+            link.rowptr[dst_global] = (int64)link.colidx.size();
+            const Ti dst_b = tgt_basis->all_bstrs[dst_global];
+            const int64 src_sym = get_string_sym(dst_b, src_basis->orbsym);
+            if (src_sym >= src_basis->num_irreps)
                 continue;
-            const auto dst_it = tgt_basis->b_idx_map.find(dst_b);
-            if (dst_it == tgt_basis->b_idx_map.end())
+            const auto src_it = src_basis->b_idx_map.find(dst_b);
+            if (src_it == src_basis->b_idx_map.end())
                 continue;
-            const int64 dst_global_idx = (tgt_basis->bstrs_vec[dst_sym] - tgt_basis->all_bstrs) + dst_it->second;
-            link.colidx.push_back((int)dst_global_idx);
+            const int64 src_global = (src_basis->bstrs_vec[src_sym] - src_basis->all_bstrs) + src_it->second;
+            link.colidx.push_back((int)src_global);
         }
-        link.rowptr[num_src] = (int64)link.colidx.size();
+        link.rowptr[num_tgt] = (int64)link.colidx.size();
         return link;
     }
 
-    for (int64 src_b_idx = 0; src_b_idx < num_src; ++src_b_idx)
+    for (int64 dst_global = 0; dst_global < num_tgt; ++dst_global)
     {
-        link.rowptr[src_b_idx] = (int64)link.colidx.size();
-        const Ti src_b = src_basis->all_bstrs[src_b_idx];
-        const Ti dst_b = src_b ^ bx;
-        if (sci_link_popcnt(dst_b) != sci_link_popcnt(src_b))
+        link.rowptr[dst_global] = (int64)link.colidx.size();
+        const Ti dst_b = tgt_basis->all_bstrs[dst_global];
+        const Ti src_b = dst_b ^ bx;
+        if (sci_link_popcnt(src_b) != sci_link_popcnt(dst_b))
             continue;
-        const int64 dst_sym = get_string_sym(dst_b, tgt_basis->orbsym);
-        if (dst_sym >= tgt_basis->num_irreps)
+        const int64 src_sym = get_string_sym(src_b, src_basis->orbsym);
+        if (src_sym >= src_basis->num_irreps)
             continue;
-        const auto dst_it = tgt_basis->b_idx_map.find(dst_b);
-        if (dst_it == tgt_basis->b_idx_map.end())
+        const auto src_it = src_basis->b_idx_map.find(src_b);
+        if (src_it == src_basis->b_idx_map.end())
             continue;
-        const int64 dst_global_idx = (tgt_basis->bstrs_vec[dst_sym] - tgt_basis->all_bstrs) + dst_it->second;
-        link.colidx.push_back((int)dst_global_idx);
+        const int64 src_global = (src_basis->bstrs_vec[src_sym] - src_basis->all_bstrs) + src_it->second;
+        link.colidx.push_back((int)src_global);
     }
-    link.rowptr[num_src] = (int64)link.colidx.size();
+    link.rowptr[num_tgt] = (int64)link.colidx.size();
     return link;
 }
-
 
 template <typename Ti>
 SpinLinkCSR<Ti> filter_spin_link_csr_to_new_targets(
@@ -159,21 +158,20 @@ SpinLinkCSR<Ti> filter_spin_link_csr_to_new_targets(
 {
     SpinLinkCSR<Ti> frontier;
     frontier.mask = full_link.mask;
-    const int64 num_src = full_link.rowptr.empty() ? 0 : (int64)full_link.rowptr.size() - 1;
-    frontier.rowptr.resize(num_src + 1, 0);
+    const int64 num_tgt = full_link.rowptr.empty() ? 0 : (int64)full_link.rowptr.size() - 1;
+    frontier.rowptr.resize(num_tgt + 1, 0);
     frontier.colidx.reserve(full_link.colidx.size());
 
-    for (int64 src_idx = 0; src_idx < num_src; ++src_idx)
+    for (int64 dst_idx = 0; dst_idx < num_tgt; ++dst_idx)
     {
-        frontier.rowptr[src_idx] = (int64)frontier.colidx.size();
-        for (int64 p = full_link.rowptr[src_idx]; p < full_link.rowptr[src_idx + 1]; ++p)
+        frontier.rowptr[dst_idx] = (int64)frontier.colidx.size();
+        if (is_new_target[dst_idx])
         {
-            const int dst_idx = full_link.colidx[p];
-            if (is_new_target[dst_idx])
-                frontier.colidx.push_back(dst_idx);
+            for (int64 p = full_link.rowptr[dst_idx]; p < full_link.rowptr[dst_idx + 1]; ++p)
+                frontier.colidx.push_back(full_link.colidx[p]);
         }
     }
-    frontier.rowptr[num_src] = (int64)frontier.colidx.size();
+    frontier.rowptr[num_tgt] = (int64)frontier.colidx.size();
     return frontier;
 }
 

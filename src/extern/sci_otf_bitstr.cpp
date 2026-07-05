@@ -46,29 +46,6 @@ extern "C"
                 norb, orbsym, total_sym, num_irreps));
     }
 
-    int64 sci_hvec_select_for_block_bitstr_f64(
-        void *tgt, void *src, void *net, int64 blk,
-        const double *src_vec, const double *candidate_diags, double variational_energy,
-        int chunk_size, double eps,
-        uint32 *out_a, uint32 *out_b, double *out_v, int64 max_entries)
-    {
-        auto *a = static_cast<SciBasisManager<uint32> *>(tgt);
-        auto *b = static_cast<SciBasisManager<uint32> *>(src);
-        auto *c = static_cast<Network_OTF<uint32, double> *>(net);
-        auto *entries = new BufferedEntry<uint32, double>[max_entries];
-        int64 n = sci_hvec_select_for_block_bitstr<uint32, double>(
-            a, b, c, blk, src_vec, candidate_diags, variational_energy,
-            chunk_size, eps, entries, max_entries);
-        for (int64 i = 0; i < n; ++i)
-        {
-            out_a[i] = entries[i].astr;
-            out_b[i] = entries[i].bstr;
-            out_v[i] = entries[i].val;
-        }
-        delete[] entries;
-        return n;
-    }
-
     int64 sci_hvec_select_external_bitstr_f64(
         void *tgt, void *src, void *net,
         const bool *is_new_a, const bool *is_new_b,
@@ -80,7 +57,7 @@ extern "C"
         auto *b = static_cast<SciBasisManager<uint32> *>(src);
         auto *c = static_cast<Network_OTF<uint32, double> *>(net);
         auto *entries = new BufferedEntry<uint32, double>[max_entries];
-        int64 n = sci_hvec_select_external_block_bitstr<uint32, double>(
+        int64 n = sci_select_external_block<uint32, double>(
             a, b, c, is_new_a, is_new_b, blk, src_vec, candidate_diags,
             variational_energy, chunk_size, eps, entries, max_entries);
         for (int64 i = 0; i < n; ++i)
@@ -107,7 +84,7 @@ extern "C"
         auto *c = static_cast<Network_OTF<uint32, double> *>(net);
         auto *d = static_cast<NetworkSCI<uint32, double> *>(net_sci);
         auto *entries = new BufferedEntry<uint32, double>[max_entries];
-        int64 n = sci_hvec_select_external_link_all_blocks_bitstr<uint32, double>(
+        int64 n = sci_select_external_link_all_blocks<uint32, double>(
             a, b, c, d, is_new_a, is_new_b, unique_axs, num_unique_axs,
             unique_bxs, num_unique_bxs, src_vec, candidate_diags,
             variational_energy, chunk_size, eps, entries, max_entries);
