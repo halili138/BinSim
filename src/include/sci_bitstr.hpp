@@ -711,8 +711,7 @@ int64 sci_select_external_link_block(
             ++block_new_b_count;
     }
 
-    const int64 external_candidate_count =
-        block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
+    const int64 external_candidate_count = block_new_a_count * num_b_total + (num_a_total - block_new_a_count) * block_new_b_count;
     constexpr double dense_threshold = 0.85;
     const double external_ratio = full_candidate_count == 0
                                       ? 0.0
@@ -725,7 +724,7 @@ int64 sci_select_external_link_block(
             candidate_diags, variational_energy, chunk_size, eps, out_entries, max_entries);
     }
 
-    constexpr int64 max_link_entries = 50000000;
+    constexpr int64 max_link_entries = 1 << 26;
     if (ctx->alpha_link_entries + ctx->beta_link_entries > max_link_entries)
     {
         return sci_select_external_block(
