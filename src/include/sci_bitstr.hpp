@@ -679,10 +679,12 @@ int64 sci_select_external_link_block(
     double eps,
     BufferedEntry<Ti, Tv> *out_entries,
     int64 max_entries,
-    const std::vector<LinkBucket<Ti, Tv>> &buckets_type1,
-    const std::vector<LinkBucket<Ti, Tv>> &buckets_type2,
-    const std::vector<LinkBucket<Ti, Tv>> &buckets_type3,
-    bool skip_new_alpha,
+    const std::vector<LinkBucket<Ti, Tv>> &alpha_1,
+    const std::vector<LinkBucket<Ti, Tv>> &alpha_2,
+    const std::vector<LinkBucket<Ti, Tv>> &alpha_3,
+    const std::vector<LinkBucket<Ti, Tv>> &beta_1,
+    const std::vector<LinkBucket<Ti, Tv>> &beta_2,
+    const std::vector<LinkBucket<Ti, Tv>> &beta_3,
     const std::vector<SourceStringInfo> &src_a_info,
     const std::vector<SourceStringInfo> &src_b_info,
     int64 num_src_astrs_total,
@@ -736,23 +738,29 @@ int64 sci_select_external_link_block(
 
     std::vector<Tv> dst_acc((size_t)num_a_total * (size_t)num_b_total, Tv{});
 
-    dispatch_link_chunks_by_rank<1>(buckets_type1, src_basis, src_a_info.data(), src_b_info.data(),
+    dispatch_link_chunks_by_rank<1>(alpha_1, src_basis, src_a_info.data(), src_b_info.data(),
                                     num_src_astrs_total, num_src_bstrs_total,
                                     tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
                                     full_block.asym, full_block.bsym,
-                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
+                                    is_new_a, false, src_vec, dst_acc.data());
 
-    dispatch_link_chunks_by_rank<2>(buckets_type2, src_basis, src_a_info.data(), src_b_info.data(),
+    dispatch_link_chunks_by_rank<3>(alpha_3, src_basis, src_a_info.data(), src_b_info.data(),
                                     num_src_astrs_total, num_src_bstrs_total,
                                     tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
                                     full_block.asym, full_block.bsym,
-                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
+                                    is_new_a, false, src_vec, dst_acc.data());
 
-    dispatch_link_chunks_by_rank<3>(buckets_type3, src_basis, src_a_info.data(), src_b_info.data(),
+    dispatch_link_chunks_by_rank<2>(beta_2, src_basis, src_a_info.data(), src_b_info.data(),
                                     num_src_astrs_total, num_src_bstrs_total,
                                     tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
                                     full_block.asym, full_block.bsym,
-                                    is_new_a, skip_new_alpha, src_vec, dst_acc.data());
+                                    is_new_a, true, src_vec, dst_acc.data());
+
+    dispatch_link_chunks_by_rank<3>(beta_3, src_basis, src_a_info.data(), src_b_info.data(),
+                                    num_src_astrs_total, num_src_bstrs_total,
+                                    tgt_a_begin, tgt_b_begin, num_a_total, num_b_total,
+                                    full_block.asym, full_block.bsym,
+                                    is_new_a, true, src_vec, dst_acc.data());
 
     int64 out_count = 0;
     for (int64 a = 0; a < num_a_total && out_count < max_entries; ++a)
@@ -848,17 +856,8 @@ int64 sci_select_external_link_all_blocks(
             &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
             candidate_diags, variational_energy, chunk_size, eps,
             out_entries + out_count, max_entries - out_count,
-            alpha_new[1], alpha_new[2], alpha_new[3], false,
-            src_a_info, src_b_info, num_src_astrs_total, num_src_bstrs_total);
-
-        if (out_count >= max_entries)
-            break;
-
-        out_count += sci_select_external_link_block(
-            &ctx, tgt_basis, src_basis, net, is_new_a, is_new_b, blk, src_vec,
-            candidate_diags, variational_energy, chunk_size, eps,
-            out_entries + out_count, max_entries - out_count,
-            beta_new[1], beta_new[2], beta_new[3], true,
+            alpha_new[1], alpha_new[2], alpha_new[3],
+            beta_new[1], beta_new[2], beta_new[3],
             src_a_info, src_b_info, num_src_astrs_total, num_src_bstrs_total);
     }
 

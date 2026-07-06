@@ -15,5 +15,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.e_scale = n2_6_31g[1.0]
     mole.orbsym .%= 10
 
+    println("Use mode external_block")
     run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=parse(Float64, ARGS[4]), verbose=true, select_mode=:external_block)
+
+    println("Use mode external_link")
+    run_sci_bitstr(mole; max_iter=20, max_size=5000, eps=parse(Float64, ARGS[4]), verbose=true, select_mode=:external_link)
 end
