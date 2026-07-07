@@ -92,6 +92,9 @@ FORCE_INLINE void insert_1body(
     Tv c1 = cc * (1.0 - 2.0 * (popcnt(z11 & x2) & 1));
     Tv c2 = cc * (1.0 - 2.0 * (popcnt(z12 & x2) & 1));
 
+    // Tv c1 = (popcnt(z11 & x2) & 1) ? -cc : cc;
+    // Tv c2 = (popcnt(z12 & x2) & 1) ? -cc : cc;
+
     Pauli<Ti> k;
     k.x = x12;
     k.z = z11 ^ z21;
@@ -135,6 +138,15 @@ FORCE_INLINE void insert_2body(
     Tv c21 = cc * (1.0 - 2.0 * (p2 ^ p31_x4)), c22 = cc * (1.0 - 2.0 * (p2 ^ p32_x4));
     Tv c31 = cc * (1.0 - 2.0 * (p3 ^ p31_x4)), c32 = cc * (1.0 - 2.0 * (p3 ^ p32_x4));
     Tv c41 = cc * (1.0 - 2.0 * (p4 ^ p31_x4)), c42 = cc * (1.0 - 2.0 * (p4 ^ p32_x4));
+
+    // Tv c11 = (p1 ^ p31_x4) ? -cc : cc; 
+    // Tv c21 = (p2 ^ p31_x4) ? -cc : cc; 
+    // Tv c31 = (p3 ^ p31_x4) ? -cc : cc; 
+    // Tv c41 = (p4 ^ p31_x4) ? -cc : cc; 
+    // Tv c12 = (p1 ^ p32_x4) ? -cc : cc;
+    // Tv c22 = (p2 ^ p32_x4) ? -cc : cc;
+    // Tv c32 = (p3 ^ p32_x4) ? -cc : cc;
+    // Tv c42 = (p4 ^ p32_x4) ? -cc : cc;
 
     Pauli<Ti> k;
     k.x = x1234;
