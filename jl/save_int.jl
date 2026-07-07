@@ -1,7 +1,7 @@
 function init_scf(pyfun, name::String, ratio::Float64, basis::String, save_path::String;
-    run_cisd::Bool=true,
-    run_mp2::Bool=true,
-    run_ccsd::Bool=true,
+    run_cisd::Bool=false,
+    run_mp2::Bool=false,
+    run_ccsd::Bool=false,
     run_fci::Bool=true,
 )
     gto = pyimport("pyscf.gto")

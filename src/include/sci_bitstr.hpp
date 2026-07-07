@@ -179,28 +179,31 @@ static inline void build_src_info_vec(
     }
 }
 
-struct DstAInfo
+struct DstInfo
 {
-    int a_full;
-    int64 src_a_global;
-};
-
-struct DstBInfo
-{
-    int b_full;
-    int64 src_b_global;
+    int full;
+    int64 src_global;
 };
 
 template <int Rank, typename Ti, typename Tv>
 static inline void sci_link_pure_a_batched_impl(
-    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const LinkBucket<Ti, Tv> *buckets, 
+    int64 num_buckets,
     const SciBasisManager<Ti> *src_basis,
-    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
-    int64 num_src_astrs_total, int64 num_src_bstrs_total,
-    int64 tgt_a_begin, int64 tgt_b_begin,
-    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
-    const bool *is_new_a, bool skip_new_alpha,
-    const Tv *src_vec, Tv *dst_acc)
+    const SourceStringInfo *src_a_info, 
+    const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, 
+    int64 num_src_bstrs_total,
+    int64 tgt_a_begin, 
+    int64 tgt_b_begin,
+    int64 num_a, 
+    int64 num_b, 
+    int64 tgt_asym, 
+    int64 tgt_bsym,
+    const bool *is_new_a, 
+    bool skip_new_alpha,
+    const Tv *src_vec, 
+    Tv *dst_acc)
 {
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
     const int64 num_irreps = src_basis->num_irreps;
@@ -211,8 +214,8 @@ static inline void sci_link_pure_a_batched_impl(
         std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
         std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
 
-        std::vector<DstAInfo> dst_a_list;
-        std::vector<DstBInfo> dst_b_list;
+        std::vector<DstInfo> dst_a_list;
+        std::vector<DstInfo> dst_b_list;
         dst_a_list.reserve((size_t)num_a);
         dst_b_list.reserve((size_t)num_b);
 
@@ -264,16 +267,16 @@ static inline void sci_link_pure_a_batched_impl(
 #pragma omp for schedule(dynamic)
             for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
             {
-                int a_full = dst_a_list[ai].a_full;
-                int64 src_a_global = dst_a_list[ai].src_a_global;
+                int a_full = dst_a_list[ai].full;
+                int64 src_a_global = dst_a_list[ai].src_global;
                 const SourceStringInfo &a_info = src_a_info[src_a_global];
                 const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
                 Tv *da = dst_acc + (int64)a_full * num_b;
 
                 for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
                 {
-                    int b_full = dst_b_list[bi].b_full;
-                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    int b_full = dst_b_list[bi].full;
+                    int64 src_b_global = dst_b_list[bi].src_global;
                     const SourceStringInfo &b_info = src_b_info[src_b_global];
                     const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
 
@@ -294,13 +297,22 @@ static inline void sci_link_pure_a_batched_impl(
 
 template <int Rank, typename Ti, typename Tv>
 static inline void sci_link_pure_b_batched_impl(
-    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const LinkBucket<Ti, Tv> *buckets, 
+    int64 num_buckets,
     const SciBasisManager<Ti> *src_basis,
-    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
-    int64 num_src_astrs_total, int64 num_src_bstrs_total,
-    int64 tgt_a_begin, int64 tgt_b_begin,
-    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
-    const bool *is_new_a, const Tv *src_vec, Tv *dst_acc)
+    const SourceStringInfo *src_a_info, 
+    const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, 
+    int64 num_src_bstrs_total,
+    int64 tgt_a_begin, 
+    int64 tgt_b_begin,
+    int64 num_a, 
+    int64 num_b, 
+    int64 tgt_asym, 
+    int64 tgt_bsym,
+    const bool *is_new_a, 
+    const Tv *src_vec, 
+    Tv *dst_acc)
 {
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
     const int64 num_irreps = src_basis->num_irreps;
@@ -311,8 +323,8 @@ static inline void sci_link_pure_b_batched_impl(
         std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
         std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
 
-        std::vector<DstAInfo> dst_a_list;
-        std::vector<DstBInfo> dst_b_list;
+        std::vector<DstInfo> dst_a_list;
+        std::vector<DstInfo> dst_b_list;
         dst_a_list.reserve((size_t)num_a);
         dst_b_list.reserve((size_t)num_b);
 
@@ -362,16 +374,16 @@ static inline void sci_link_pure_b_batched_impl(
 #pragma omp for schedule(dynamic)
             for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
             {
-                int a_full = dst_a_list[ai].a_full;
-                int64 src_a_global = dst_a_list[ai].src_a_global;
+                int a_full = dst_a_list[ai].full;
+                int64 src_a_global = dst_a_list[ai].src_global;
                 const SourceStringInfo &a_info = src_a_info[src_a_global];
                 const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
                 Tv *da = dst_acc + (int64)a_full * num_b;
 
                 for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
                 {
-                    int b_full = dst_b_list[bi].b_full;
-                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    int b_full = dst_b_list[bi].full;
+                    int64 src_b_global = dst_b_list[bi].src_global;
                     const SourceStringInfo &b_info = src_b_info[src_b_global];
                     const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
 
@@ -392,14 +404,23 @@ static inline void sci_link_pure_b_batched_impl(
 
 template <int Rank, typename Ti, typename Tv>
 static inline void sci_link_mixed_batched_impl(
-    const LinkBucket<Ti, Tv> *buckets, int64 num_buckets,
+    const LinkBucket<Ti, Tv> *buckets, 
+    int64 num_buckets,
     const SciBasisManager<Ti> *src_basis,
-    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
-    int64 num_src_astrs_total, int64 num_src_bstrs_total,
-    int64 tgt_a_begin, int64 tgt_b_begin,
-    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
-    const bool *is_new_a, bool skip_new_alpha,
-    const Tv *src_vec, Tv *dst_acc)
+    const SourceStringInfo *src_a_info, 
+    const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, 
+    int64 num_src_bstrs_total,
+    int64 tgt_a_begin, 
+    int64 tgt_b_begin,
+    int64 num_a, 
+    int64 num_b, 
+    int64 tgt_asym, 
+    int64 tgt_bsym,
+    const bool *is_new_a, 
+    bool skip_new_alpha,
+    const Tv *src_vec, 
+    Tv *dst_acc)
 {
     constexpr int MAX_RANK = (Rank == 0) ? RANK3 : Rank;
     const int64 num_irreps = src_basis->num_irreps;
@@ -410,8 +431,8 @@ static inline void sci_link_mixed_batched_impl(
         std::vector<Tv> phase_a_buf((size_t)num_src_astrs_total * MAX_RANK);
         std::vector<Tv> phase_b_buf((size_t)num_src_bstrs_total * MAX_RANK);
 
-        std::vector<DstAInfo> dst_a_list;
-        std::vector<DstBInfo> dst_b_list;
+        std::vector<DstInfo> dst_a_list;
+        std::vector<DstInfo> dst_b_list;
         dst_a_list.reserve((size_t)num_a);
         dst_b_list.reserve((size_t)num_b);
 
@@ -463,16 +484,16 @@ static inline void sci_link_mixed_batched_impl(
 #pragma omp for schedule(dynamic)
             for (int ai = 0; ai < (int)dst_a_list.size(); ++ai)
             {
-                int a_full = dst_a_list[ai].a_full;
-                int64 src_a_global = dst_a_list[ai].src_a_global;
+                int a_full = dst_a_list[ai].full;
+                int64 src_a_global = dst_a_list[ai].src_global;
                 const SourceStringInfo &a_info = src_a_info[src_a_global];
                 const Tv *pa = phase_a_buf.data() + (size_t)src_a_global * MAX_RANK;
                 Tv *da = dst_acc + (int64)a_full * num_b;
 
                 for (int bi = 0; bi < (int)dst_b_list.size(); ++bi)
                 {
-                    int b_full = dst_b_list[bi].b_full;
-                    int64 src_b_global = dst_b_list[bi].src_b_global;
+                    int b_full = dst_b_list[bi].full;
+                    int64 src_b_global = dst_b_list[bi].src_global;
                     const SourceStringInfo &b_info = src_b_info[src_b_global];
                     const Tv *pb = phase_b_buf.data() + (size_t)src_b_global * MAX_RANK;
 
@@ -495,12 +516,20 @@ template <int TypeCode, typename Ti, typename Tv>
 static inline void dispatch_link_chunks_by_rank(
     const std::vector<LinkBucket<Ti, Tv>> &buckets,
     const SciBasisManager<Ti> *src_basis,
-    const SourceStringInfo *src_a_info, const SourceStringInfo *src_b_info,
-    int64 num_src_astrs_total, int64 num_src_bstrs_total,
-    int64 tgt_a_begin, int64 tgt_b_begin,
-    int64 num_a, int64 num_b, int64 tgt_asym, int64 tgt_bsym,
-    const bool *is_new_a, bool skip_new_alpha,
-    const Tv *src_vec, Tv *dst_acc)
+    const SourceStringInfo *src_a_info, 
+    const SourceStringInfo *src_b_info,
+    int64 num_src_astrs_total, 
+    int64 num_src_bstrs_total,
+    int64 tgt_a_begin, 
+    int64 tgt_b_begin,
+    int64 num_a, 
+    int64 num_b, 
+    int64 tgt_asym, 
+    int64 tgt_bsym,
+    const bool *is_new_a, 
+    bool skip_new_alpha,
+    const Tv *src_vec, 
+    Tv *dst_acc)
 {
     const int64 total_buckets = (int64)buckets.size();
     if (total_buckets == 0)

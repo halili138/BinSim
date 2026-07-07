@@ -4,8 +4,7 @@
 #include "utils.hpp"
 
 template <typename Tv>
-FORCE_INLINE Tv compute_group_coeff_from_phases(
-    const Tv *pa, const Tv *pb, int rank)
+FORCE_INLINE Tv compute_group_coeff_from_phases(const Tv *pa, const Tv *pb, int rank)
 {
     const int dispatch_rank = (rank == 1 || rank == 2) ? rank : 0;
     switch (dispatch_rank)
