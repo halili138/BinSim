@@ -30,7 +30,6 @@ function is_rank0_or_serial()
     return MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) == 0 : _preinit_mpi_rank() == 0
 end
 
-using Random
 using Optim
 using NLSolversBase
 using LineSearches
@@ -71,7 +70,8 @@ const LIB_OTF           = joinpath(libpath, "libotf.so"    )
 const LIB_DIAG          = joinpath(libpath, "libdiag.so"   )
 const LIB_DIST          = joinpath(libpath, "libdist.so"   )
 const LIB_CUDIST        = joinpath(libpath, "libcudist.so" )
-const LIB_CUOTF         = joinpath(libpath, "libcuotf.so"  ) 
+const LIB_CUOTF         = joinpath(libpath, "libcuotf.so"  )
+const LIB_CUDA_SCI      = joinpath(libpath, "libcuda_sci_bitstr.so") 
 const LIB_SCI_BITSTR    = joinpath(libpath, "libsci_otf_bitstr.so")
 
 const eps1::Float64 = 1e-8

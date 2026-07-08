@@ -17,7 +17,8 @@ THIRD_PARTY_INC := -I third_party/ankerl/unordered_dense/include
 TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
 		   lib/libcuotf.so \
 		   lib/libdist.so lib/libcudist.so \
-		   lib/libsci_otf_bitstr.so
+		   lib/libsci_otf_bitstr.so \
+		   lib/libcuda_sci_bitstr.so
 
 .PHONY: all clean
 
@@ -49,6 +50,9 @@ lib/libcudist.so: extern/cudist.cu | lib
 
 lib/libsci_otf_bitstr.so: extern/sci_otf_bitstr.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
+
+lib/libcuda_sci_bitstr.so: extern/cuda_sci_bitstr.cu | lib
+	$(CUXX) $(CUXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
 
 clean:
 	rm -rf lib/*.so

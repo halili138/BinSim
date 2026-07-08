@@ -1,6 +1,6 @@
 ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", 1)
 
-include("../jl/cunetwork.jl")
+include("../jl/cubinsim.jl")
 
 
 function test_hvec(mole, nsteps)

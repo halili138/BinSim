@@ -2,7 +2,7 @@ ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", 1)
 ENV["OMP_PROC_BIND"] = get(ENV, "OMP_PROC_BIND", "close")
 ENV["OMP_PLACES"] = get(ENV, "OMP_PLACES", "cores")
 
-include("../jl/cunetwork.jl")
+include("../jl/cubinsim.jl")
 
 
 function test_adapt_vqe(mole)
