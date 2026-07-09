@@ -14,7 +14,7 @@ CUXXFLAGS := -std=c++20 $(CUXXARCH_FLAGS) -O3 --extended-lambda --expt-relaxed-c
 INC_FLAGS := -I./include
 THIRD_PARTY_INC := -I third_party/ankerl/unordered_dense/include
 
-TARGETS := lib/libham.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
+TARGETS := lib/libham.so lib/libham_real.so lib/libbasis.so lib/libdiag.so lib/libotf.so \
 		   lib/libcuotf.so \
 		   lib/libdist.so lib/libcudist.so \
 		   lib/libsci_otf_bitstr.so \
@@ -28,6 +28,9 @@ lib:
 	mkdir -p lib
 
 lib/libham.so: extern/ham.cpp | lib
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
+
+lib/libham_real.so: extern/ham_real.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
 
 lib/libbasis.so: extern/basis.cpp| lib

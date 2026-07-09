@@ -95,6 +95,145 @@ function int2ham_ui256_f64(
 end
 
 
+function int2ham_real_ui64_f64(
+    norb::Int64,
+    energy_nuc::Float64,
+    one_body_mo::Array{Float64,2},
+    two_body_mo::Array{Float64,4},
+    tol::Float64,
+    verbose::Bool,
+)
+    norb > 31 && error("Maximum supported is (31o, 62q) for uint64 backend.")
+
+    res = @ccall LIB_HAM_REAL.generate_hamiltonian_real_64_128_f64(
+        energy_nuc::Cdouble,
+        one_body_mo::Ptr{Cdouble},
+        two_body_mo::Ptr{Cdouble},
+        norb::Cint,
+        tol::Cdouble,
+        verbose::Bool,
+    )::HamResult_f64
+
+    axs = unsafe_wrap(Array, Ptr{UInt32}(res.axs_ptr), res.ncs; own=true)
+    azs = unsafe_wrap(Array, Ptr{UInt32}(res.azs_ptr), res.ncs; own=true)
+    bxs = unsafe_wrap(Array, Ptr{UInt32}(res.bxs_ptr), res.ncs; own=true)
+    bzs = unsafe_wrap(Array, Ptr{UInt32}(res.bzs_ptr), res.ncs; own=true)
+    cs = unsafe_wrap(Array, res.cs_ptr, res.ncs; own=true)
+
+    return BinaryQubitAABB(axs, bxs, azs, bzs, cs)
+end
+
+
+function int2ham_real_ui128_f64(
+    norb::Int64,
+    energy_nuc::Float64,
+    one_body_mo::Array{Float64,2},
+    two_body_mo::Array{Float64,4},
+    tol::Float64,
+    verbose::Bool,
+)
+    norb > 63 && error("Maximum supported is (63o, 126q) for uint128 backend.")
+
+    res = @ccall LIB_HAM_REAL.generate_hamiltonian_real_128_256_f64(
+        energy_nuc::Cdouble,
+        one_body_mo::Ptr{Cdouble},
+        two_body_mo::Ptr{Cdouble},
+        norb::Cint,
+        tol::Cdouble,
+        verbose::Bool,
+    )::HamResult_f64
+
+    axs = unsafe_wrap(Array, Ptr{UInt64}(res.axs_ptr), res.ncs; own=true)
+    azs = unsafe_wrap(Array, Ptr{UInt64}(res.azs_ptr), res.ncs; own=true)
+    bxs = unsafe_wrap(Array, Ptr{UInt64}(res.bxs_ptr), res.ncs; own=true)
+    bzs = unsafe_wrap(Array, Ptr{UInt64}(res.bzs_ptr), res.ncs; own=true)
+    cs = unsafe_wrap(Array, res.cs_ptr, res.ncs; own=true)
+
+    return BinaryQubitAABB(axs, bxs, azs, bzs, cs)
+end
+
+
+function int2ham_real_ui256_f64(
+    norb::Int64,
+    energy_nuc::Float64,
+    one_body_mo::Array{Float64,2},
+    two_body_mo::Array{Float64,4},
+    tol::Float64,
+    verbose::Bool,
+)
+    norb > 127 && error("Maximum supported is (127o, 254q) for uint256 backend.")
+
+    res = @ccall LIB_HAM_REAL.generate_hamiltonian_real_256_512_f64(
+        energy_nuc::Cdouble,
+        one_body_mo::Ptr{Cdouble},
+        two_body_mo::Ptr{Cdouble},
+        norb::Cint,
+        tol::Cdouble,
+        verbose::Bool,
+    )::HamResult_f64
+
+    axs = unsafe_wrap(Array, Ptr{UInt128}(res.axs_ptr), res.ncs; own=true)
+    azs = unsafe_wrap(Array, Ptr{UInt128}(res.azs_ptr), res.ncs; own=true)
+    bxs = unsafe_wrap(Array, Ptr{UInt128}(res.bxs_ptr), res.ncs; own=true)
+    bzs = unsafe_wrap(Array, Ptr{UInt128}(res.bzs_ptr), res.ncs; own=true)
+    cs = unsafe_wrap(Array, res.cs_ptr, res.ncs; own=true)
+
+    return BinaryQubitAABB(axs, bxs, azs, bzs, cs)
+end
+
+
+
+function JW_hamiltonian_real(
+    mole::Mole;
+    tol::Float64=1e-12,
+    spin::String="aabb",
+    verbose::Bool=false,
+)
+    return _JW_hamiltonian_real(
+        mole.norb, mole.energy_nuc, mole.one_body_mo, mole.two_body_mo,
+        tol=tol,
+        spin=spin,
+        verbose=verbose,
+    )
+end
+
+function _JW_hamiltonian_real(
+    norb::Int64,
+    energy_nuc::Float64,
+    one_body_mo::Array{Float64,2},
+    two_body_mo::Array{Float64,4};
+    tol::Float64=1e-12,
+    spin::String="aabb",
+    verbose::Bool=false,
+)
+    if 0 <= norb < 32
+        Haabb = int2ham_real_ui64_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+    elseif 32 <= norb < 64
+        Haabb = int2ham_real_ui128_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+    elseif 64 <= norb < 128
+        Haabb = int2ham_real_ui256_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+    else
+        error("Maximum supported is (127o, 254q)")
+    end
+
+    gs = get_bounds_1based(Haabb.axs, Haabb.bxs)
+
+    if is_rank0_or_serial()
+        println("  ngs: $(length(gs)-1)")
+        println("  ncs: $(length(Haabb.cs))\n")
+    end
+
+    if spin == "aabb"
+        return Haabb
+    elseif spin == "abab"
+        xs = unzip_even_bit.(Haabb.axs) .| unzip_odd_bit.(Haabb.bxs)
+        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)
+        return BinaryQubitABAB(xs, zs, Haabb.cs)
+    else
+        throw(ArgumentError("Undefined spin: $(spin)"))
+    end
+end
+
 function JW_hamiltonian(
     mole::Mole; 
     tol::Float64=1e-12, 
