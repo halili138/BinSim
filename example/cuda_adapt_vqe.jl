@@ -6,12 +6,12 @@ include("../jl/cubinsim.jl")
 
 
 function test_adapt_vqe(mole)
-    basis       = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis       = BasisManager(mole)
     ham         = JW_hamiltonian(mole)
     orbs        = Orbitals(); kernel(mole, orbs, generalize=true)
     pool        = FEB(orbs)
 
-    h_v0        = get_hf(basis, mole.nelec)
+    h_v0        = get_hf(basis)
     h_v0_idxs   = findall(x -> x != 0, h_v0) 
     h_v0_vals   = h_v0[h_v0_idxs]
     d_v0_idxs   = CuArray{Int64,1,CUDA.DeviceMemory}(h_v0_idxs)

@@ -52,68 +52,6 @@ function CuOTF(otf::OTF)
     return obj
 end
 
-function hvec_cuda!(basis::CuBasisManager, otf::CuOTF, src::T1, dst::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
-    @ccall LIB_CUOTF.hvec_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        src::CuPtr{Cdouble}, dst::CuPtr{Cdouble},
-    )::Cvoid
-end
-
-function get_diags_elements_cuda!(basis::CuBasisManager, otf::CuOTF, diags::T) where {Tv,T<:AbstractArray{Tv,1}}
-    @ccall LIB_CUOTF.get_diags_elements_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::CuPtr{Cdouble},
-    )::Cvoid
-end
-
-function expm_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, vec::T) where {Tv,T<:AbstractArray{Tv,1}}
-    @ccall LIB_CUOTF.expm_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, vec::CuPtr{Cdouble},
-    )::Cvoid
-end
-
-function grad_cuda(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
-    return @ccall LIB_CUOTF.grad_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
-    )::Cdouble
-end
-
-function backgrad_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
-    return @ccall LIB_CUOTF.backgrad_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
-    )::Cdouble
-end
-
-function batchgrad_cuda!(basis::CuBasisManager, otf::CuOTF, lv::T1, rv::T2, grads::T3, x::T4) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1},T3<:AbstractArray{Tv,1},T4<:AbstractArray{Tv,1}}
-    @ccall LIB_CUOTF.batchgrad_cuda(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        x::CuPtr{Cdouble}, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble}, grads::CuPtr{Cdouble},
-    )::Cvoid
-end
-
-function expm_cuda_2d!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, vec::T) where {Tv,T<:AbstractArray{Tv,1}}
-    @ccall LIB_CUOTF.expm_cuda_2d(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, vec::CuPtr{Cdouble},
-    )::Cvoid
-end
-
-function grad_cuda_2d(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
-    return @ccall LIB_CUOTF.grad_cuda_2d(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
-    )::Cdouble
-end
-
-function backgrad_cuda_2d!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, lv::T1, rv::T2) where {Tv,T1<:AbstractArray{Tv,1},T2<:AbstractArray{Tv,1}}
-    return @ccall LIB_CUOTF.backgrad_cuda_2d(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
-    )::Cdouble
-end
-
 struct CuOTF_Functions
     hvec::Function
     get_diags::Function
@@ -155,36 +93,68 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         info_print && print("Uploading Ham OTF to device... ")
         time_ops = @elapsed cu_ham_otf = CuOTF(ham)
         info_print && @printf("Done in %.4f seconds\n", time_ops)
-        if time_print
-            f_hvec = (v, Hv) -> @printf("hvec time %.6f seconds",
-                    @elapsed begin
-                        hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
-                        sync_device!()
-                    end
-                )
-        else
-            f_hvec = (v, Hv) -> hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
-        end
-        f_get_diags = dv -> get_diags_elements_cuda!(cu_basis, cu_ham_otf, dv)
     end
+
     if pool.ptr != C_NULL
         info_print && print("Uploading Pool OTF to device ... ")
         time_ops = @elapsed cu_pool_otf = CuOTF(pool)
         info_print && @printf("Done in %.4f seconds\n", time_ops)
-
-        f_expm = (idx, θ, v) -> expm_cuda!(cu_basis, cu_pool_otf, idx, θ, v)
-        f_grad = (idx, θ, lv, rv) -> return grad_cuda(cu_basis, cu_pool_otf, idx, θ, lv, rv)
-        f_backgrad = (idx, θ, lv, rv) -> return backgrad_cuda!(cu_basis, cu_pool_otf, idx, θ, lv, rv)
-        f_batchgrad = (lv, rv, grads, x) -> batchgrad_cuda!(cu_basis, cu_pool_otf, lv, rv, grads, x)
-        f_expm_2d = (idx, θ, v) -> expm_cuda_2d!(cu_basis, cu_pool_otf, idx, θ, v)
-        f_grad_2d = (idx, θ, lv, rv) -> return grad_cuda_2d(cu_basis, cu_pool_otf, idx, θ, lv, rv)
-        f_backgrad_2d = (idx, θ, lv, rv) -> return backgrad_cuda_2d!(cu_basis, cu_pool_otf, idx, θ, lv, rv)
+    end
+    
+    if time_print
+        f_hvec = (v, Hv) -> begin
+            time_ops = @elapsed @ccall LIB_CUOTF.hvec_cuda(
+                cu_basis.ptr::Ptr{Cvoid}, cu_ham_otf.ptr::Ptr{Cvoid}, v::CuPtr{Cdouble}, Hv::CuPtr{Cdouble}
+            )::Cvoid
+            sync_device!()
+            @printf("hvec time %.6f seconds", time_ops)
+        end
+    else
+        f_hvec = (v, Hv) -> @ccall LIB_CUOTF.hvec_cuda(
+            cu_basis.ptr::Ptr{Cvoid}, cu_ham_otf.ptr::Ptr{Cvoid}, v::CuPtr{Cdouble}, Hv::CuPtr{Cdouble},
+        )::Cvoid
     end
 
+
+    f_get_diags = dv -> @ccall LIB_CUOTF.get_diags_elements_cuda(
+        cu_basis.ptr::Ptr{Cvoid}, cu_ham_otf.ptr::Ptr{Cvoid}, dv::CuPtr{Cdouble},
+    )::Cvoid
+
+
+    f_expm = (idx, θ, v) -> @ccall LIB_CUOTF.expm_cuda(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, v::CuPtr{Cdouble},
+    )::Cvoid
+
+    f_grad = (idx, θ, lv, rv) -> return @ccall LIB_CUOTF.grad_cuda(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
+
+    f_backgrad = (idx, θ, lv, rv) -> return @ccall LIB_CUOTF.backgrad_cuda(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
+
+    f_batchgrad = (lv, rv, grads, x) -> @ccall LIB_CUOTF.batchgrad_cuda(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, x::CuPtr{Cdouble}, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble}, grads::CuPtr{Cdouble},
+    )::Cvoid
+
+    f_expm_2d = (idx, θ, v) -> @ccall LIB_CUOTF.expm_cuda_2d(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, v::CuPtr{Cdouble},
+    )::Cvoid
+
+    f_grad_2d = (idx, θ, lv, rv) -> return @ccall LIB_CUOTF.grad_cuda_2d(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
+
+    f_backgrad_2d = (idx, θ, lv, rv) -> return @ccall LIB_CUOTF.backgrad_cuda_2d(
+        cu_basis.ptr::Ptr{Cvoid}, cu_pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::CuPtr{Cdouble}, rv::CuPtr{Cdouble},
+    )::Cdouble
+
     return CuOTF_Functions(
-        f_hvec, f_get_diags, f_expm, f_tvec, f_grad,
+        f_hvec, f_get_diags, 
+        f_expm, f_tvec, f_grad,
         f_backgrad, f_backtran,
         f_batchexpm, f_batchgrad, f_batchtran,
         f_expm_2d, f_grad_2d, f_backgrad_2d,
-        cu_basis, cu_ham_otf, cu_pool_otf)
+        cu_basis, cu_ham_otf, cu_pool_otf
+    )
 end
