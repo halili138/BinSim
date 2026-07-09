@@ -1,9 +1,16 @@
 import numpy, math, datetime, opt_einsum
 from multiprocessing import Pool, cpu_count
 from functools import partial
-from openfermion import FermionOperator, QubitOperator, jordan_wigner, normal_ordered
+from openfermion import (
+    FermionOperator,
+    QubitOperator,
+    jordan_wigner,
+    normal_ordered,
+    InteractionOperator,
+)
 import pyscf.gto as gto
 import pyscf.scf as scf
+import os
 
 
 def _process_1body_chunk(chunk_indices, _1_body_mo):
@@ -170,6 +177,55 @@ def generate_physical_random_integrals_vectorized(norb, seed=42):
     h2_mo = V_chem.transpose(0, 2, 1, 3)
 
     return h1_mo, h2_mo
+
+
+import numpy
+
+
+def get_spin_integrals_from_mo(
+    one_body_mo: numpy.ndarray, two_body_mo: numpy.ndarray, tol: float = 1e-12
+):
+    """
+    Get the spin-orbital integrals from MO integrals.
+
+    Only spatial-orbital integrals with abs(value) >= tol are kept.
+
+    Notes:
+        The output two_body_int is in spin-orbital order.
+    """
+    n_orb = one_body_mo.shape[0]
+
+    one_body_int = numpy.zeros([n_orb * 2] * 2)
+    two_body_int = numpy.zeros([n_orb * 2] * 4)
+
+    # ---------- one-body prescreen ----------
+    mask1 = numpy.abs(one_body_mo) >= tol
+    p, q = numpy.nonzero(mask1)
+    v1 = one_body_mo[p, q]
+
+    one_body_int[2 * p, 2 * q] = v1  # alpha-alpha
+    one_body_int[2 * p + 1, 2 * q + 1] = v1  # beta-beta
+
+    # ---------- two-body prescreen ----------
+    # 保持你原来的指标变换:
+
+    mask2 = numpy.abs(two_body_mo) >= tol
+    p, q, r, s = numpy.nonzero(mask2)
+    v2 = two_body_mo[p, q, r, s]
+
+    # alpha alpha alpha alpha
+    two_body_int[2 * p, 2 * q, 2 * r, 2 * s] = v2
+
+    # beta beta beta beta
+    two_body_int[2 * p + 1, 2 * q + 1, 2 * r + 1, 2 * s + 1] = v2
+
+    # beta alpha alpha beta
+    two_body_int[2 * p + 1, 2 * q, 2 * r, 2 * s + 1] = v2
+
+    # alpha beta beta alpha
+    two_body_int[2 * p, 2 * q + 1, 2 * r + 1, 2 * s] = v2
+
+    return one_body_int, two_body_int
 
 
 def mole_geo(name: str, ratio: float = 1.0) -> str:
@@ -542,6 +598,15 @@ def init_scf(name, ratio, basis):
 
 
 if __name__ == "__main__":
-    # h1_mo, h2_mo = generate_physical_random_integrals_vectorized(10, seed=None)
-    # int2ham_parallel(1.0, h1_mo, h2_mo, 1e-12, 12)
-    init_scf("h4", 1.0, "sto-3g")
+    h1_mo, h2_mo = generate_physical_random_integrals_vectorized(20, seed=None)
+    t1 = datetime.datetime.now()
+    h1_int, h2_int = get_spin_integrals_from_mo(h1_mo, h2_mo, tol=1e-12)
+    H_int = InteractionOperator(1.0, h1_int, h2_int)
+    H_qubit = jordan_wigner(H_int)
+    print(len(H_qubit.terms))
+    t2 = datetime.datetime.now()
+
+    print(f"Time:    {(t2 - t1).total_seconds()}")
+
+    # int2ham_parallel(1.0, h1_mo, h2_mo, 1e-12, 1)
+    # init_scf("h4", 1.0, "sto-3g")

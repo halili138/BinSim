@@ -6,12 +6,12 @@ include("../jl/binsim.jl")
 
 
 function test_vqe(mole)
-    basis   = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis   = BasisManager(mole)
     ham     = JW_hamiltonian(mole)
     orbs    = Orbitals(); kernel(mole, orbs, generalize=false)
     pool    = FEB(orbs)
 
-    lv      = get_hf(basis, mole.nelec)
+    lv      = get_hf(basis)
     rv      = zeros(Float64, basis.dim)
     v0_idxs = findall(x -> x != 0, lv) 
     v0_vals = lv[v0_idxs]
@@ -34,18 +34,18 @@ function test_vqe(mole)
 end
 
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    mole = Mole()
-    mole.name  = ARGS[1]
-    mole.ratio = parse(Float64, ARGS[2])
-    mole.basis = ARGS[3]
+# if abspath(PROGRAM_FILE) == @__FILE__
+#     mole = Mole()
+#     mole.name  = ARGS[1]
+#     mole.ratio = parse(Float64, ARGS[2])
+#     mole.basis = ARGS[3]
 
-    build(mole)
+#     build(mole)
 
-    mole.orbsym = Int64.(mole.orbsym .% 10)
+#     mole.orbsym = Int64.(mole.orbsym .% 10)
 
-    test_vqe(mole)
-end
+#     test_vqe(mole)
+# end
 
 # if abspath(PROGRAM_FILE) == @__FILE__
 #     es_fci   = []
@@ -70,3 +70,24 @@ end
 #         @printf("d: %-10.2f    uccsd: %-18.12f    fci: %-18.12f    error: %.3e\n", d, e1, e2, abs(e1-e2))
 #     end
 # end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    for (_name, _basis) in [
+        ("c2", "6-31g"),    ("n2", "6-31g"),    ("co", "6-31g"), 
+        ("h2o", "cc-pvdz"), ("o2", "6-31g"),    ("c3h4", "sto-3g"), 
+        ("hcn", "6-31g"),   ("nh3", "cc-pvdz"), ("c2h2", "6-31g"), 
+        ("c3h6", "sto-3g"), ("c2", "cc-pvdz"),  ("n2", "cc-pvdz"),
+        ("c3h8", "sto-3g"), ("o2", "cc-pvdz"), ] 
+
+        mole = Mole()
+        mole.name  = _name
+        mole.ratio = 1.0
+        mole.basis = _basis
+
+        build(mole)
+
+        mole.orbsym = Int64.(mole.orbsym .% 10)
+
+        ham = JW_hamiltonian(mole)
+    end
+end
