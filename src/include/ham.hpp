@@ -639,7 +639,7 @@ namespace binsim::ham
     }
 
     template <typename Ti, typename Tv>
-    FORCE_INLINE void insert_1body_real(FastDict<Ti, Tv> *dict, int p, int q, Tv coeff)
+    FORCE_INLINE void insert_1body_real(FastDict<Ti, Tv> *__restrict dict, int p, int q, Tv coeff)
     {
         if (p == q)
         {
@@ -668,7 +668,7 @@ namespace binsim::ham
     }
 
     template <typename Ti, typename Tv>
-    FORCE_INLINE void insert_2body_real(FastDict<Ti, Tv> *dict, int p, int q, int r, int s, Tv coeff)
+    FORCE_INLINE void insert_2body_real(FastDict<Ti, Tv> *__restrict dict, int p, int q, int r, int s, Tv coeff)
     {
         Ti o = get_one<Ti>();
         Ti x1 = o << p, z11 = x1 - o, z12 = (x1 << 1) - o;
