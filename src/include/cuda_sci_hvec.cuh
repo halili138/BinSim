@@ -3,10 +3,11 @@
 #include "cuda_basis.cuh"
 #include "cuda_otf.cuh"
 #include "cuda_utils.cuh"
-#include "cuda_dict.cuh"
 #include "cuda_hvec.cuh"
-#include "sci_common.hpp"
-#include "sci_links.hpp"
+#include "cuda_dict.cuh"
+#include "sci_basis.hpp"
+
+// ─── Data structures ───────────────────────────────────────────
 
 template <typename Ti>
 struct SciBasisViewDev
@@ -204,7 +205,7 @@ static void create_sci_dict_tables(Ti *&d_keys, int *&d_vals, size_t &capacity, 
     CUDA_CHECK(cudaMalloc(&d_keys, capacity * sizeof(Ti)));
     CUDA_CHECK(cudaMalloc(&d_vals, capacity * sizeof(int)));
     CUDA_CHECK(cudaMemset(d_keys, 0xFF, capacity * sizeof(Ti)));
-    CUDA_CHECK(cudaMemset(d_vals, 0, capacity * sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_vals, 0xFF, capacity * sizeof(int))); // -1 = not found
 }
 
 template <typename Ti>
@@ -218,7 +219,6 @@ static void build_sci_gpu_dict(
         ta += hb->blocks[i].num_a;
         tb += hb->blocks[i].num_b;
     }
-
     size_t ca, cb;
     create_sci_dict_tables<Ti>(d_keys_a, d_vals_a, ca, (size_t)ta);
     create_sci_dict_tables<Ti>(d_keys_b, d_vals_b, cb, (size_t)tb);
@@ -226,19 +226,18 @@ static void build_sci_gpu_dict(
 
     std::vector<Ti> aka, bkb;
     std::vector<int> ava, bvb;
+    // Value = local block index (same meaning as astr2idx/bstr2idx in BasisViewDev)
     for (int64 i = 0; i < hb->num_blocks; ++i)
     {
-        int64 a_base = (hb->astrs_vec[hb->blocks[i].asym] - hb->all_astrs);
-        int64 b_base = (hb->bstrs_vec[hb->blocks[i].bsym] - hb->all_bstrs);
         for (int a = 0; a < hb->blocks[i].num_a; ++a)
         {
             aka.push_back(hb->blocks[i].astrs[a]);
-            ava.push_back((int)(a_base + a));
+            ava.push_back(a);
         }
         for (int b = 0; b < hb->blocks[i].num_b; ++b)
         {
             bkb.push_back(hb->blocks[i].bstrs[b]);
-            bvb.push_back((int)(b_base + b));
+            bvb.push_back(b);
         }
     }
 
@@ -249,7 +248,6 @@ static void build_sci_gpu_dict(
     uint32_t *d_st;
     CUDA_CHECK(cudaMalloc(&d_st, sizeof(uint32_t)));
     CUDA_CHECK(cudaMemset(d_st, 0, sizeof(uint32_t)));
-
     cuda_dict::launch_batch_insert(d_keys_a, d_vals_a, d_ika, d_iva, (size_t)aka.size(), ca, d_st);
     cuda_dict::launch_batch_insert(d_keys_b, d_vals_b, d_ikb, d_ivb, (size_t)bkb.size(), cb, d_st);
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -260,7 +258,7 @@ static void build_sci_gpu_dict(
     cudaFree(d_st);
 }
 
-// ─── Upload functions ────────────────────────────────────────────
+// ─── Upload ──────────────────────────────────────────────────────
 
 template <typename Ti>
 static void build_sci_block_layout(
@@ -268,8 +266,7 @@ static void build_sci_block_layout(
     std::vector<int64> &ho, std::vector<int> &hna, std::vector<int> &hnb,
     std::vector<int> &hasy, std::vector<int> &hbsy,
     std::vector<int64> &has, std::vector<int64> &hbs,
-    std::vector<Ti> &haf, std::vector<Ti> &hbf,
-    int &ni, int &nb)
+    std::vector<Ti> &haf, std::vector<Ti> &hbf, int &ni, int &nb)
 {
     ni = (int)hb->num_irreps;
     nb = (filter_bid >= 0) ? 1 : (int)hb->num_blocks;
@@ -322,7 +319,6 @@ static SciBasisViewDev<Ti> *upload_sci_src_basis(const SciBasisManager<Ti> *hb)
     std::vector<int> hna, hnb, hasy, hbsy;
     std::vector<Ti> haf, hbf;
     build_sci_block_layout<Ti>(hb, -1, ho, hna, hnb, hasy, hbsy, has, hbs, haf, hbf, ni, nb);
-
     db->num_blocks = nb;
     db->num_irreps = ni;
     db->dim = hb->dim;
@@ -337,12 +333,10 @@ static SciBasisViewDev<Ti> *upload_sci_src_basis(const SciBasisManager<Ti> *hb)
     db->bstrs_flat = up(hbf.data(), (int64)hbf.size());
     db->astrs_start = up(has.data(), nb);
     db->bstrs_start = up(hbs.data(), nb);
-
     std::vector<int> hbm(ni * ni, -1);
     for (int i = 0; i < nb; ++i)
         hbm[hasy[i] * ni + hbsy[i]] = i;
     db->block_map = up(hbm.data(), ni * ni);
-
     build_sci_gpu_dict<Ti>(hb, const_cast<Ti *&>(db->dict_a_keys), db->dict_a_vals,
                            const_cast<Ti *&>(db->dict_b_keys), db->dict_b_vals, db->dict_capacity);
     return db;
@@ -359,7 +353,6 @@ static SciBasisViewDev<Ti> *upload_sci_tgt_block(
     std::vector<int> hna, hnb, hasy, hbsy;
     std::vector<Ti> haf, hbf;
     build_sci_block_layout<Ti>(hb, (int)block_idx, ho, hna, hnb, hasy, hbsy, has, hbs, haf, hbf, ni, nb);
-
     const auto &blk = hb->blocks[block_idx];
     db->num_blocks = nb;
     db->num_irreps = ni;
@@ -375,14 +368,11 @@ static SciBasisViewDev<Ti> *upload_sci_tgt_block(
     db->bstrs_flat = up(hbf.data(), (int64)hbf.size());
     db->astrs_start = up(has.data(), nb);
     db->bstrs_start = up(hbs.data(), nb);
-
     std::vector<int> hbm(ni * ni, -1);
     hbm[hasy[0] * ni + hbsy[0]] = 0;
     db->block_map = up(hbm.data(), ni * ni);
-
     build_sci_gpu_dict<Ti>(hb, const_cast<Ti *&>(db->dict_a_keys), db->dict_a_vals,
                            const_cast<Ti *&>(db->dict_b_keys), db->dict_b_vals, db->dict_capacity);
-
     if (is_new_a)
     {
         int64 o = blk.astrs - hb->all_astrs;
@@ -395,14 +385,12 @@ static SciBasisViewDev<Ti> *upload_sci_tgt_block(
     }
     if (host_diags)
         db->candidate_diags = (const void *)up(host_diags + blk.offset, blk.num_a * blk.num_b);
-
     return db;
 }
 
 template <typename Ti, typename Tv>
-static SciBasisSliceDev<Ti, Tv> make_sci_slice(const SciBasisViewDev<Ti> *b)
+static void make_sci_slice(const SciBasisViewDev<Ti> *b, SciBasisSliceDev<Ti, Tv> &s)
 {
-    SciBasisSliceDev<Ti, Tv> s;
     s.num_blocks = b->num_blocks;
     s.num_irreps = b->num_irreps;
     s.dim = b->dim;
@@ -421,43 +409,44 @@ static SciBasisSliceDev<Ti, Tv> make_sci_slice(const SciBasisViewDev<Ti> *b)
     s.dict_b_keys = b->dict_b_keys;
     s.dict_b_vals = b->dict_b_vals;
     s.dict_capacity = b->dict_capacity;
-    return s;
 }
 
-// ─── GPU Kernel ──────────────────────────────────────────────────
+// ─── Kernel (copy of hvec_gather_offdiag_kernel, 2 changes) ─────
 
-template <int Rank, typename Ti, typename Tv>
-__global__ void sci_hvec_gather_kernel(
-    const BasisSliceDev<Ti> tgt_basis,
+template <int Rank, int TypeCode, typename Ti, typename Tv>
+__global__ void sci_hvec_gather_offdiag_kernel(
+    const BasisSliceDev<Ti> basis,
     const SciBasisSliceDev<Ti, Tv> src_basis,
     const GroupsSliceDev<Ti, Tv> groups,
     const Tv *__restrict__ src_vec,
     Tv *__restrict__ dst_vec)
 {
-    const int bid = tgt_basis.target_bids ? tgt_basis.target_bids[blockIdx.x] : blockIdx.x;
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
     const int total_groups = groups.num_groups;
-    const int nirp = tgt_basis.num_irreps;
 
     constexpr int SHARED_MEM_SIZE = BATCH_GROUP_SHARED_MEM<Rank>;
     constexpr int BATCH_SIZE = BATCH_GROUP_SIZE<Rank>;
-    constexpr int MAX_RANK = (Rank == 0) ? KERNEL_MAX_RANK : Rank;
+    constexpr int IDX_MEM_SIZE = BATCH_GROUP_IDX_MEM<Rank>; // always use full for SCI
 
     __shared__ Tv sh_pb[SHARED_MEM_SIZE];
-    __shared__ int sh_sb_global[BATCH_GROUP_IDX_MEM<Rank>];
+    __shared__ int sh_sa_b[IDX_MEM_SIZE];
+    __shared__ int sh_src_bid[BATCH_SIZE];
+    __shared__ int sh_valid_b[BATCH_SIZE];
 
     const int num_chunks = (total_groups + BATCH_SIZE - 1) / BATCH_SIZE;
-    const int n_a = tgt_basis.block_num_a[bid];
-    const int n_b = tgt_basis.block_num_b[bid];
-    const int asym = tgt_basis.block_asym[bid];
-    const int bsym = tgt_basis.block_bsym[bid];
+    const int n_a = basis.block_num_a[bid];
+    const int n_b = basis.block_num_b[bid];
+    const int asym = basis.block_asym[bid];
+    const int bsym = basis.block_bsym[bid];
+    const int nirp = basis.num_irreps;
 
     const int num_b_tiles = (n_b + TILE_B - 1) / TILE_B;
     const int num_a_tiles = (n_a + TILE_A - 1) / TILE_A;
     const int total_tiles = num_b_tiles * num_a_tiles;
 
-    const Ti *astrs = tgt_basis.astrs_flat + tgt_basis.astrs_start[bid];
-    const Ti *bstrs = tgt_basis.bstrs_flat + tgt_basis.bstrs_start[bid];
-    Tv *dst_vec_bid = dst_vec + tgt_basis.block_offsets[bid];
+    const Ti *astrs = basis.astrs_flat + basis.astrs_start[bid];
+    const Ti *bstrs = basis.bstrs_flat + basis.bstrs_start[bid];
+    Tv *dst_vec_bid = dst_vec + basis.block_offsets[bid];
 
     for (int task_idx = blockIdx.y; task_idx < total_tiles; task_idx += gridDim.y)
     {
@@ -469,107 +458,112 @@ __global__ void sci_hvec_gather_kernel(
 
         const int a_tile_start = a_tile_idx * TILE_A;
         const int a_tile_end = min(n_a, a_tile_start + TILE_A);
+
         const int a = a_tile_start + threadIdx.x;
         const bool valid_a = (a < a_tile_end);
         const Ti astr = valid_a ? astrs[a] : 0;
         Tv *dst_base = valid_a ? (dst_vec_bid + (int64)a * n_b) : nullptr;
+
         Tv accum[TILE_B] = {};
 
         for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx)
         {
             const int chunk_start_g = chunk_idx * BATCH_SIZE;
-            const int cur_chunk_g = min(BATCH_SIZE, total_groups - chunk_start_g);
-            const int total_sh = cur_chunk_g * current_tile_b;
+            const int current_chunk_groups = min(BATCH_SIZE, total_groups - chunk_start_g);
 
-            for (int sh_idx = threadIdx.x; sh_idx < total_sh; sh_idx += blockDim.x)
+            for (int g_offset = threadIdx.x; g_offset < current_chunk_groups; g_offset += blockDim.x)
+            {
+                const int g = chunk_start_g + g_offset;
+                const int h = compute_sym_hash<TypeCode>(asym, bsym, groups.asyms[g], groups.bsyms[g], nirp);
+                const int src_bid = src_basis.block_map[h];
+                sh_src_bid[g_offset] = src_bid;
+                sh_valid_b[g_offset] = (src_bid == -1) ? 0 : n_b;
+            }
+            __syncthreads();
+
+            const int total_sh_elements = current_chunk_groups * current_tile_b;
+            for (int sh_idx = threadIdx.x; sh_idx < total_sh_elements; sh_idx += blockDim.x)
             {
                 const int g_offset = sh_idx / current_tile_b;
                 const int b_offset = sh_idx % current_tile_b;
-                const int g = chunk_start_g + g_offset;
-                const Ti dst_b = bstrs_tile_start[b_offset];
-                const Ti src_b_str = dst_b ^ groups.bxs[g];
-                const int sh_flat = g_offset * TILE_B + b_offset;
 
-                sh_sb_global[sh_flat] = cuda_dict::lookup_device(
+                if (sh_valid_b[g_offset] == 0)
+                    continue;
+
+                const int g = chunk_start_g + g_offset;
+                const Ti dst_b_str = bstrs_tile_start[b_offset];
+                const Ti sas_b = dst_b_str ^ groups.bxs[g];
+                const int sh_flat_offset = g_offset * TILE_B + b_offset;
+
+                // CHANGE 2: b_idx_map → dict lookup
+                sh_sa_b[sh_flat_offset] = cuda_dict::lookup_device(
                     src_basis.dict_b_keys, src_basis.dict_b_vals,
-                    src_b_str, src_basis.dict_capacity, -1);
+                    sas_b, src_basis.dict_capacity, -1);
 
                 const Ti *zbs = groups.flat_zbs + groups.zb_start[g];
                 const Tv *wb = groups.flat_wb + groups.wb_start[g];
-                Tv *sh_pb_ptr = sh_pb + sh_flat;
-                compute_phase_dev<Rank, Ti, Tv>(src_b_str, zbs, groups.num_zbs[g], wb, sh_pb_ptr, BATCH_SIZE * TILE_B, groups.ranks[g]);
+                const int num_zb = groups.num_zbs[g];
+                const int rank = groups.ranks[g];
+                Tv *sh_pb_ptr = sh_pb + (g_offset * TILE_B + b_offset);
+                compute_phase_dev<Rank, Ti, Tv>(sas_b, zbs, num_zb, wb, sh_pb_ptr, BATCH_SIZE * TILE_B, rank);
             }
             __syncthreads();
 
             if (valid_a)
             {
-                for (int g_offset = 0; g_offset < cur_chunk_g; ++g_offset)
+                for (int g_offset = 0; g_offset < current_chunk_groups; ++g_offset)
                 {
-                    const int g = chunk_start_g + g_offset;
-                    const Ti src_a_str = astr ^ groups.axs[g];
-                    const int sa_global = cuda_dict::lookup_device(
-                        src_basis.dict_a_keys, src_basis.dict_a_vals,
-                        src_a_str, src_basis.dict_capacity, -1);
-
-                    if (sa_global == -1)
+                    if (sh_valid_b[g_offset] == 0)
                         continue;
 
-                    // Binary search astrs_start to find source block
-                    int sbi = 0;
+                    const int g = chunk_start_g + g_offset;
+                    const Ti sas_a = astr ^ groups.axs[g];
+
+                    // CHANGE 1: a_idx_map → dict lookup (no TypeCode optimizations)
+                    const int sa = cuda_dict::lookup_device(
+                        src_basis.dict_a_keys, src_basis.dict_a_vals,
+                        sas_a, src_basis.dict_capacity, -1);
+
+                    if (sa != -1)
                     {
-                        int lo = 0, hi = src_basis.num_blocks - 1;
-                        while (lo <= hi)
+                        const int nza = groups.num_zas[g];
+                        const Ti *zas = groups.flat_zas + groups.za_start[g];
+                        const Tv *wa = groups.flat_wa + groups.wa_start[g];
+                        const int rank = groups.ranks[g];
+
+                        constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : 128);
+                        Tv pa[STACK_SIZE] = {};
+                        compute_phase_dev<Rank, Ti, Tv>(sas_a, zas, nza, wa, pa, 1, rank);
+
+                        const int sbi = sh_src_bid[g_offset];
+                        const int src_n_b = src_basis.block_num_b[sbi];
+                        const Tv *src_base = src_vec + src_basis.block_offsets[sbi] + (int64)sa * src_n_b;
+                        const Tv *pb = sh_pb + (g_offset * TILE_B);
+                        const int *sh_sa_b_task = sh_sa_b + g_offset * TILE_B;
+
+                        if (current_tile_b == TILE_B)
                         {
-                            int mid = (lo + hi) / 2;
-                            if ((int64)sa_global >= src_basis.astrs_start[mid])
-                            {
-                                sbi = mid;
-                                lo = mid + 1;
-                            }
-                            else
-                                hi = mid - 1;
-                        }
-                    }
-                    const int sa_local = sa_global - (int)src_basis.astrs_start[sbi];
-
-                    const int nza = groups.num_zas[g];
-                    const Ti *zas = groups.flat_zas + groups.za_start[g];
-                    const Tv *wa = groups.flat_wa + groups.wa_start[g];
-                    const int rank = groups.ranks[g];
-                    constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : MAX_RANK);
-                    Tv pa[STACK_SIZE] = {};
-                    compute_phase_dev<Rank, Ti, Tv>(src_a_str, zas, nza, wa, pa, 1, rank);
-
-                    const int src_n_b = src_basis.block_num_b[sbi];
-                    const int64 bstr_sbi = src_basis.bstrs_start[sbi];
-                    const Tv *src_base = src_vec + src_basis.block_offsets[sbi] + (int64)sa_local * src_n_b;
-                    const Tv *pb = sh_pb + (g_offset * TILE_B);
-                    const int *sh_sb = sh_sb_global + g_offset * TILE_B;
-
-                    if (current_tile_b == TILE_B)
-                    {
 #pragma unroll
-                        for (int b_off = 0; b_off < TILE_B; ++b_off)
-                        {
-                            const int sb_global = sh_sb[b_off];
-                            if (sb_global != -1)
+                            for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
                             {
-                                const int sb_local = sb_global - (int)bstr_sbi;
-                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_off);
-                                accum[b_off] += __ldg(&src_base[sb_local]) * vt;
+                                const int sa_b = sh_sa_b_task[b_offset];
+                                if (sa_b != -1)
+                                {
+                                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                    accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                }
                             }
                         }
-                    }
-                    else
-                    {
-                        for (int b_off = 0; b_off < current_tile_b; ++b_off)
+                        else
                         {
-                            const int sb_global = sh_sb[b_off];
-                            if (sb_global != -1)
+                            for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
                             {
-                                const int sb_local = sb_global - (int)bstr_sbi;
-                                const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_off);
-                                accum[b_off] += __ldg(&src_base[sb_local]) * vt;
+                                const int sa_b = sh_sa_b_task[b_offset];
+                                if (sa_b != -1)
+                                {
+                                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, pb, BATCH_SIZE * TILE_B, rank, b_offset);
+                                    accum[b_offset] += __ldg(&src_base[sa_b]) * vt;
+                                }
                             }
                         }
                     }
@@ -580,71 +574,102 @@ __global__ void sci_hvec_gather_kernel(
 
         if (valid_a)
         {
-            for (int b_off = 0; b_off < current_tile_b; ++b_off)
+            for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
             {
-                const int b_idx = b_tile_start + b_off;
-                dst_base[b_idx] += accum[b_off];
+                const int actual_b_idx = b_tile_start + b_offset;
+                dst_base[actual_b_idx] += accum[b_offset];
             }
         }
     }
 }
 
-template <typename Ti, typename Tv>
-static void sci_dispatch_by_rank(
-    const BasisSliceDev<Ti> &tgt_slice, int nactive,
+// ─── Dispatch (copy of dispatch_chunks_by_rank_gpu, SCI kernel) ──
+
+template <int TypeCode, typename Ti, typename Tv>
+static inline void sci_dispatch_chunks_by_rank_gpu(
+    const BasisSliceDev<Ti> &basis_slice, int num_active_blocks,
     const SciBasisSliceDev<Ti, Tv> &src_slice,
     const GroupsViewDev<Ti, Tv> &groups,
-    const Tv *__restrict__ sv, Tv *__restrict__ dv)
+    const Tv *__restrict__ src_vec,
+    Tv *__restrict__ dst_vec)
 {
-    if (groups.num_groups == 0)
+    const int64 total_ngs = groups.num_groups;
+    if (total_ngs == 0)
         return;
-    int64 s = 0;
-    while (s < groups.num_groups)
+
+    int64 start = 0;
+    while (start < total_ngs)
     {
-        int cr = groups.host_ranks[s];
-        int dr = (cr == 1 || cr == 2) ? cr : 0;
-        int64 e = s + 1;
-        while (e < groups.num_groups)
+        const int current_rank = groups.host_ranks[start];
+        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
+
+        int64 end = start + 1;
+        while (end < total_ngs)
         {
-            int nr = groups.host_ranks[e];
-            if (((nr == 1 || nr == 2) ? nr : 0) != dr)
+            const int next_rank = groups.host_ranks[end];
+            if (((next_rank == 1 || next_rank == 2) ? next_rank : 0) != dispatch_rank)
                 break;
-            e++;
+            end++;
         }
 
-        int64 cs = e - s;
-        GroupsSliceDev<Ti, Tv> sl;
-        sl.num_groups = cs;
-        sl.axs = groups.axs + s;
-        sl.bxs = groups.bxs + s;
-        sl.asyms = groups.asyms + s;
-        sl.bsyms = groups.bsyms + s;
-        sl.ranks = groups.ranks + s;
-        sl.num_zas = groups.num_zas + s;
-        sl.num_zbs = groups.num_zbs + s;
-        sl.za_start = groups.za_start + s;
-        sl.zb_start = groups.zb_start + s;
-        sl.wa_start = groups.wa_start + s;
-        sl.wb_start = groups.wb_start + s;
-        sl.flat_zas = groups.flat_zas;
-        sl.flat_zbs = groups.flat_zbs;
-        sl.flat_wa = groups.flat_wa;
-        sl.flat_wb = groups.flat_wb;
-        sl.original_idx = groups.original_idx + s;
+        const int64 chunk_size = end - start;
+        GroupsSliceDev<Ti, Tv> slice;
+        slice.num_groups = chunk_size;
+        slice.axs = groups.axs + start;
+        slice.bxs = groups.bxs + start;
+        slice.asyms = groups.asyms + start;
+        slice.bsyms = groups.bsyms + start;
+        slice.ranks = groups.ranks + start;
+        slice.num_zas = groups.num_zas + start;
+        slice.num_zbs = groups.num_zbs + start;
+        slice.za_start = groups.za_start + start;
+        slice.zb_start = groups.zb_start + start;
+        slice.wa_start = groups.wa_start + start;
+        slice.wb_start = groups.wb_start + start;
+        slice.flat_zas = groups.flat_zas;
+        slice.flat_zbs = groups.flat_zbs;
+        slice.flat_wa = groups.flat_wa;
+        slice.flat_wb = groups.flat_wb;
+        slice.original_idx = groups.original_idx + start;
 
-        int bs = 256, nsms = 0;
-        cudaDeviceGetAttribute(&nsms, cudaDevAttrMultiProcessorCount, 0);
+        int block_size = 256;
+        int num_sms = 0;
+        cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
+        dim3 grid_size(num_active_blocks, num_sms * 4);
 
-        if (dr == 1)
-            sci_hvec_gather_kernel<1, Ti, Tv><<<dim3(nactive, nsms * 4), bs>>>(tgt_slice, src_slice, sl, sv, dv);
-        else if (dr == 2)
-            sci_hvec_gather_kernel<2, Ti, Tv><<<dim3(nactive, nsms * 4), bs>>>(tgt_slice, src_slice, sl, sv, dv);
-        else
-            sci_hvec_gather_kernel<0, Ti, Tv><<<dim3(nactive, nsms * 4), bs>>>(tgt_slice, src_slice, sl, sv, dv);
+        switch (dispatch_rank)
+        {
+        case 1:
+            sci_hvec_gather_offdiag_kernel<1, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, src_slice, slice, src_vec, dst_vec);
+            break;
+        case 2:
+            sci_hvec_gather_offdiag_kernel<2, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, src_slice, slice, src_vec, dst_vec);
+            break;
+        default:
+            sci_hvec_gather_offdiag_kernel<0, TypeCode, Ti, Tv><<<grid_size, block_size>>>(basis_slice, src_slice, slice, src_vec, dst_vec);
+            break;
+        }
         CUDA_CHECK(cudaGetLastError());
-        s = e;
+        start = end;
     }
 }
+
+template <typename Ti, typename Tv>
+void cuda_sci_hvec(
+    const BasisSliceDev<Ti> &basis_slice,
+    const SciBasisSliceDev<Ti, Tv> &src_slice,
+    const NetworkDev<Ti, Tv> &net,
+    const Tv *__restrict__ src_vec,
+    Tv *__restrict__ dst_vec)
+{
+    cudaMemset(dst_vec, 0, basis_slice.dim * sizeof(Tv));
+
+    sci_dispatch_chunks_by_rank_gpu<1>(basis_slice, basis_slice.num_blocks, src_slice, net.pure_a_groups, src_vec, dst_vec);
+    sci_dispatch_chunks_by_rank_gpu<2>(basis_slice, basis_slice.num_blocks, src_slice, net.pure_b_groups, src_vec, dst_vec);
+    sci_dispatch_chunks_by_rank_gpu<3>(basis_slice, basis_slice.num_blocks, src_slice, net.mixed_groups, src_vec, dst_vec);
+}
+
+// ─── Selection kernel ────────────────────────────────────────────
 
 template <typename Ti, typename Tv>
 __global__ void sci_select_entries_kernel(
@@ -661,24 +686,24 @@ __global__ void sci_select_entries_kernel(
         return;
     const int n_a = tgt_basis.block_num_a[bid];
     const int n_b = tgt_basis.block_num_b[bid];
-    const int64 off = tgt_basis.block_offsets[bid];
+    const int64 offset = tgt_basis.block_offsets[bid];
     const Ti *astrs = tgt_basis.astrs_flat + tgt_basis.astrs_start[bid];
     const Ti *bstrs = tgt_basis.bstrs_flat + tgt_basis.bstrs_start[bid];
-    const int64 as = tgt_basis.astrs_start[bid];
-    const int64 bs = tgt_basis.bstrs_start[bid];
-    const Tv *blk_dst = dst_vec + off;
-    const Tv *blk_diags = ((const Tv *)candidate_diags) ? (((const Tv *)candidate_diags) + off) : nullptr;
+    const int64 astr_start = tgt_basis.astrs_start[bid];
+    const int64 bstr_start = tgt_basis.bstrs_start[bid];
+    const Tv *block_dst = dst_vec + offset;
+    const Tv *block_diags = ((const Tv *)candidate_diags) ? (((const Tv *)candidate_diags) + offset) : nullptr;
     const double eps_sq = eps * eps;
 
     for (int idx = threadIdx.x + blockIdx.y * blockDim.x; idx < n_a * n_b; idx += blockDim.x * gridDim.y)
     {
         const int a = idx / n_b, b = idx % n_b;
-        const Tv acc = blk_dst[(int64)a * n_b + b];
+        const Tv acc = block_dst[(int64)a * n_b + b];
         if (acc == Tv{})
             continue;
-        if (!is_new_a[as + a] && !is_new_b[bs + b])
+        if (!is_new_a[astr_start + a] && !is_new_b[bstr_start + b])
             continue;
-        const Tv haa = blk_diags[(int64)a * n_b + b];
+        const Tv haa = block_diags[(int64)a * n_b + b];
         const Tv denom = e_var - haa;
         double dn_sq;
         if constexpr (std::is_arithmetic_v<Tv>)
@@ -703,6 +728,8 @@ __global__ void sci_select_entries_kernel(
         }
     }
 }
+
+// ─── Top-level ───────────────────────────────────────────────────
 
 template <typename Ti, typename Tv>
 int64 cuda_sci_select_external_block(
@@ -735,7 +762,6 @@ int64 cuda_sci_select_external_block(
     int64 bdim = blk.num_a * blk.num_b;
     Tv *dv_dev = nullptr;
     CUDA_CHECK(cudaMalloc(&dv_dev, bdim * sizeof(Tv)));
-    CUDA_CHECK(cudaMemset(dv_dev, 0, bdim * sizeof(Tv)));
 
     BasisSliceDev<Ti> ts;
     ts.num_blocks = 1;
@@ -753,11 +779,10 @@ int64 cuda_sci_select_external_block(
     ts.block_map = tgt_dev->block_map;
     ts.target_bids = nullptr;
 
-    auto ss = make_sci_slice<Ti, Tv>(src_dev);
+    SciBasisSliceDev<Ti, Tv> ss;
+    make_sci_slice<Ti, Tv>(src_dev, ss);
 
-    sci_dispatch_by_rank(ts, 1, ss, net_dev->pure_a_groups, sv_dev, dv_dev);
-    sci_dispatch_by_rank(ts, 1, ss, net_dev->pure_b_groups, sv_dev, dv_dev);
-    sci_dispatch_by_rank(ts, 1, ss, net_dev->mixed_groups, sv_dev, dv_dev);
+    cuda_sci_hvec(ts, ss, *net_dev, sv_dev, dv_dev);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     int64 *oc_dev = nullptr;
@@ -807,12 +832,9 @@ void cuda_hvec_sci_full(
     Tv *dst_dev = nullptr;
     CUDA_CHECK(cudaMalloc(&dst_dev, basis_dim * sizeof(Tv)));
     CUDA_CHECK(cudaMemset(dst_dev, 0, basis_dim * sizeof(Tv)));
-
     cuda_hvec<Ti, Tv>(*basis_dev, *net_dev, src_dev, dst_dev);
     CUDA_CHECK(cudaDeviceSynchronize());
-
     CUDA_CHECK(cudaMemcpy(host_dst_vec, dst_dev, basis_dim * sizeof(Tv), cudaMemcpyDeviceToHost));
-
     cudaFree(const_cast<Tv *>(src_dev));
     cudaFree(dst_dev);
 }

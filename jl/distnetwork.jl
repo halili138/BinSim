@@ -113,7 +113,7 @@ function OTF_from_groups(basis::BasisManager, groups::Vector{SVDGroup{Ti,Tv}}) w
     end
 
     ptr = @ccall LIB_OTF.build_network_otf_f64(
-        basis.ptr::Ptr{Cvoid}, basis.norb::Int64, ngs::Int64,
+        basis.orbsym::Ptr{Int64}, basis.norb::Int64, ngs::Int64,
         axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64}, num_as::Ptr{Int64}, num_bs::Ptr{Int64},
         flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti}, flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv}
     )::Ptr{Cvoid}

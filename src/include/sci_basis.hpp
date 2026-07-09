@@ -4,7 +4,6 @@
 #include "otf.hpp"
 #include "utils.hpp"
 #include <ankerl/unordered_dense.h>
-#include <vector>
 
 template <typename Ti, typename Tv>
 struct BufferedEntry

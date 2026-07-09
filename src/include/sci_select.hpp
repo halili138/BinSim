@@ -1,21 +1,25 @@
 #pragma once
-#include "sci_common.hpp"
-#include "otf.hpp"
-#include "utils.hpp"
+#include "sci_basis.hpp"
 
 template <typename Tv>
-FORCE_INLINE Tv compute_group_coeff_from_phases(const Tv *pa, const Tv *pb, int rank)
+FORCE_INLINE auto sqnorm(const Tv &v)
 {
-    const int dispatch_rank = (rank == 1 || rank == 2) ? rank : 0;
-    switch (dispatch_rank)
-    {
-    case 1:
-        return compute_coeff<1, Tv>(0, pa, pb, 1, rank);
-    case 2:
-        return compute_coeff<2, Tv>(0, pa, pb, 1, rank);
-    default:
-        return compute_coeff<0, Tv>(0, pa, pb, 1, rank);
-    }
+    if constexpr (std::is_arithmetic_v<Tv>)
+        return v * v;
+    else
+        return v.real() * v.real() + v.imag() * v.imag();
+}
+
+template <typename Tv>
+FORCE_INLINE bool sci_eps_check(Tv acc, Tv haa, Tv e_var, double eps)
+{
+    if (acc == Tv{})
+        return false;
+    Tv denom = e_var - haa;
+    double dn_sq = sqnorm(denom);
+    if (dn_sq == 0.0)
+        return false;
+    return sqnorm(acc) / dn_sq > eps * eps;
 }
 
 template <int Rank, typename Ti, typename Tv>
@@ -457,12 +461,97 @@ static inline void gather_mixed_for_block(
 }
 
 template <int TypeCode, typename Ti, typename Tv>
-static inline void dispatch_chunks_for_block(
+static inline void dispatch_select_chunks_for_block(
     const BlockDesc<Ti> &tgt_block,
     const SciBasisManager<Ti> *src_basis,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
     const Tv *src_vec, Tv *dst_acc)
 {
+    static_assert(TypeCode >= 1 && TypeCode <= 3);
+
+    const int64 total_ngs = groups.size();
+    if (total_ngs == 0)
+        return;
+
+    const SVDGroup_OTF<Ti, Tv> *groups_ptr = groups.data();
+
+    int64 start = 0;
+    while (start < total_ngs)
+    {
+        const int current_rank = groups_ptr[start].rank;
+        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
+
+        int64 end = start + 1;
+        while (end < total_ngs)
+        {
+            const int next_rank = groups_ptr[end].rank;
+            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
+            if (next_dispatch_rank != dispatch_rank)
+                break;
+            end++;
+        }
+
+        const int64 chunk_size = end - start;
+        const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
+
+        if constexpr (TypeCode == 1)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            }
+        }
+        else if constexpr (TypeCode == 2)
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            }
+        }
+        else
+        {
+            switch (dispatch_rank)
+            {
+            case 1:
+                gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            }
+        }
+        start = end;
+    }
+}
+
+template <int TypeCode, typename Ti, typename Tv>
+static inline void dispatch_contract_chunks_for_block(
+    const BlockDesc<Ti> &tgt_block,
+    const SciBasisManager<Ti> *src_basis,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+    const Tv *src_vec, Tv *dst_acc)
+{
+    static_assert(TypeCode >= 0 && TypeCode <= 3);
+
     const int64 total_ngs = groups.size();
     if (total_ngs == 0)
         return;
@@ -533,7 +622,7 @@ static inline void dispatch_chunks_for_block(
                 break;
             }
         }
-        else if constexpr (TypeCode == 3)
+        else
         {
             switch (dispatch_rank)
             {
@@ -553,7 +642,66 @@ static inline void dispatch_chunks_for_block(
 }
 
 template <typename Ti, typename Tv>
-static inline void contract_hvec_sci_for_desc(
+int64 sci_select_external_block(
+    const SciBasisManager<Ti> *tgt_basis,
+    const SciBasisManager<Ti> *src_basis,
+    const Network_OTF<Ti, Tv> *net,
+    const bool *is_new_a,
+    const bool *is_new_b,
+    int64 block_idx,
+    const Tv *src_vec,
+    const Tv *candidate_diags,
+    Tv variational_energy,
+    int chunk_size,
+    double eps,
+    BufferedEntry<Ti, Tv> *out_entries,
+    int64 max_entries)
+{
+    const BlockDesc<Ti> &full_block = tgt_basis->blocks[block_idx];
+    const int64 num_a_total = full_block.num_a;
+    const int64 num_b = full_block.num_b;
+    int64 out_count = 0;
+
+    for (int64 a_start = 0; a_start < num_a_total; a_start += chunk_size)
+    {
+        const int64 a_end = std::min(a_start + (int64)chunk_size, num_a_total);
+        const int64 cur_num_a = a_end - a_start;
+
+        BlockDesc<Ti> chunk_desc = full_block;
+        chunk_desc.astrs = full_block.astrs + a_start;
+        chunk_desc.num_a = cur_num_a;
+        chunk_desc.offset = 0;
+
+        std::vector<Tv> chunk_acc((size_t)cur_num_a * (size_t)num_b, Tv{});
+        dispatch_select_chunks_for_block<1>(chunk_desc, src_basis, net->pure_a_groups, src_vec, chunk_acc.data());
+        dispatch_select_chunks_for_block<2>(chunk_desc, src_basis, net->pure_b_groups, src_vec, chunk_acc.data());
+        dispatch_select_chunks_for_block<3>(chunk_desc, src_basis, net->mixed_groups, src_vec, chunk_acc.data());
+
+        for (int64 a = 0; a < cur_num_a && out_count < max_entries; ++a)
+        {
+            const int64 a_global = a_start + a;
+            const int64 a_external_idx = (full_block.astrs + a_global) - tgt_basis->all_astrs;
+            const bool new_a = is_new_a[a_external_idx];
+            const Tv *row = chunk_acc.data() + a * num_b;
+
+            for (int64 b = 0; b < num_b && out_count < max_entries; ++b)
+            {
+                const int64 b_external_idx = (full_block.bstrs + b) - tgt_basis->all_bstrs;
+                if (!new_a && !is_new_b[b_external_idx])
+                    continue;
+                if (row[b] == Tv{})
+                    continue;
+
+                if (sci_eps_check(row[b], candidate_diags[full_block.offset + a_global * num_b + b], variational_energy, eps))
+                    out_entries[out_count++] = {full_block.astrs[a_global], full_block.bstrs[b], row[b]};
+            }
+        }
+    }
+    return out_count;
+}
+
+template <typename Ti, typename Tv>
+static inline void contract_hvec_sci(
     const BlockDesc<Ti> &tgt_block,
     const SciBasisManager<Ti> *src_basis,
     const Network_OTF<Ti, Tv> *net,
@@ -562,21 +710,8 @@ static inline void contract_hvec_sci_for_desc(
     const int64 block_size = tgt_block.num_a * tgt_block.num_b;
     std::fill_n(dst_acc, block_size, Tv{});
 
-    dispatch_chunks_for_block<0>(tgt_block, src_basis, net->diag_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<1>(tgt_block, src_basis, net->pure_a_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<2>(tgt_block, src_basis, net->pure_b_groups, src_vec, dst_acc);
-    dispatch_chunks_for_block<3>(tgt_block, src_basis, net->mixed_groups, src_vec, dst_acc);
-}
-
-template <typename Ti, typename Tv>
-void contract_hvec_sci_for_block(
-    const SciBasisManager<Ti> *tgt_basis,
-    const SciBasisManager<Ti> *src_basis,
-    const Network_OTF<Ti, Tv> *net,
-    int64 tgt_block_idx,
-    const Tv *src_vec, Tv *dst_acc)
-{
-    const BlockDesc<Ti> &tgt_block = tgt_basis->blocks[tgt_block_idx];
-
-    contract_hvec_sci_for_desc(tgt_block, src_basis, net, src_vec, dst_acc);
+    dispatch_contract_chunks_for_block<0>(tgt_block, src_basis, net->diag_groups, src_vec, dst_acc);
+    dispatch_contract_chunks_for_block<1>(tgt_block, src_basis, net->pure_a_groups, src_vec, dst_acc);
+    dispatch_contract_chunks_for_block<2>(tgt_block, src_basis, net->pure_b_groups, src_vec, dst_acc);
+    dispatch_contract_chunks_for_block<3>(tgt_block, src_basis, net->mixed_groups, src_vec, dst_acc);
 }

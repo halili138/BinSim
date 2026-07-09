@@ -1,6 +1,6 @@
 const SCI_BITSTR_NUM_IRREPS = 16
 
-mutable struct SciBasisManagerBitstr
+mutable struct SciBasisManager
     ptr::Ptr{Cvoid}
     dim::Int64
     norb::Int64
@@ -9,12 +9,10 @@ mutable struct SciBasisManagerBitstr
     nb::Int64
     astrs::Vector{UInt32}
     bstrs::Vector{UInt32}
-    a_idx_map::Dict{UInt32,Int}
-    b_idx_map::Dict{UInt32,Int}
 end
 
-function SciBasisManagerBitstr()
-    SciBasisManagerBitstr(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[], Dict{UInt32,Int}(), Dict{UInt32,Int}())
+function SciBasisManager()
+    SciBasisManager(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[])
 end
 
 function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Int)
@@ -33,21 +31,8 @@ function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Int
     return result
 end
 
-function extract_ax_bx(svd_groups)
-    axs = UInt32[]
-    bxs = UInt32[]
-    for g in svd_groups
-        push!(axs, g.ax)
-        push!(bxs, g.bx)
-    end
-    return axs, bxs
-end
-
-function SciBasisManagerBitstr(
-    astrs::Vector{UInt32}, bstrs::Vector{UInt32},
-    norb::Int64, total_sym::Int64, orbsym::Vector{Int64}, na::Int, nb::Int;
-    sorted::Bool=false,
-    num_irreps::Int=SCI_BITSTR_NUM_IRREPS
+function SciBasisManager(astrs::Vector{UInt32}, bstrs::Vector{UInt32}, norb::Int64, total_sym::Int64, orbsym::Vector{Int64}, na::Int, nb::Int;
+    sorted::Bool=false, num_irreps::Int=SCI_BITSTR_NUM_IRREPS
 )
     astrs = UInt32[a for a in astrs if count_ones(a) == na]
     bstrs = UInt32[b for b in bstrs if count_ones(b) == nb]
@@ -63,9 +48,6 @@ function SciBasisManagerBitstr(
     num_a = length(astrs)
     num_b = length(bstrs)
 
-    a_idx_map = Dict{UInt32,Int}(astrs[i] => i - 1 for i in 1:num_a)
-    b_idx_map = Dict{UInt32,Int}(bstrs[i] => i - 1 for i in 1:num_b)
-
     ptr = @ccall LIB_SCI_BITSTR.create_sci_basis_manager_bitstr_f64(
         astrs::Ptr{UInt32}, num_a::Int64,
         bstrs::Ptr{UInt32}, num_b::Int64,
@@ -78,7 +60,7 @@ function SciBasisManagerBitstr(
     dim = @ccall LIB_SCI_BITSTR.sci_basis_dim_bitstr(ptr::Ptr{Cvoid})::Int64
     nbk = @ccall LIB_SCI_BITSTR.sci_basis_num_blocks_bitstr(ptr::Ptr{Cvoid})::Int64
 
-    obj = SciBasisManagerBitstr(ptr, dim, norb, nbk, na, nb, astrs, bstrs, a_idx_map, b_idx_map)
+    obj = SciBasisManager(ptr, dim, norb, nbk, na, nb, astrs, bstrs)
     finalizer(obj) do o
         if o.ptr != C_NULL
             @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(o.ptr::Ptr{Cvoid})::Cvoid
@@ -86,53 +68,6 @@ function SciBasisManagerBitstr(
         end
     end
 
-    return obj
-end
-
-function OTF_bitstr(orbsym::Vector{Int64}, norb::Int64, A::BinaryQubitAABB{Ti,Tv,K,V}; tol::Float64=1e-12) where {Ti,Tv,K,V}
-    groups = compress_by_svd(A, tol)
-    ngs = length(groups)
-    axs = Vector{Ti}(undef, ngs)
-    bxs = Vector{Ti}(undef, ngs)
-    ranks = Vector{Int64}(undef, ngs)
-    num_as = Vector{Int64}(undef, ngs)
-    num_bs = Vector{Int64}(undef, ngs)
-    flat_azs = Ti[]
-    flat_bzs = Ti[]
-    flat_wa = Tv[]
-    flat_wb = Tv[]
-    for (g, group) in enumerate(groups)
-        axs[g] = group.ax
-        bxs[g] = group.bx
-        ranks[g] = group.rank
-        num_as[g] = length(group.azs)
-        num_bs[g] = length(group.bzs)
-        append!(flat_azs, group.azs)
-        append!(flat_bzs, group.bzs)
-        append!(flat_wa, vec(group.wa))
-        append!(flat_wb, vec(group.wb))
-    end
-    ptr = @ccall LIB_SCI_BITSTR.build_network_otf_sci_bitstr_f64(
-        orbsym::Ptr{Int64}, norb::Int64, ngs::Int64,
-        axs::Ptr{Ti}, bxs::Ptr{Ti}, ranks::Ptr{Int64},
-        num_as::Ptr{Int64}, num_bs::Ptr{Int64},
-        flat_azs::Ptr{Ti}, flat_bzs::Ptr{Ti},
-        flat_wa::Ptr{Tv}, flat_wb::Ptr{Tv}
-    )::Ptr{Cvoid}
-    ptr == C_NULL && error("Failed to build bitstr OTF.")
-    sci_ptr = @ccall LIB_SCI_BITSTR.build_network_sci_bitstr_f64(ptr::Ptr{Cvoid})::Ptr{Cvoid}
-    sci_ptr == C_NULL && error("Failed to build SCI network.")
-    obj = OTF(ptr, 0, ngs, sci_ptr)
-    finalizer(obj) do o
-        if o.ptr != C_NULL
-            @ccall LIB_OTF.destroy_network_otf_f64(o.ptr::Ptr{Cvoid})::Cvoid
-            o.ptr = C_NULL
-        end
-        if o.sci_ptr != C_NULL
-            @ccall LIB_SCI_BITSTR.destroy_network_sci_bitstr_f64(o.sci_ptr::Ptr{Cvoid})::Cvoid
-            o.sci_ptr = C_NULL
-        end
-    end
     return obj
 end
 
@@ -169,7 +104,7 @@ function expand_bitstrings_bitstr(
 end
 
 function sci_hvec_select_external_bitstr!(
-    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
+    tgt::SciBasisManager, src::SciBasisManager, otf::OTF,
     is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
     blk::Int, psi::Vector{Float64}, candidate_diags::Vector{Float64},
     variational_energy::Float64, chunk_size::Int, eps::Float64,
@@ -196,37 +131,6 @@ function sci_hvec_select_external_bitstr!(
     return n
 end
 
-function sci_hvec_select_external_link_all_blocks_bitstr!(
-    tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    unique_axs::Vector{UInt32}, unique_bxs::Vector{UInt32},
-    psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    max_entries = tgt.dim
-    buf_a = Vector{UInt32}(undef, max_entries)
-    buf_b = Vector{UInt32}(undef, max_entries)
-    buf_v = Vector{Float64}(undef, max_entries)
-
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_link_all_blocks_with_masks_bitstr_f64(
-        tgt.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, otf.sci_ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
-        unique_axs::Ptr{UInt32}, length(unique_axs)::Int64,
-        unique_bxs::Ptr{UInt32}, length(unique_bxs)::Int64,
-        psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
-        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
-        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        max_entries::Int64
-    )::Int64
-
-    append!(sel_a, view(buf_a, 1:n))
-    append!(sel_b, view(buf_b, 1:n))
-    append!(sel_v, view(buf_v, 1:n))
-
-    return n
-end
-
 function merge_bitstrings(
     src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32},
@@ -238,8 +142,8 @@ function merge_bitstrings(
 end
 
 function remap_wavefunction_bitstr!(
-    old::SciBasisManagerBitstr, old_psi::Vector{Float64},
-    new::SciBasisManagerBitstr, new_psi::Vector{Float64},
+    old::SciBasisManager, old_psi::Vector{Float64},
+    new::SciBasisManager, new_psi::Vector{Float64},
     sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
 
     @ccall LIB_SCI_BITSTR.remap_wavefunction_sci_bitstr_f64(
@@ -250,31 +154,39 @@ function remap_wavefunction_bitstr!(
     )::Cvoid
 end
 
-function get_diags_bitstr!(basis::SciBasisManagerBitstr, otf::OTF, diags::Vector{Float64})
+function get_diags_bitstr!(basis::SciBasisManager, otf::OTF, diags::Vector{Float64})
     @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64})::Cvoid
 end
 
-function hvec_sci_full_bitstr!(basis::SciBasisManagerBitstr, otf::OTF,
-    src::Vector{Float64}, dst::Vector{Float64})
+function hvec_svd!(basis::SciBasisManager, otf::OTF, src::Vector{Float64}, dst::Vector{Float64})
     @ccall LIB_SCI_BITSTR.hvec_sci_full_bitstr_f64(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
         src::Ptr{Float64}, dst::Ptr{Float64})::Cvoid
 end
 
-function destroy_sci_basis_manager_bitstr(sb::SciBasisManagerBitstr)
+function destroy_sci_basis_manager_bitstr(sb::SciBasisManager)
     if sb.ptr != C_NULL
         @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(sb.ptr::Ptr{Cvoid})::Cvoid
         sb.ptr = C_NULL
     end
 end
 
-function select_external_block_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr,
-    otf::OTF, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
+function select_external_block_bitstr!(
+    tgt::SciBasisManager, 
+    src::SciBasisManager,
+    otf::OTF, 
+    psi::Vector{Float64}, 
+    candidate_diags::Vector{Float64},
+    variational_energy::Float64, 
+    chunk_size::Int, 
+    eps::Float64,
+    is_new_a::Vector{Bool}, 
+    is_new_b::Vector{Bool},
+    sel_a::Vector{UInt32}, 
+    sel_b::Vector{UInt32}, 
+    sel_v::Vector{Float64}
+)
     for blk in 0:tgt.num_blocks-1
         sci_hvec_select_external_bitstr!(
             tgt, src, otf, is_new_a, is_new_b,
@@ -284,24 +196,8 @@ function select_external_block_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasis
     end
 end
 
-function select_external_link_bitstr!(tgt::SciBasisManagerBitstr, src::SciBasisManagerBitstr,
-    otf::OTF, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    unique_axs::Vector{UInt32}, unique_bxs::Vector{UInt32},
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64})
-
-    sci_hvec_select_external_link_all_blocks_bitstr!(
-        tgt, src, otf, is_new_a, is_new_b, unique_axs, unique_bxs,
-        psi, candidate_diags, variational_energy,
-        chunk_size, eps, sel_a, sel_b, sel_v
-    )
-end
-
 function run_sci_bitstr(mole::Mole;
-    max_iter::Int=20, max_size::Int=10000, eps::Float64=1e-6,
-    chunk_size::Int=256, davidson_tol::Float64=1e-5, verbose::Bool=true, total_sym::Int64=0,
-    select_mode::Symbol=:external_link)
+    max_iter::Int=20, eps::Float64=1e-6, chunk_size::Int=256, verbose::Bool=true)
 
     # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
     # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
@@ -310,47 +206,35 @@ function run_sci_bitstr(mole::Mole;
     # not the raw residual |Hψ(candidate)|.
 
     na, nb = mole.nelec
-    num_irreps = SCI_BITSTR_NUM_IRREPS
 
-    ham = JW_hamiltonian(mole)
-    svd_groups = compress_by_svd(ham)
-    all_axs, all_bxs = extract_ax_bx(svd_groups)
-    unique_axs = unique(all_axs)
-    unique_bxs = unique(all_bxs)
-    ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
+    ham     = JW_hamiltonian(mole)
+    basis   = SciBasisManager([UInt32(1 << na - 1)], [UInt32(1 << nb - 1)], mole.norb, 0, mole.orbsym, na, nb, num_irreps=SCI_BITSTR_NUM_IRREPS)
+    otf     = OTF(basis, ham)
+    all_axs = sort!(unique(ham.axs))
+    all_bxs = sort!(unique(ham.bxs))
 
-    hf_astr = UInt32((1 << na) - 1)
-    hf_bstr = UInt32((1 << nb) - 1)
-    basis = SciBasisManagerBitstr([hf_astr], [hf_bstr], mole.norb, total_sym, mole.orbsym, na, nb; num_irreps=num_irreps)
-    psi = Float64[1.0]
-    diags = zeros(Float64, 1)
-    get_diags_bitstr!(basis, ham_otf, diags)
+    psi     = Float64[1.0]
+    diags   = zeros(Float64, 1)
+    get_diags_bitstr!(basis, otf, diags)
     current_energy = diags[1]
+
     verbose && @printf("Initial basis: dim=%d  E0=%.10f\n\n", basis.dim, current_energy)
 
     for iter in 1:max_iter
-        t1 = @elapsed dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym, num_irreps)
-        tgt = SciBasisManagerBitstr(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
+        t1 = @elapsed dst_a, dst_b, is_new_a, is_new_b = expand_bitstrings_bitstr(basis.astrs, basis.bstrs, all_axs, all_bxs, na, nb, mole.orbsym, SCI_BITSTR_NUM_IRREPS)
+        tgt = SciBasisManager(dst_a, dst_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=SCI_BITSTR_NUM_IRREPS)
         tgt_diags = zeros(Float64, tgt.dim)
-        get_diags_bitstr!(tgt, ham_otf, tgt_diags)
+        get_diags_bitstr!(tgt, otf, tgt_diags)
 
         sel_a = UInt32[]
         sel_b = UInt32[]
         sel_v = Float64[]
 
-        t2 = @elapsed if select_mode == :external_block
-            select_external_block_bitstr!(
-                tgt, basis, ham_otf, psi, tgt_diags,
-                current_energy, chunk_size, eps, is_new_a, is_new_b,
-                sel_a, sel_b, sel_v
-            )
-        else
-            select_external_link_bitstr!(
-                tgt, basis, ham_otf, psi, tgt_diags,
-                current_energy, chunk_size, eps, is_new_a, is_new_b,
-                unique_axs, unique_bxs, sel_a, sel_b, sel_v
-            )
-        end
+        t2 = @elapsed select_external_block_bitstr!(
+            tgt, basis, otf, psi, tgt_diags,
+            current_energy, chunk_size, eps, is_new_a, is_new_b,
+            sel_a, sel_b, sel_v
+        )
 
         nsel = length(sel_v)
         if verbose
@@ -365,8 +249,8 @@ function run_sci_bitstr(mole::Mole;
             break
         end
 
-        t4 = @elapsed new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs, sel_a, sel_b, mole.orbsym, num_irreps)
-        new_basis = SciBasisManagerBitstr(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=num_irreps)
+        t4 = @elapsed new_a, new_b = merge_bitstrings(basis.astrs, basis.bstrs, sel_a, sel_b, mole.orbsym, SCI_BITSTR_NUM_IRREPS)
+        new_basis = SciBasisManager(new_a, new_b, mole.norb, total_sym, mole.orbsym, na, nb; sorted=true, num_irreps=SCI_BITSTR_NUM_IRREPS)
 
         if verbose
             @printf("  Merged           %d\n", new_basis.dim)
@@ -375,14 +259,11 @@ function run_sci_bitstr(mole::Mole;
         new_psi = zeros(Float64, new_basis.dim)
         t5 = @elapsed remap_wavefunction_bitstr!(basis, psi, new_basis, new_psi, sel_a, sel_b, sel_v)
         new_diags = zeros(Float64, new_basis.dim)
-        t6 = @elapsed get_diags_bitstr!(new_basis, ham_otf, new_diags)
+        t6 = @elapsed get_diags_bitstr!(new_basis, otf, new_diags)
         t7 = @elapsed E, psi_new = davidson(
-            (v, Hv) -> hvec_sci_full_bitstr!(new_basis, ham_otf, v, Hv),
+            (v, Hv) -> hvec_svd!(new_basis, otf, v, Hv),
             new_psi,
             new_diags;
-            tol=davidson_tol,
-            ncv=1,
-            maxspace=min(max_size, new_basis.dim + 20),
             verbose=false
         )
 

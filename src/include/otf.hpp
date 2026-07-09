@@ -124,6 +124,7 @@ struct Network_OTF
 
     int64 *sorted_idxs = nullptr;
     uint8 *excit_types = nullptr;
+    int64 *orbsym = nullptr;
 
     GroupIndex_OTF<Ti> group_index;
 
@@ -138,6 +139,11 @@ struct Network_OTF
         {
             delete[] excit_types;
             excit_types = nullptr;
+        }
+        if (orbsym)
+        {
+            delete[] orbsym;
+            orbsym = nullptr;
         }
 
         auto clear_bucket = [](std::vector<SVDGroup_OTF<Ti, Tv>> &bucket)
@@ -217,7 +223,7 @@ void build_group_index_otf(Network_OTF<Ti, Tv> *net)
 template <typename Ti,
           typename Tv>
 void *build_network_otf(
-    const BasisManager<Ti> *basis,
+    const int64 *orbsym,
     int64 norb, int64 ngs,
     const Ti *axs,
     const Ti *bxs,
@@ -231,6 +237,9 @@ void *build_network_otf(
 {
     Network_OTF<Ti, Tv> *net = new Network_OTF<Ti, Tv>();
     net->num_groups = ngs;
+
+    net->orbsym = new int64[norb];
+    std::copy(orbsym, orbsym + norb, net->orbsym);
 
     net->excit_types = new uint8[ngs];
     net->sorted_idxs = new int64[ngs];
@@ -254,8 +263,8 @@ void *build_network_otf(
         group.rank = (int)ranks[g];
         group.num_za = (int)num_zas[g];
         group.num_zb = (int)num_zbs[g];
-        group.asym = get_string_sym(group.ax, basis->orbsym);
-        group.bsym = get_string_sym(group.bx, basis->orbsym);
+        group.asym = get_string_sym(group.ax, orbsym);
+        group.bsym = get_string_sym(group.bx, orbsym);
 
         group.unique_zas = new Ti[group.num_za];
         std::copy(flat_zas + z_offset_a, flat_zas + z_offset_a + group.num_za, group.unique_zas);

@@ -1,8 +1,7 @@
 function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vector{Tv}) where {Ti,Tv,K,V}
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=true)
-    print("Generating Diag elements vector ... ")
-    time_ops = @elapsed diags = get_diags(basis, funcs.ham, Tv)
-    @printf("Done in %.4f seconds\n", time_ops)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=true)
+    diags = zero(v0)
+    funcs.get_diags(diags)
 
     println("Solving FCI with davidson ... ")
     @time e_fci, v_fci = davidson(funcs.hvec, v0, diags, tol=1e-5)
@@ -13,7 +12,7 @@ end
 
 
 function run_fci(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}; k::Int=1) where {Ti,Tv,K,V}
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
     hvec_map = LinearMap{Tv}(
         (dst, src) -> funcs.hvec(src, dst),
         basis.dim,
@@ -87,8 +86,8 @@ function run_vqe(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vec
 
     lv .= v0
 
-    for i in eachindex(idxs)
-        funcs.expm(idxs[i], x_opt[i], lv)
+    for (i, t) in zip(idxs, x_opt)
+        funcs.expm(i, t, lv)
     end
 
     return e_opt, lv, x_opt
@@ -372,8 +371,7 @@ end
 
 
 function run_exact_vqe_krylov(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, v0::Vector{Tv}, e_scale::Float64;
-    x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(ftol=1e-10),
-    krylov_dim::Int=30, krylov_tol::Float64=1e-12, fd_step::Float64=1e-6,
+    x0::Vector{Float64}=Float64[], options::VQE_OPTIONS=VQE_OPTIONS(ftol=1e-10), krylov_dim::Int=30, krylov_tol::Float64=1e-12, fd_step::Float64=1e-6,
 ) where {Ti,Tv,K,V}
     println("============================================================================")
     println("--- Adaptive Exact UCC VQE (Krylov expm action + finite-difference gradients) ---")
@@ -541,10 +539,10 @@ function run_enpt2(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::Vec
     """
     println("\n--- Starting ENPT2 Post-Processing ---")
 
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=false)
-    print("Generating Diag elements vector ... ")
-    time_ops = @elapsed diags = get_diags(basis, funcs.ham, Tv)
-    @printf("Done in %.4f seconds\n", time_ops)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
+    
+    diags = zero(v0)
+    funcs.get_diags(diags)
 
     # 确保参考态已经归一化
     v = copy(v0)
@@ -798,7 +796,7 @@ function run_qpe_ode(
 
     println("\n--- Starting Quantum Phase Estimation (QPE via ODE) ---")
 
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
 
     v = v0
     normalize!(v)

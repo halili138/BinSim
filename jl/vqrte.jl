@@ -65,7 +65,7 @@ function run_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     println("--- Time-Dependent Variational Algorithm (TDVA) ---")
     println("--- DOI: https://doi.org/10.1103/PhysRevX.7.021050 ---\n")
 
-    funcs = OTF_Functions(basis, ham, pool, time_print=false)
+    funcs  = OTF_Functions(basis, ham, pool, time_print=false)
     xfuncs = OTF_Functions(basis, obs_X, eltype(pool)[], info_print=false, time_print=false)
     zfuncs = OTF_Functions(basis, obs_Z, eltype(pool)[], info_print=false, time_print=false)
     obs_X_hist = Float64[]
@@ -76,16 +76,16 @@ function run_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     N = length(pool)
     e_hist = Float64[]
 
-    x = zeros(Float64, N)
+    x  = zeros(Float64, N)
     xs = [zeros(Float64, N) for _ in 1:5]
     xt = xs[5]
 
     vs = [zeros(Tv, basis.dim) for _ in 1:N]
     ws = [zeros(Tv, basis.dim) for _ in 1:5]
-    D = zeros(Tv, N, basis.dim)
+    D  = zeros(Tv, N, basis.dim)
 
     ve = copy(v0)
-    v = ws[1]
+    v  = ws[1]
     Hv = ws[2]
 
     function compute_xdot_and_energy!(x_in, dx_out)
@@ -190,8 +190,9 @@ function run_adapt_vqrte_tdva(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK
     println("--- ADAPT-VQRTE (Forward Batching) with McLachlan Trajectory Tracking ---")
 
     funcs = OTF_Functions(basis, ham, pool, time_print=false)
-    measure_ops = [QubitOperatorAABB([(0, "Z")], 1.0, Ti, Tv), QubitOperatorAABB([(0, "Z"), (1, "Z")], 1.0, Ti, Tv)]
-    measure_funcs = OTF_Functions(basis, BinaryQubitAABB{Ti,Tv,TK,TV}(), measure_ops, info_print=false, time_print=false)
+    Z0  = QubitOperatorAABB([(0, "Z")], 1.0, Ti, Tv)
+    Z01 = QubitOperatorAABB([(0, "Z"), (1, "Z")], 1.0, Ti, Tv)
+    measure_funcs = OTF_Functions(basis, typeof(ham)(), [Z0, Z01], info_print=false, time_print=false)
     measures = zeros(Tv, length(measure_ops))
     measures_exact = zeros(Tv, length(measure_ops))
 
@@ -376,7 +377,7 @@ function run_rk4_rte(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, v0:
 ) where {Ti,Tv,TK,TV}
     @assert Tv <: Complex
 
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
     ws = [zeros(Tv, basis.dim) for _ in 1:5]
     v = copy(v0)
     Hv = ws[1]

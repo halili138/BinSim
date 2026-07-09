@@ -23,7 +23,7 @@ extern "C"
     }
 
     void *build_network_otf_f64(
-        void *basis_ptr,
+        const int64 *orbsym,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -36,10 +36,8 @@ extern "C"
         const double *flat_wa,
         const double *flat_wb)
     {
-        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
-
         return build_network_otf<uint32, double>(
-            basis,
+            orbsym,
             norb, ngs, axs, bxs,
             ranks, num_zas, num_zbs,
             flat_zas, flat_zbs, flat_wa, flat_wb);
@@ -188,7 +186,7 @@ extern "C"
     }
 
     void *build_network_otf_c64(
-        void *basis_ptr,
+        const int64 *orbsym,
         int64 norb,
         int64 ngs,
         const uint32 *axs,
@@ -201,10 +199,8 @@ extern "C"
         const complexf64 *flat_wa,
         const complexf64 *flat_wb)
     {
-        const BasisManager<uint32> *basis = static_cast<const BasisManager<uint32> *>(basis_ptr);
-
         return build_network_otf<uint32, complexf64>(
-            basis,
+            orbsym,
             norb, ngs, axs, bxs,
             ranks, num_zas, num_zbs,
             flat_zas, flat_zbs, flat_wa, flat_wb);

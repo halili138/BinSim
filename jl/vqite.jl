@@ -10,7 +10,7 @@ function run_rk4_ite(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0::V
     k4 = -H * (psi + dtau * k3)
     psi_new = psi + dtau/6 * (k1 + 2*k2 + 2*k3 + k4)
     """
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
     ws = [zeros(Tv, basis.dim) for _ in 1:5]
     v  = copy(v0)
     Hv = ws[1]
@@ -124,7 +124,7 @@ function run_euler_ite(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,K,V}, v0:
     psi_new = psi - dt * H * psi
     """
 
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,K,V}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
 
     if iszero(dt)
         dt = estimate_max_step(funcs.hvec, basis.dim, e_scale)
@@ -204,7 +204,7 @@ function run_krylov_ite(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, 
     psi(τ + dt) ≈ V * exp(-dt * Tm) * e1
     """
 
-    funcs = OTF_Functions(basis, ham, BinaryQubitAABB{Ti,Tv,TK,TV}[], time_print=false)
+    funcs = OTF_Functions(basis, ham, typeof(ham)[], time_print=false)
 
     v = v0
     normalize!(v)

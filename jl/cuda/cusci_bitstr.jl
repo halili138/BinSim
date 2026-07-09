@@ -62,8 +62,6 @@ function run_cuda_sci(mole::Mole;
     ham = JW_hamiltonian(mole)
     svd_groups = compress_by_svd(ham)
     all_axs, all_bxs = extract_ax_bx(svd_groups)
-    unique_axs = unique(all_axs)
-    unique_bxs = unique(all_bxs)
     ham_otf = OTF_bitstr(mole.orbsym, mole.norb, ham)
 
     # === Persistent: upload network once ===
