@@ -59,6 +59,17 @@ extern "C"
         cuda_hvec<uint32, double>(*basis, *net, src, dst);
     }
 
+    void get_diags_elements_cuda(
+        void *basis_ptr,
+        void *net_ptr,
+        double *__restrict__ diags)
+    {
+        const BasisViewDev<uint32> *basis = static_cast<BasisViewDev<uint32> *>(basis_ptr);
+        const NetworkDev<uint32, double> *net = static_cast<NetworkDev<uint32, double> *>(net_ptr);
+
+        cuda_get_diags_elements<uint32, double>(*basis, *net, diags);
+    }
+
     void expm_cuda(
         void *basis_ptr,
         void *net_ptr,
