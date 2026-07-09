@@ -59,6 +59,12 @@ function hvec_cuda!(basis::CuBasisManager, otf::CuOTF, src::T1, dst::T2) where {
     )::Cvoid
 end
 
+function get_diags_elements_cuda!(basis::CuBasisManager, otf::CuOTF, diags::T) where {Tv,T<:AbstractArray{Tv,1}}
+    @ccall LIB_CUOTF.get_diags_elements_cuda(
+        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::CuPtr{Cdouble},
+    )::Cvoid
+end
+
 function expm_cuda!(basis::CuBasisManager, otf::CuOTF, idx::Int64, θ::Float64, vec::T) where {Tv,T<:AbstractArray{Tv,1}}
     @ccall LIB_CUOTF.expm_cuda(
         basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
@@ -110,13 +116,14 @@ end
 
 struct CuOTF_Functions
     hvec::Function
+    get_diags::Function
     expm::Function
     tvec::Function
     grad::Function
     backgrad::Function
     backtran::Function
     batchexpm::Function
-    batchgrad::Function 
+    batchgrad::Function
     batchtran::Function
     expm_2d::Function
     grad_2d::Function
@@ -128,13 +135,14 @@ end
 
 function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::Bool=true, time_print::Bool=false)
     f_hvec       = (v, Hv)               -> nothing
+    f_get_diags  = dv                    -> nothing
     f_expm       = (idx, θ, v)           -> nothing
     f_tvec       = (idx, lv, rv)         -> nothing
     f_grad       = (idx, θ, lv, rv)      -> nothing
     f_backgrad   = (idx, θ, lv, rv)      -> nothing
     f_backtran   = (idx, θ, lv, rv, tlv) -> nothing
     f_batchexpm  = (idx, θ, mat, N, j)   -> nothing
-    f_batchgrad  = (lv, rv, grads, x)    -> nothing 
+    f_batchgrad  = (lv, rv, grads, x)    -> nothing
     f_batchtran  = (lv, rv, trans)       -> nothing
     f_expm_2d    = (idx, θ, v)           -> nothing
     f_grad_2d    = (idx, θ, lv, rv)      -> nothing
@@ -148,8 +156,8 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         time_ops = @elapsed cu_ham_otf = CuOTF(ham)
         info_print && @printf("Done in %.4f seconds\n", time_ops)
         if time_print
-            f_hvec = (v, Hv) -> @printf("hvec time %.6f seconds", 
-                    @elapsed begin 
+            f_hvec = (v, Hv) -> @printf("hvec time %.6f seconds",
+                    @elapsed begin
                         hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
                         sync_device!()
                     end
@@ -157,6 +165,7 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
         else
             f_hvec = (v, Hv) -> hvec_cuda!(cu_basis, cu_ham_otf, v, Hv)
         end
+        f_get_diags = dv -> get_diags_elements_cuda!(cu_basis, cu_ham_otf, dv)
     end
     if pool.ptr != C_NULL
         info_print && print("Uploading Pool OTF to device ... ")
@@ -173,8 +182,8 @@ function CuOTF_Functions(basis::BasisManager, ham::OTF, pool::OTF; info_print::B
     end
 
     return CuOTF_Functions(
-        f_hvec, f_expm, f_tvec, f_grad, 
-        f_backgrad, f_backtran, 
+        f_hvec, f_get_diags, f_expm, f_tvec, f_grad,
+        f_backgrad, f_backtran,
         f_batchexpm, f_batchgrad, f_batchtran,
         f_expm_2d, f_grad_2d, f_backgrad_2d,
         cu_basis, cu_ham_otf, cu_pool_otf)

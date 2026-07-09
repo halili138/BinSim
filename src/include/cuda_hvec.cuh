@@ -119,6 +119,93 @@ __global__ void hvec_gather_diag_kernel(
     }
 }
 
+
+template <int Rank, typename Ti, typename Tv>
+__global__ void get_diags_elements_kernel(
+    const BasisSliceDev<Ti> basis,
+    const GroupsSliceDev<Ti, Tv> groups,
+    Tv *__restrict__ diags)
+{
+    if (groups.num_groups <= 0)
+        return;
+
+    const int bid = basis.target_bids ? basis.target_bids[blockIdx.x] : blockIdx.x;
+    constexpr int SHARED_MEM_SIZE = BATCH_GROUP_SHARED_MEM<Rank>;
+
+    __shared__ Tv sh_pb[SHARED_MEM_SIZE];
+
+    const int g = 0;
+    const int rank = groups.ranks[g];
+    const int num_za = groups.num_zas[g];
+    const int num_zb = groups.num_zbs[g];
+    const Ti *zas = groups.flat_zas + groups.za_start[g];
+    const Ti *zbs = groups.flat_zbs + groups.zb_start[g];
+    const Tv *wa = groups.flat_wa + groups.wa_start[g];
+    const Tv *wb = groups.flat_wb + groups.wb_start[g];
+
+    const int n_a = basis.block_num_a[bid];
+    const int n_b = basis.block_num_b[bid];
+    const int num_b_tiles = (n_b + TILE_B - 1) / TILE_B;
+    const int num_a_tiles = (n_a + TILE_A - 1) / TILE_A;
+    const int total_tiles = num_b_tiles * num_a_tiles;
+    const Ti *astrs = basis.astrs_flat + basis.astrs_start[bid];
+    const Ti *bstrs = basis.bstrs_flat + basis.bstrs_start[bid];
+    Tv *diag_bid = diags + basis.block_offsets[bid];
+
+    for (int task_idx = blockIdx.y; task_idx < total_tiles; task_idx += gridDim.y)
+    {
+        const int b_tile_idx = task_idx % num_b_tiles;
+        const int a_tile_idx = task_idx / num_b_tiles;
+
+        const int b_tile_start = b_tile_idx * TILE_B;
+        const int current_tile_b = min(TILE_B, n_b - b_tile_start);
+        const Ti *bstrs_tile_start = bstrs + b_tile_start;
+
+        const int a_tile_start = a_tile_idx * TILE_A;
+        const int a_tile_end = min(n_a, a_tile_start + TILE_A);
+
+        const int a = a_tile_start + threadIdx.x;
+        const bool valid_a = (a < a_tile_end);
+        const Ti astr = valid_a ? astrs[a] : 0;
+        Tv *diag_base = valid_a ? (diag_bid + (int64)a * n_b) : nullptr;
+
+        for (int sh_idx = threadIdx.x; sh_idx < current_tile_b; sh_idx += blockDim.x)
+        {
+            const Ti bstr = bstrs_tile_start[sh_idx];
+            compute_phase_dev<Rank, Ti, Tv>(bstr, zbs, num_zb, wb, sh_pb + sh_idx, TILE_B, rank);
+        }
+
+        __syncthreads();
+
+        if (valid_a)
+        {
+            constexpr int STACK_SIZE = Rank == 1 ? 1 : (Rank == 2 ? 2 : KERNEL_MAX_RANK);
+            Tv pa[STACK_SIZE] = {};
+            compute_phase_dev<Rank, Ti, Tv>(astr, zas, num_za, wa, pa, 1, rank);
+
+            if (current_tile_b == TILE_B)
+            {
+#pragma unroll
+                for (int b_offset = 0; b_offset < TILE_B; ++b_offset)
+                {
+                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
+                    diag_base[b_tile_start + b_offset] += vt;
+                }
+            }
+            else
+            {
+                for (int b_offset = 0; b_offset < current_tile_b; ++b_offset)
+                {
+                    const Tv vt = compute_coeff_dev<Rank, Tv>(pa, sh_pb, TILE_B, rank, b_offset);
+                    diag_base[b_tile_start + b_offset] += vt;
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+}
+
 template <int Rank, int TypeCode, typename Ti, typename Tv>
 __global__ void hvec_gather_offdiag_kernel(
     const BasisSliceDev<Ti> basis,
@@ -438,9 +525,43 @@ void cuda_hvec(
 {
     cudaMemset(dst_vec, 0, basis.dim * sizeof(Tv));
     BasisSliceDev<Ti> slice = make_basis_slice(basis);
-    
+
     dispatch_chunks_by_rank_gpu<0>(slice, basis.num_blocks, net.diag_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank_gpu<1>(slice, basis.num_blocks, net.pure_a_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank_gpu<2>(slice, basis.num_blocks, net.pure_b_groups, src_vec, dst_vec);
     dispatch_chunks_by_rank_gpu<3>(slice, basis.num_blocks, net.mixed_groups, src_vec, dst_vec);
+}
+
+template <typename Ti, typename Tv>
+void cuda_get_diags_elements(
+    const BasisViewDev<Ti> &basis,
+    const NetworkDev<Ti, Tv> &net,
+    Tv *__restrict__ diags)
+{
+    if (net.diag_groups.num_groups <= 0)
+        return;
+
+    BasisSliceDev<Ti> basis_slice = make_basis_slice(basis);
+    GroupsSliceDev<Ti, Tv> slice = make_groups_slice(net.diag_groups);
+    const int rank = net.diag_groups.host_ranks.empty() ? 0 : net.diag_groups.host_ranks[0];
+    const int dispatch_rank = (rank == 1 || rank == 2) ? rank : 0;
+
+    int block_size = 256;
+    int num_sms = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0));
+    dim3 grid_size(basis.num_blocks, num_sms > 0 ? num_sms * 4 : 1);
+
+    switch (dispatch_rank)
+    {
+    case 1:
+        get_diags_elements_kernel<1, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, diags);
+        break;
+    case 2:
+        get_diags_elements_kernel<2, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, diags);
+        break;
+    default:
+        get_diags_elements_kernel<0, Ti, Tv><<<grid_size, block_size>>>(basis_slice, slice, diags);
+        break;
+    }
+    CUDA_CHECK(cudaGetLastError());
 }
