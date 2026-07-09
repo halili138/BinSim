@@ -492,7 +492,6 @@ function OTF(pool::Vector{BinaryQubitAABB{Ti,Tv,K,V}}, orbsym::Vector{Int64}, to
     return obj
 end
 
-
 """
 OTF_Functions 结构体包含以下操作函数：
 # 基本操作
@@ -559,47 +558,6 @@ function OTF_Functions(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, p
     end
 
     if Tv <: Complex
-        # f_hvec = (v, Hv) -> begin
-        #     time_ops = @elapsed @ccall LIB_OTF.hvec_gather_contract_otf_c64(basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, v::Ptr{Tv}, Hv::Ptr{Tv})::Cvoid
-        #     time_print && @printf("hvec time %.6f seconds", time_ops)
-        # end
-
-        # f_get_diags = dv -> @ccall LIB_OTF.get_diags_elements_c64(
-        #     basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, dv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_expm = (idx, θ, v) -> @ccall LIB_OTF.expm_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, v::Ptr{Tv}
-        # )::Cvoid
-
-        # f_tvec = (idx, lv, rv) -> @ccall LIB_OTF.tvec_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_grad = (idx, θ, lv, rv) -> return @ccall LIB_OTF.grad_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Tv
-
-        # f_backgrad = (idx, θ, lv, rv) -> return @ccall LIB_OTF.backgrad_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Tv
-
-        # f_backtran = (idx, θ, lv, rv, tlv) -> return @ccall LIB_OTF.backtran_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}, tlv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_batchexpm = (idx, θ, mat, N, j) -> @ccall LIB_OTF.batch_expm_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, mat::Ptr{Tv}, N::Int64, j::Int64
-        # )::Cvoid
-
-        # f_batchgrad = (lv, rv, grads, x) -> @ccall LIB_OTF.batch_grad_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, x::Ptr{Cdouble}, lv::Ptr{Tv}, rv::Ptr{Tv}, grads::Ptr{Tv}
-        # )::Cvoid
-
-        # f_batchtran = (lv, rv, trans) -> @ccall LIB_OTF.batch_tran_contract_otf_c64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, lv::Ptr{Tv}, rv::Ptr{Tv}, trans::Ptr{Tv}
-        # )::Cvoid
-
         f_hvec = (v, Hv) -> begin
             time_ops = @elapsed @ccall LIB_OTF.hvec_gather_contract_otf_c64(
                 basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, v::Ptr{ComplexF64}, Hv::Ptr{ComplexF64}
@@ -644,47 +602,6 @@ function OTF_Functions(basis::BasisManager, ham::BinaryQubitAABB{Ti,Tv,TK,TV}, p
             basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, lv::Ptr{ComplexF64}, rv::Ptr{ComplexF64}, trans::Ptr{ComplexF64}
         )::Cvoid
     else
-        # f_hvec = (v, Hv) -> begin
-        #     time_ops = @elapsed @ccall LIB_OTF.hvec_gather_contract_otf_f64(basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, v::Ptr{Tv}, Hv::Ptr{Tv})::Cvoid
-        #     time_print && @printf("hvec time %.6f seconds", time_ops)
-        # end
-
-        # f_get_diags = dv -> @ccall LIB_OTF.get_diags_elements_f64(
-        #     basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, dv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_expm = (idx, θ, v) -> @ccall LIB_OTF.expm_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, v::Ptr{Tv}
-        # )::Cvoid
-
-        # f_tvec = (idx, lv, rv) -> @ccall LIB_OTF.tvec_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_grad = (idx, θ, lv, rv) -> return @ccall LIB_OTF.grad_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Tv
-
-        # f_backgrad = (idx, θ, lv, rv) -> return @ccall LIB_OTF.backgrad_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}
-        # )::Tv
-
-        # f_backtran = (idx, θ, lv, rv, tlv) -> return @ccall LIB_OTF.backtran_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, lv::Ptr{Tv}, rv::Ptr{Tv}, tlv::Ptr{Tv}
-        # )::Cvoid
-
-        # f_batchexpm = (idx, θ, mat, N, j) -> @ccall LIB_OTF.batch_expm_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, (idx-1)::Int64, θ::Cdouble, mat::Ptr{Tv}, N::Int64, j::Int64
-        # )::Cvoid
-
-        # f_batchgrad = (lv, rv, grads, x) -> @ccall LIB_OTF.batch_grad_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, x::Ptr{Cdouble}, lv::Ptr{Tv}, rv::Ptr{Tv}, grads::Ptr{Tv}
-        # )::Cvoid
-
-        # f_batchtran = (lv, rv, trans) -> @ccall LIB_OTF.batch_tran_contract_otf_f64(
-        #     basis.ptr::Ptr{Cvoid}, pool_otf.ptr::Ptr{Cvoid}, lv::Ptr{Tv}, rv::Ptr{Tv}, trans::Ptr{Tv}
-        # )::Cvoid
-
         f_hvec = (v, Hv) -> begin
             time_ops = @elapsed @ccall LIB_OTF.hvec_gather_contract_otf_f64(
                 basis.ptr::Ptr{Cvoid}, ham_otf.ptr::Ptr{Cvoid}, v::Ptr{Cdouble}, Hv::Ptr{Cdouble}
