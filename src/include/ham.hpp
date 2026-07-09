@@ -188,6 +188,156 @@ FORCE_INLINE void insert_2body(
     (*dict)[k] += c42;
 }
 
+
+template <typename Ti>
+FORCE_INLINE size_t spatial_pair_index(int p, int q)
+{
+    int a = p > q ? p : q;
+    int b = p > q ? q : p;
+    return static_cast<size_t>(a) * static_cast<size_t>(a + 1) / 2 + static_cast<size_t>(b);
+}
+
+template <typename Ti>
+FORCE_INLINE void insert_1body_real(FastDict<Ti, double> *__restrict dict, int p, int q, double coeff)
+{
+    Ti o = get_one<Ti>();
+    if (p == q)
+    {
+        Pauli<Ti> k{get_zero<Ti>(), get_zero<Ti>()};
+        (*dict)[k] += 0.5 * coeff;
+        k.z = o << p;
+        (*dict)[k] -= 0.5 * coeff;
+        return;
+    }
+    int lo = p < q ? p : q;
+    int hi = p < q ? q : p;
+    Ti x = (o << p) ^ (o << q);
+    Ti z_between = ((o << hi) - (o << (lo + 1)));
+    Pauli<Ti> k;
+    k.x = x;
+    k.z = z_between;
+    (*dict)[k] += 0.5 * coeff;
+    k.z = z_between ^ (o << p) ^ (o << q);
+    (*dict)[k] += 0.5 * coeff;
+}
+
+template <typename Ti>
+FORCE_INLINE void insert_2body_real(FastDict<Ti, double> *__restrict dict, int p, int q, int r, int s, double coeff)
+{
+    struct Quad { int p, q, r, s; };
+    Quad qs[4] = {{p, q, r, s}, {q, p, s, r}, {r, s, p, q}, {s, r, q, p}};
+    int n = 0;
+    Quad uniq[4];
+    for (const Quad &a : qs)
+    {
+        bool seen = false;
+        for (int i = 0; i < n; ++i)
+        {
+            if (uniq[i].p == a.p && uniq[i].q == a.q && uniq[i].r == a.r && uniq[i].s == a.s)
+            {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) uniq[n++] = a;
+    }
+    for (int i = 0; i < n; ++i)
+        insert_2body<Ti, double>(dict, uniq[i].p, uniq[i].q, uniq[i].r, uniq[i].s, coeff);
+}
+
+template <typename Ti>
+void stage1_allocate_and_scan_real(
+    int nthreads, int nblocks, int norbs, double tol,
+    const double *one_body_mo, const double *two_body_mo,
+    LocalSingleArray<double> *local_single,
+    LocalDoubleArray<double> *local_double,
+    size_t *scanned_single,
+    size_t *scanned_double)
+{
+    local_single->assign(nthreads, std::vector<std::vector<SingleTerm<double>>>(nblocks));
+    local_double->assign(nthreads, std::vector<std::vector<DoubleTerm<double>>>(nblocks));
+    size_t N1 = static_cast<size_t>(norbs), N2 = N1 * N1, N3 = N2 * N1;
+    std::vector<size_t> sc1(nthreads, 0), sc2(nthreads, 0);
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        Ti ONE = get_one<Ti>();
+#pragma omp for schedule(static)
+        for (int q = 0; q < norbs; ++q)
+            for (int p = 0; p <= q; ++p)
+            {
+                double val = one_body_mo[static_cast<size_t>(p) + static_cast<size_t>(q) * N1];
+                if (std::abs(val) > tol)
+                {
+                    Ti mask = (ONE << p) ^ (ONE << q);
+                    uint32_t b = mix_hash(fold_for_hash(mask)) % nblocks;
+                    (*local_single)[tid][b].push_back({p, q, val});
+                    sc1[tid]++;
+                }
+            }
+#pragma omp for schedule(static) collapse(4)
+        for (int s = 0; s < norbs; ++s)
+            for (int r = 0; r < norbs; ++r)
+                for (int q = 0; q < norbs; ++q)
+                    for (int p = 0; p < norbs; ++p)
+                    {
+                        if (spatial_pair_index<Ti>(p, q) > spatial_pair_index<Ti>(r, s)) continue;
+                        double val = two_body_mo[static_cast<size_t>(p) + static_cast<size_t>(q) * N1 + static_cast<size_t>(r) * N2 + static_cast<size_t>(s) * N3];
+                        if (std::abs(val) > tol)
+                        {
+                            Ti mask = (ONE << p) ^ (ONE << q) ^ (ONE << r) ^ (ONE << s);
+                            uint32_t b = mix_hash(fold_for_hash(mask)) % nblocks;
+                            (*local_double)[tid][b].push_back({p, q, r, s, val});
+                            sc2[tid]++;
+                        }
+                    }
+    }
+    *scanned_single = 0; *scanned_double = 0;
+    for (int t = 0; t < nthreads; ++t) { *scanned_single += sc1[t]; *scanned_double += sc2[t]; }
+}
+
+template <typename Ti>
+void stage2_reduce_dictionaries_real(
+    int nthreads, int nblocks, double energy_nuc, double tol,
+    const LocalSingleArray<double> *local_single,
+    const LocalDoubleArray<double> *local_double,
+    DictArray<Ti, double> *dicts,
+    size_t *raw_insert_count)
+{
+    dicts->resize(nblocks);
+    std::vector<size_t> raw(nblocks, 0);
+#pragma omp parallel for schedule(dynamic, 1)
+    for (int b = 0; b < nblocks; ++b)
+    {
+        size_t reserve_inserts = 0;
+        for (int t = 0; t < nthreads; ++t)
+            reserve_inserts += (*local_single)[t][b].size() * 4 + (*local_double)[t][b].size() * 64;
+        (*dicts)[b].reserve(reserve_inserts / 2 + 100);
+        FastDict<Ti, double> *__restrict dict_ptr = &(*dicts)[b];
+        for (int t = 0; t < nthreads; ++t)
+        {
+            for (const auto &st : (*local_single)[t][b])
+            {
+                insert_1body_real<Ti>(dict_ptr, 2 * st.p, 2 * st.q, st.val);
+                insert_1body_real<Ti>(dict_ptr, 2 * st.p + 1, 2 * st.q + 1, st.val);
+                raw[b] += (st.p == st.q) ? 4 : 8;
+            }
+            for (const auto &dt : (*local_double)[t][b])
+            {
+                double ci = dt.val * 0.5;
+                insert_2body_real<Ti>(dict_ptr, 2 * dt.p, 2 * dt.q, 2 * dt.r, 2 * dt.s, ci);
+                insert_2body_real<Ti>(dict_ptr, 2 * dt.p + 1, 2 * dt.q + 1, 2 * dt.r + 1, 2 * dt.s + 1, ci);
+                insert_2body_real<Ti>(dict_ptr, 2 * dt.p, 2 * dt.q + 1, 2 * dt.r + 1, 2 * dt.s, ci);
+                insert_2body_real<Ti>(dict_ptr, 2 * dt.p + 1, 2 * dt.q, 2 * dt.r, 2 * dt.s + 1, ci);
+                raw[b] += 32;
+            }
+        }
+    }
+    if (std::abs(energy_nuc) > tol) { Pauli<Ti> k_zero = {get_zero<Ti>(), get_zero<Ti>()}; (*dicts)[0][k_zero] += energy_nuc; }
+    *raw_insert_count = 0; for (size_t v : raw) *raw_insert_count += v;
+}
+
+
 template <typename Ti, typename Tv>
 void stage1_allocate_and_scan(
     int nthreads, int nblocks, int norbs, double tol,
@@ -640,6 +790,58 @@ HamResult<Tv> generate_hamiltonian_tmpl(
         printf("[Time] Output:        %.4f seconds\n", t_output.count());
     }
 
+    return res;
+}
+
+
+template <typename Ti>
+HamResult<double> generate_hamiltonian_real_tmpl(
+    double energy_nuc,
+    const double *one_body_mo,
+    const double *two_body_mo,
+    int norbs,
+    double tol,
+    bool verbose)
+{
+    int nthreads = omp_get_max_threads();
+    int nblocks = nthreads * 64;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    LocalSingleArray<double> local_single;
+    LocalDoubleArray<double> local_double;
+    size_t scanned_single = 0, scanned_double = 0, raw_insert_count = 0;
+    stage1_allocate_and_scan_real<Ti>(nthreads, nblocks, norbs, tol, one_body_mo, two_body_mo, &local_single, &local_double, &scanned_single, &scanned_double);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    DictArray<Ti, double> dicts;
+    stage2_reduce_dictionaries_real<Ti>(nthreads, nblocks, energy_nuc, tol, &local_single, &local_double, &dicts, &raw_insert_count);
+    local_single.clear(); local_single.shrink_to_fit(); local_double.clear(); local_double.shrink_to_fit();
+    auto t2 = std::chrono::high_resolution_clock::now();
+    TermArray<Ti, double> all_terms;
+    size_t ncs = 0;
+    stage3_count_and_write<Ti, double>(nblocks, tol, &dicts, &all_terms, &ncs);
+    dicts.clear(); dicts.shrink_to_fit();
+    auto t3 = std::chrono::high_resolution_clock::now();
+    __gnu_parallel::sort(all_terms.begin(), all_terms.end());
+    auto t4 = std::chrono::high_resolution_clock::now();
+    HamResult<double> res = stage5_prepare_output<Ti, double>(ncs, &all_terms);
+    auto t5 = std::chrono::high_resolution_clock::now();
+    if (verbose)
+    {
+        std::chrono::duration<double> t_scan = t1 - t0, t_reduce = t2 - t1, t_write = t3 - t2, t_sort = t4 - t3, t_output = t5 - t4, t_total = t5 - t0;
+        printf("\n");
+        printf("[Summary] Orbital number:       %d\n", norbs);
+        printf("[Summary] Number of threads:    %d\n", nthreads);
+        printf("[Summary] Bucket size:          %d\n", nblocks);
+        printf("[Summary] Number of cs:         %zu\n", res.ncs);
+        printf("[Summary] Scanned 1-body reps:  %zu\n", scanned_single);
+        printf("[Summary] Scanned 2-body reps:  %zu\n", scanned_double);
+        printf("[Summary] Raw Pauli inserts:    %zu\n", raw_insert_count);
+        printf("[Time] Total:         %.4f seconds\n", t_total.count());
+        printf("[Time] Scanning:      %.4f seconds\n", t_scan.count());
+        printf("[Time] Reduction:     %.4f seconds\n", t_reduce.count());
+        printf("[Time] Writing:       %.4f seconds\n", t_write.count());
+        printf("[Time] Sorting:       %.4f seconds\n", t_sort.count());
+        printf("[Time] Output:        %.4f seconds\n", t_output.count());
+    }
     return res;
 }
 

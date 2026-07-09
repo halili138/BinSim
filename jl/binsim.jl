@@ -66,6 +66,7 @@ const libpath    = joinpath(@__DIR__, "../src/lib/")
 
 const LIB_BASIS         = joinpath(libpath, "libbasis.so"  )
 const LIB_HAM           = joinpath(libpath, "libham.so"    )
+const LIB_HAM_REAL      = joinpath(libpath, "libham_real.so")
 const LIB_OTF           = joinpath(libpath, "libotf.so"    )
 const LIB_DIAG          = joinpath(libpath, "libdiag.so"   )
 const LIB_DIST          = joinpath(libpath, "libdist.so"   )
