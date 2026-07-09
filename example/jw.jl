@@ -53,11 +53,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("Phys symmetry (<pq|rs> == <rs|pq>): ", isapprox(_2_mo[1,2,3,4], _2_mo[3,4,1,2]))
     
     @time if 0 <= norb < 32
-        int2ham_ui64_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+        int2ham_real_ui64_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
     elseif 32 <= norb < 64
-        int2ham_ui128_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+        int2ham_real_ui128_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
     elseif 64 <= norb < 128
-        int2ham_ui256_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+        int2ham_real_ui256_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
     else
         error("Maximum supported is (127o, 254q)")
     end
