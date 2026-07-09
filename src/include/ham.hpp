@@ -197,6 +197,38 @@ namespace binsim::ham
         return static_cast<size_t>(a) * static_cast<size_t>(a + 1) / 2 + static_cast<size_t>(b);
     }
 
+    struct Real2BodyOrbit
+    {
+        int p, q, r, s;
+    };
+
+    FORCE_INLINE bool real_2body_orbit_less(const Real2BodyOrbit &a, const Real2BodyOrbit &b)
+    {
+        if (a.p != b.p)
+            return a.p < b.p;
+        if (a.q != b.q)
+            return a.q < b.q;
+        if (a.r != b.r)
+            return a.r < b.r;
+        return a.s < b.s;
+    }
+
+    FORCE_INLINE Real2BodyOrbit canonical_real_2body_orbit(int p, int q, int r, int s)
+    {
+        Real2BodyOrbit best{p, q, r, s};
+        const Real2BodyOrbit equiv[3] = {
+            {q, p, s, r},
+            {r, s, p, q},
+            {s, r, q, p},
+        };
+        for (const Real2BodyOrbit &candidate : equiv)
+        {
+            if (real_2body_orbit_less(candidate, best))
+                best = candidate;
+        }
+        return best;
+    }
+
     template <typename Ti>
     FORCE_INLINE void insert_1body_real(FastDict<Ti, double> *__restrict dict, int p, int q, double coeff)
     {
@@ -273,9 +305,11 @@ namespace binsim::ham
                     double val = one_body_mo[static_cast<size_t>(p) + static_cast<size_t>(q) * N1];
                     if (std::abs(val) > tol)
                     {
-                        Ti mask = (ONE << p) ^ (ONE << q);
+                        int cp = p < q ? p : q;
+                        int cq = p < q ? q : p;
+                        Ti mask = (ONE << cp) ^ (ONE << cq);
                         uint32_t b = mix_hash(fold_for_hash(mask)) % nblocks;
-                        (*local_single)[tid][b].push_back({p, q, val});
+                        (*local_single)[tid][b].push_back({cp, cq, val});
                         sc1[tid]++;
                     }
                 }
@@ -285,14 +319,15 @@ namespace binsim::ham
                     for (int q = 0; q < norbs; ++q)
                         for (int p = 0; p < norbs; ++p)
                         {
-                            if (spatial_pair_index<Ti>(p, q) > spatial_pair_index<Ti>(r, s))
+                            Real2BodyOrbit canon = canonical_real_2body_orbit(p, q, r, s);
+                            if (canon.p != p || canon.q != q || canon.r != r || canon.s != s)
                                 continue;
                             double val = two_body_mo[static_cast<size_t>(p) + static_cast<size_t>(q) * N1 + static_cast<size_t>(r) * N2 + static_cast<size_t>(s) * N3];
                             if (std::abs(val) > tol)
                             {
-                                Ti mask = (ONE << p) ^ (ONE << q) ^ (ONE << r) ^ (ONE << s);
+                                Ti mask = (ONE << canon.p) ^ (ONE << canon.q) ^ (ONE << canon.r) ^ (ONE << canon.s);
                                 uint32_t b = mix_hash(fold_for_hash(mask)) % nblocks;
-                                (*local_double)[tid][b].push_back({p, q, r, s, val});
+                                (*local_double)[tid][b].push_back({canon.p, canon.q, canon.r, canon.s, val});
                                 sc2[tid]++;
                             }
                         }
