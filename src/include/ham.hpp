@@ -24,22 +24,22 @@ namespace binsim::ham
         Ti z;
         Ti x;
 
-        bool operator<(const Pauli &o) const
+        constexpr bool operator<(const Pauli &o) const noexcept
         {
             if (x != o.x)
                 return x < o.x;
             return z < o.z;
         }
 
-        bool operator==(const Pauli &o) const { return x == o.x && z == o.z; }
+        constexpr bool operator==(const Pauli &o) const noexcept { return x == o.x && z == o.z; }
 
-        bool operator!=(const Pauli &o) const { return !(*this == o); }
+        constexpr bool operator!=(const Pauli &o) const noexcept { return !(*this == o); }
     };
 
     template <typename Ti>
     struct PauliHash
     {
-        size_t operator()(const Pauli<Ti> &p) const noexcept
+        constexpr size_t operator()(const Pauli<Ti> &p) const noexcept
         {
             return mix_hash(fold_for_hash(p.x) ^ fold_for_hash(p.z));
         }
