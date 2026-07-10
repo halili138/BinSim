@@ -24,22 +24,22 @@ namespace binsim::ham
         Ti z;
         Ti x;
 
-        constexpr bool operator<(const Pauli &o) const noexcept
+        bool operator<(const Pauli &o) const
         {
             if (x != o.x)
                 return x < o.x;
             return z < o.z;
         }
 
-        constexpr bool operator==(const Pauli &o) const noexcept { return x == o.x && z == o.z; }
+        bool operator==(const Pauli &o) const { return x == o.x && z == o.z; }
 
-        constexpr bool operator!=(const Pauli &o) const noexcept { return !(*this == o); }
+        bool operator!=(const Pauli &o) const { return !(*this == o); }
     };
 
     template <typename Ti>
     struct PauliHash
     {
-        constexpr size_t operator()(const Pauli<Ti> &p) const noexcept
+        size_t operator()(const Pauli<Ti> &p) const noexcept
         {
             return mix_hash(fold_for_hash(p.x) ^ fold_for_hash(p.z));
         }
@@ -82,6 +82,12 @@ namespace binsim::ham
     template <typename Ti, typename Tv>
     using TermArray = std::vector<PauliTerm<Ti, Tv>>;
 
+    template <typename Tv>
+    FORCE_INLINE Tv parity_coeff(Tv cc, int parity)
+    {
+        return parity ? -cc : cc;
+    }
+
     template <typename Ti, typename Tv>
     FORCE_INLINE void insert_1body(FastDict<Ti, Tv> *__restrict dict, int p, int q, Tv coeff)
     {
@@ -91,11 +97,8 @@ namespace binsim::ham
         Ti x12 = x1 ^ x2;
         Tv cc = 0.25 * coeff;
 
-        Tv c1 = cc * (1.0 - 2.0 * (popcnt(z11 & x2) & 1));
-        Tv c2 = cc * (1.0 - 2.0 * (popcnt(z12 & x2) & 1));
-
-        // Tv c1 = (popcnt(z11 & x2) & 1) ? -cc : cc;
-        // Tv c2 = (popcnt(z12 & x2) & 1) ? -cc : cc;
+        Tv c1 = parity_coeff(cc, popcnt(z11 & x2) & 1);
+        Tv c2 = parity_coeff(cc, popcnt(z12 & x2) & 1);
 
         Pauli<Ti> k;
         k.x = x12;
@@ -133,19 +136,14 @@ namespace binsim::ham
         int p3 = p12_x234 ^ p21_x34;
         int p4 = p12_x234 ^ p22_x34;
 
-        Tv c11 = cc * (1.0 - 2.0 * (p1 ^ p31_x4)), c12 = cc * (1.0 - 2.0 * (p1 ^ p32_x4));
-        Tv c21 = cc * (1.0 - 2.0 * (p2 ^ p31_x4)), c22 = cc * (1.0 - 2.0 * (p2 ^ p32_x4));
-        Tv c31 = cc * (1.0 - 2.0 * (p3 ^ p31_x4)), c32 = cc * (1.0 - 2.0 * (p3 ^ p32_x4));
-        Tv c41 = cc * (1.0 - 2.0 * (p4 ^ p31_x4)), c42 = cc * (1.0 - 2.0 * (p4 ^ p32_x4));
-
-        // Tv c11 = (p1 ^ p31_x4) ? -cc : cc;
-        // Tv c21 = (p2 ^ p31_x4) ? -cc : cc;
-        // Tv c31 = (p3 ^ p31_x4) ? -cc : cc;
-        // Tv c41 = (p4 ^ p31_x4) ? -cc : cc;
-        // Tv c12 = (p1 ^ p32_x4) ? -cc : cc;
-        // Tv c22 = (p2 ^ p32_x4) ? -cc : cc;
-        // Tv c32 = (p3 ^ p32_x4) ? -cc : cc;
-        // Tv c42 = (p4 ^ p32_x4) ? -cc : cc;
+        Tv c11 = parity_coeff(cc, p1 ^ p31_x4);
+        Tv c21 = parity_coeff(cc, p2 ^ p31_x4);
+        Tv c31 = parity_coeff(cc, p3 ^ p31_x4);
+        Tv c41 = parity_coeff(cc, p4 ^ p31_x4);
+        Tv c12 = parity_coeff(cc, p1 ^ p32_x4);
+        Tv c22 = parity_coeff(cc, p2 ^ p32_x4);
+        Tv c32 = parity_coeff(cc, p3 ^ p32_x4);
+        Tv c42 = parity_coeff(cc, p4 ^ p32_x4);
 
         Pauli<Ti> k;
         k.x = x1234;
@@ -652,13 +650,16 @@ namespace binsim::ham
             (*dict)[k] -= cc;
             return;
         }
+        
         Ti o = get_one<Ti>();
         Ti x1 = o << p, z11 = x1 - o, z12 = (x1 << 1) - o;
         Ti x2 = o << q, z21 = x2 - o, z22 = (x2 << 1) - o;
         Ti x12 = x1 ^ x2;
         Tv cc = 0.25 * coeff;
-        Tv c1 = cc * (1.0 - 2.0 * (popcnt(z11 & x2) & 1));
-        Tv c2 = cc * (1.0 - 2.0 * (popcnt(z12 & x2) & 1));
+
+        Tv c1 = parity_coeff(cc, popcnt(z11 & x2) & 1);
+        Tv c2 = parity_coeff(cc, popcnt(z12 & x2) & 1);
+
         Pauli<Ti> k;
         k.x = x12;
         k.z = z11 ^ z21;
@@ -691,10 +692,14 @@ namespace binsim::ham
         int p3 = p12_x234 ^ p21_x34;
         int p4 = p12_x234 ^ p22_x34;
 
-        Tv c11 = cc * (1.0 - 2.0 * (p1 ^ p31_x4)), c12 = cc * (1.0 - 2.0 * (p1 ^ p32_x4));
-        Tv c21 = cc * (1.0 - 2.0 * (p2 ^ p31_x4)), c22 = cc * (1.0 - 2.0 * (p2 ^ p32_x4));
-        Tv c31 = cc * (1.0 - 2.0 * (p3 ^ p31_x4)), c32 = cc * (1.0 - 2.0 * (p3 ^ p32_x4));
-        Tv c41 = cc * (1.0 - 2.0 * (p4 ^ p31_x4)), c42 = cc * (1.0 - 2.0 * (p4 ^ p32_x4));
+        Tv c11 = parity_coeff(cc, p1 ^ p31_x4);
+        Tv c12 = parity_coeff(cc, p1 ^ p32_x4);
+        Tv c21 = parity_coeff(cc, p2 ^ p31_x4);
+        Tv c22 = parity_coeff(cc, p2 ^ p32_x4);
+        Tv c31 = parity_coeff(cc, p3 ^ p31_x4);
+        Tv c32 = parity_coeff(cc, p3 ^ p32_x4);
+        Tv c41 = parity_coeff(cc, p4 ^ p31_x4);
+        Tv c42 = parity_coeff(cc, p4 ^ p32_x4);
 
         Pauli<Ti> k;
         k.x = x1234;
