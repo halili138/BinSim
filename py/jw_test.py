@@ -11,6 +11,7 @@ from openfermion import (
 import pyscf.gto as gto
 import pyscf.scf as scf
 import os
+import sys
 
 
 def _process_1body_chunk(chunk_indices, _1_body_mo):
@@ -598,7 +599,9 @@ def init_scf(name, ratio, basis):
 
 
 if __name__ == "__main__":
-    h1_mo, h2_mo = generate_physical_random_integrals_vectorized(20, seed=None)
+    h1_mo, h2_mo = generate_physical_random_integrals_vectorized(
+        int(sys.argv[1]), seed=None
+    )
     t1 = datetime.datetime.now()
     h1_int, h2_int = get_spin_integrals_from_mo(h1_mo, h2_mo, tol=1e-12)
     H_int = InteractionOperator(1.0, h1_int, h2_int)

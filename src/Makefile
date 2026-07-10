@@ -1,5 +1,5 @@
 CXX := g++
-CXXARCH_FLAGS := -march=native -mtune=native
+CXXARCH_FLAGS := -march=znver4 -mtune=znver4
 CXXFLAGS := -std=c++20 $(CXXARCH_FLAGS) -O3\
             -fopenmp -fPIC -shared \
             -fomit-frame-pointer -mpopcnt -mbmi2 \
