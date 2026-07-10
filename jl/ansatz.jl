@@ -190,7 +190,7 @@ function kernel(
         )
     else
         spin_orbitals = generate_ci_spin_orbitals(
-            info.norb, info.nelec, ones(info.norb),
+            info.norb, info.nelec, zeros(Int64, info.norb),
             kmax=excited_order, generalize=generalize,
         )
     end

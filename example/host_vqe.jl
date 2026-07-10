@@ -27,7 +27,7 @@ function test_vqe(mole)
             ftol      = 1e-8, 
             gtol      = 1e-6, 
             maxiter   = 999999, 
-            verbose   = 3, 
+            verbose   = 1, 
             # save_path = joinpath(@__DIR__, "callback/vqe_uccsd_amplitudes_$(ARGS[1])_$(ARGS[2])_$(ARGS[3]).jld2")
         )
     )
@@ -47,47 +47,28 @@ end
 #     test_vqe(mole)
 # end
 
-# if abspath(PROGRAM_FILE) == @__FILE__
-#     es_fci   = []
-#     es_uccsd = []
-#     ds = 0.5:0.1:10
-#     for i in ds
-#         mole = Mole()
-#         mole.name  = "n2"
-#         mole.ratio = i
-#         mole.basis = "sto-3g"
-
-#         build(mole)
-
-#         mole.orbsym = Int64.(mole.orbsym .% 10)
-
-#         e_opt, _, _ = test_vqe(mole)
-#         push!(es_uccsd, e_opt)
-#         push!(es_fci, mole.e_scale)
-#     end
-
-#     for (d, e1, e2) in zip(collect(ds), es_uccsd, es_fci)
-#         @printf("d: %-10.2f    uccsd: %-18.12f    fci: %-18.12f    error: %.3e\n", d, e1, e2, abs(e1-e2))
-#     end
-# end
-
 if abspath(PROGRAM_FILE) == @__FILE__
-    for (_name, _basis) in [
-        ("c2", "6-31g"),    ("n2", "6-31g"),    ("co", "6-31g"), 
-        ("h2o", "cc-pvdz"), ("o2", "6-31g"),    ("c3h4", "sto-3g"), 
-        ("hcn", "6-31g"),   ("nh3", "cc-pvdz"), ("c2h2", "6-31g"), 
-        ("c3h6", "sto-3g"), ("c2", "cc-pvdz"),  ("n2", "cc-pvdz"),
-        ("c3h8", "sto-3g"), ("o2", "cc-pvdz"), ] 
-
+    es_fci   = []
+    es_uccsd = []
+    ds = 0.5:0.1:5
+    for i in ds
         mole = Mole()
-        mole.name  = _name
-        mole.ratio = 1.0
-        mole.basis = _basis
+        mole.name  = "n2"
+        mole.ratio = i
+        mole.basis = "sto-3g"
 
         build(mole)
 
-        mole.orbsym = Int64.(mole.orbsym .% 10)
+        # mole.orbsym = Int64.(mole.orbsym .% 10)
+        mole.orbsym = zeros(Int64, mole.norb)
 
-        ham = JW_hamiltonian(mole)
+        e_opt, _, _ = test_vqe(mole)
+        push!(es_uccsd, e_opt)
+        push!(es_fci, mole.e_scale)
+    end
+
+    for (d, e1, e2) in zip(collect(ds), es_uccsd, es_fci)
+        @printf("d: %-10.2f    uccsd: %-18.12f    fci: %-18.12f    error: %.3e\n", d, e1, e2, abs(e1-e2))
     end
 end
+
