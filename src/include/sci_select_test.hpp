@@ -211,6 +211,12 @@ static inline void gather_select_instant_rank(
             int count = 0;
             for (int i = 0; i < tgt_num_b; ++i)
             {
+                const int64 b_global = b_start + i;
+                const int64 b_ext = (full_block.bstrs + b_global) - tgt_all_bstrs;
+                const bool b_is_new = (b_ext >= 0) && is_new_b[b_ext];
+                if (b_is_new != wants_new_b)
+                    continue;
+
                 const Ti src_b_str = tile_desc.bstrs[i] ^ group.bx;
                 auto it = src_basis->b_idx_map.find(src_b_str);
                 if (it == src_basis->b_idx_map.end())
@@ -233,6 +239,9 @@ static inline void gather_select_instant_rank(
         const int64 a_global = a_start + a;
         const int64 a_ext = a_cache.a_exts[a];
         const bool a_is_new = a_cache.a_is_new[a];
+        if (a_is_new != wants_new_a)
+            continue;
+
         const Tv *a_phase = a_diag_phase
             ? a_diag_phase + a_global * total_diag_rank : nullptr;
 
@@ -275,11 +284,6 @@ static inline void gather_select_instant_rank(
 
             const int64 b_global = b_start + b_local;
             const int64 b_ext = (full_block.bstrs + b_global) - tgt_all_bstrs;
-            const bool b_is_new = (b_ext >= 0) && is_new_b[b_ext];
-
-            if (a_is_new != wants_new_a || b_is_new != wants_new_b)
-                continue;
-
             Tv haa = Tv{};
             if (total_diag_rank > 0 && a_phase)
             {
