@@ -86,6 +86,26 @@ FORCE_INLINE Tv compute_coeff_select(int b, const Tv *pa, const Tv *pb, int stri
     return vt;
 }
 
+namespace sci_select_detail
+{
+template <typename Tv>
+FORCE_INLINE Tv get_row_tile_haa(
+    int b_local, int64 b_global, const Tv *a_phase, const Tv *b_diag_phase,
+    int total_diag_rank, Tv *haa_cache, unsigned char *haa_ready)
+{
+    if (total_diag_rank <= 0 || !a_phase)
+        return Tv{};
+
+    if (!haa_ready[b_local])
+    {
+        const Tv *b_phase = b_diag_phase + b_global * total_diag_rank;
+        haa_cache[b_local] = dot_phase(a_phase, b_phase, total_diag_rank);
+        haa_ready[b_local] = 1;
+    }
+
+    return haa_cache[b_local];
+}
+}
 
 template <typename Tv>
 struct SelectAGroupCache
@@ -277,6 +297,9 @@ static inline void gather_select_instant_rank(
             }
         }
 
+        alignas(64) Tv haa_cache[264] = {};
+        alignas(64) unsigned char haa_ready[264] = {};
+
         for (int b_local = 0; b_local < tgt_num_b; ++b_local)
         {
             if (accum_b[b_local] == Tv{})
@@ -284,12 +307,9 @@ static inline void gather_select_instant_rank(
 
             const int64 b_global = b_start + b_local;
             const int64 b_ext = (full_block.bstrs + b_global) - tgt_all_bstrs;
-            Tv haa = Tv{};
-            if (total_diag_rank > 0 && a_phase)
-            {
-                const Tv *b_phase = b_diag_phase + b_global * total_diag_rank;
-                haa = dot_phase(a_phase, b_phase, total_diag_rank);
-            }
+            const Tv haa = sci_select_detail::get_row_tile_haa<Tv>(
+                b_local, b_global, a_phase, b_diag_phase, total_diag_rank,
+                haa_cache, haa_ready);
 
             if (sci_eps_check(accum_b[b_local], haa, variational_energy, eps))
             {
@@ -540,6 +560,9 @@ static inline void dispatch_select_instant_categories(
                                   false, true, accum_old_a_new_b);
         accumulate_mixed();
 
+        alignas(64) Tv haa_cache[264] = {};
+        alignas(64) unsigned char haa_ready[264] = {};
+
         for (int b_local = 0; b_local < tgt_num_b; ++b_local)
         {
             Tv vt = Tv{};
@@ -558,12 +581,9 @@ static inline void dispatch_select_instant_categories(
             const int64 b_global = b_start + b_local;
             const int64 b_ext = b_exts[b_local];
 
-            Tv haa = Tv{};
-            if (total_diag_rank > 0 && a_phase)
-            {
-                const Tv *b_phase = b_diag_phase + b_global * total_diag_rank;
-                haa = dot_phase(a_phase, b_phase, total_diag_rank);
-            }
+            const Tv haa = sci_select_detail::get_row_tile_haa<Tv>(
+                b_local, b_global, a_phase, b_diag_phase, total_diag_rank,
+                haa_cache, haa_ready);
 
             if (sci_eps_check(vt, haa, variational_energy, eps))
             {
