@@ -328,11 +328,15 @@ static inline void dispatch_select_instant_groups(
 }
 
 template <typename Ti, typename Tv>
-static inline void dispatch_select_mixed_instant_groups(
+static inline void dispatch_select_instant_categories(
     const BlockDesc<Ti> &tile_desc,
     const SciBasisManager<Ti> *src_basis,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    const SelectAGroupCache<Tv> &a_cache,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &pure_a_groups,
+    const SelectAGroupCache<Tv> &pure_a_cache,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &pure_b_groups,
+    const SelectAGroupCache<Tv> &pure_b_cache,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &mixed_groups,
+    const SelectAGroupCache<Tv> &mixed_cache,
     const Tv *src_vec,
     int64 a_start, int64 b_start,
     const BlockDesc<Ti> &full_block,
@@ -345,10 +349,69 @@ static inline void dispatch_select_mixed_instant_groups(
 {
     const int tgt_num_a = (int)tile_desc.num_a;
     const int tgt_num_b = (int)tile_desc.num_b;
-    const int shift = tgt_num_b * 2;
-    const int64 total_ngs = groups.size();
-    if (total_ngs == 0)
-        return;
+
+    struct BGroupCache
+    {
+        int64 num_groups = 0;
+        int shift = 0;
+        std::vector<int> src_b_idxs;
+        std::vector<int> dst_b_idxs;
+        std::vector<Tv> phases;
+        std::vector<int> valid_b_counts;
+    };
+
+    auto precompute_b_cache = [&](const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+                                  const SelectAGroupCache<Tv> &a_cache) {
+        BGroupCache cache;
+        cache.num_groups = groups.size();
+        cache.shift = tgt_num_b * 2;
+        if (cache.num_groups == 0)
+            return cache;
+
+        cache.src_b_idxs.resize(cache.num_groups * tgt_num_b);
+        cache.dst_b_idxs.resize(cache.num_groups * tgt_num_b);
+        cache.phases.resize(cache.num_groups * cache.shift);
+        cache.valid_b_counts.resize(cache.num_groups);
+
+#pragma omp parallel
+        {
+#pragma omp for schedule(dynamic)
+            for (int64 group_idx = 0; group_idx < cache.num_groups; ++group_idx)
+            {
+                const SVDGroup_OTF<Ti, Tv> &group = groups[group_idx];
+                const int64 sidx = a_cache.src_block_idxs[group_idx];
+
+                if (sidx == -1)
+                {
+                    cache.valid_b_counts[group_idx] = 0;
+                    continue;
+                }
+
+                Tv *pb0 = cache.phases.data() + group_idx * cache.shift;
+                int *sb_ptr = cache.src_b_idxs.data() + group_idx * tgt_num_b;
+                int *db_ptr = cache.dst_b_idxs.data() + group_idx * tgt_num_b;
+
+                int count = 0;
+                for (int i = 0; i < tgt_num_b; ++i)
+                {
+                    const Ti src_b_str = tile_desc.bstrs[i] ^ group.bx;
+                    auto it = src_basis->b_idx_map.find(src_b_str);
+                    if (it == src_basis->b_idx_map.end())
+                        continue;
+
+                    sb_ptr[count] = it->second;
+                    db_ptr[count] = i;
+                    precompute_phase_select<Ti, Tv>(src_b_str, group.unique_zbs,
+                                                    group.num_zb, group.wb,
+                                                    pb0 + count, tgt_num_b, group.rank);
+                    ++count;
+                }
+                cache.valid_b_counts[group_idx] = count;
+            }
+        }
+
+        return cache;
+    };
 
     std::vector<int64> b_exts(tgt_num_b);
     std::vector<unsigned char> b_is_new_cache(tgt_num_b);
@@ -362,54 +425,16 @@ static inline void dispatch_select_mixed_instant_groups(
         b_is_new_cache[b] = (b_ext >= 0) && is_new_b[b_ext];
     }
 
-    std::vector<int> src_b_idxs_v(total_ngs * tgt_num_b);
-    std::vector<int> dst_b_idxs(total_ngs * tgt_num_b);
-    std::vector<Tv> batch_phase(total_ngs * shift);
-    std::vector<int> valid_b_counts(total_ngs);
-
-#pragma omp parallel
-    {
-#pragma omp for schedule(dynamic)
-        for (int64 group_idx = 0; group_idx < total_ngs; ++group_idx)
-        {
-            const SVDGroup_OTF<Ti, Tv> &group = groups[group_idx];
-            const int64 sidx = a_cache.src_block_idxs[group_idx];
-
-            if (sidx == -1)
-            {
-                valid_b_counts[group_idx] = 0;
-                continue;
-            }
-
-            Tv *pb0 = batch_phase.data() + group_idx * shift;
-            int *sb_ptr = src_b_idxs_v.data() + group_idx * tgt_num_b;
-            int *db_ptr = dst_b_idxs.data() + group_idx * tgt_num_b;
-
-            int count = 0;
-            for (int i = 0; i < tgt_num_b; ++i)
-            {
-                const Ti src_b_str = tile_desc.bstrs[i] ^ group.bx;
-                auto it = src_basis->b_idx_map.find(src_b_str);
-                if (it == src_basis->b_idx_map.end())
-                    continue;
-
-                sb_ptr[count] = it->second;
-                db_ptr[count] = i;
-                precompute_phase_select<Ti, Tv>(src_b_str, group.unique_zbs,
-                                                group.num_zb, group.wb,
-                                                pb0 + count, tgt_num_b, group.rank);
-                ++count;
-            }
-            valid_b_counts[group_idx] = count;
-        }
-    }
+    BGroupCache pure_a_b_cache = precompute_b_cache(pure_a_groups, pure_a_cache);
+    BGroupCache pure_b_b_cache = precompute_b_cache(pure_b_groups, pure_b_cache);
+    BGroupCache mixed_b_cache = precompute_b_cache(mixed_groups, mixed_cache);
 
 #pragma omp parallel for schedule(dynamic)
     for (int a = 0; a < tgt_num_a; ++a)
     {
         const int64 a_global = a_start + a;
-        const int64 a_ext = a_cache.a_exts[a];
-        const bool a_is_new = a_cache.a_is_new[a];
+        const int64 a_ext = mixed_cache.a_exts[a];
+        const bool a_is_new = mixed_cache.a_is_new[a];
         const Tv *a_phase = a_diag_phase
             ? a_diag_phase + a_global * total_diag_rank : nullptr;
 
@@ -417,47 +442,99 @@ static inline void dispatch_select_mixed_instant_groups(
         alignas(64) Tv accum_old_a_new_b[264] = {};
         alignas(64) Tv accum_new_a_new_b[264] = {};
 
-        for (int64 group_idx = 0; group_idx < total_ngs; ++group_idx)
-        {
-            const int valid_count = valid_b_counts[group_idx];
-            if (valid_count == 0)
-                continue;
+        auto accumulate_fixed_category = [&](const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+                                             const SelectAGroupCache<Tv> &a_cache,
+                                             const BGroupCache &b_cache,
+                                             bool wants_new_a,
+                                             bool wants_new_b,
+                                             Tv *accum_b) {
+            if (a_is_new != wants_new_a)
+                return;
 
-            const auto &group = groups[group_idx];
-            const int src_a_idx = a_cache.src_a_idxs[group_idx * tgt_num_a + a];
-            if (src_a_idx == -1)
-                continue;
-
-            const int64 src_block_idx = a_cache.src_block_idxs[group_idx];
-            const BlockDesc<Ti> &src_blk = src_basis->blocks[src_block_idx];
-            const Tv *sa = src_vec + src_blk.offset + (int64)src_a_idx * src_blk.num_b;
-
-            const Tv *pa = a_cache.phases.data()
-                + (group_idx * tgt_num_a + a) * 2;
-
-            const Tv *pb = batch_phase.data() + group_idx * shift;
-            const int *si = src_b_idxs_v.data() + group_idx * tgt_num_b;
-            const int *di = dst_b_idxs.data() + group_idx * tgt_num_b;
-
-#pragma omp simd
-            for (int b = 0; b < valid_count; ++b)
+            for (int64 group_idx = 0; group_idx < b_cache.num_groups; ++group_idx)
             {
-                const int b_local = di[b];
-                const bool b_is_new = b_is_new_cache[b_local];
-                Tv *accum_b = nullptr;
-                if (a_is_new && !b_is_new)
-                    accum_b = accum_new_a_old_b;
-                else if (!a_is_new && b_is_new)
-                    accum_b = accum_old_a_new_b;
-                else if (a_is_new && b_is_new)
-                    accum_b = accum_new_a_new_b;
-                else
+                const int valid_count = b_cache.valid_b_counts[group_idx];
+                if (valid_count == 0)
                     continue;
 
-                accum_b[b_local] += sa[si[b]]
-                    * compute_coeff_select<Tv>(b, pa, pb, tgt_num_b, group.rank);
+                const auto &group = groups[group_idx];
+                const int src_a_idx = a_cache.src_a_idxs[group_idx * tgt_num_a + a];
+                if (src_a_idx == -1)
+                    continue;
+
+                const int64 src_block_idx = a_cache.src_block_idxs[group_idx];
+                const BlockDesc<Ti> &src_blk = src_basis->blocks[src_block_idx];
+                const Tv *sa = src_vec + src_blk.offset + (int64)src_a_idx * src_blk.num_b;
+
+                const Tv *pa = a_cache.phases.data()
+                    + (group_idx * tgt_num_a + a) * 2;
+
+                const Tv *pb = b_cache.phases.data() + group_idx * b_cache.shift;
+                const int *si = b_cache.src_b_idxs.data() + group_idx * tgt_num_b;
+                const int *di = b_cache.dst_b_idxs.data() + group_idx * tgt_num_b;
+
+#pragma omp simd
+                for (int b = 0; b < valid_count; ++b)
+                {
+                    const int b_local = di[b];
+                    if ((bool)b_is_new_cache[b_local] != wants_new_b)
+                        continue;
+
+                    accum_b[b_local] += sa[si[b]]
+                        * compute_coeff_select<Tv>(b, pa, pb, tgt_num_b, group.rank);
+                }
             }
-        }
+        };
+
+        auto accumulate_mixed = [&]() {
+            for (int64 group_idx = 0; group_idx < mixed_b_cache.num_groups; ++group_idx)
+            {
+                const int valid_count = mixed_b_cache.valid_b_counts[group_idx];
+                if (valid_count == 0)
+                    continue;
+
+                const auto &group = mixed_groups[group_idx];
+                const int src_a_idx = mixed_cache.src_a_idxs[group_idx * tgt_num_a + a];
+                if (src_a_idx == -1)
+                    continue;
+
+                const int64 src_block_idx = mixed_cache.src_block_idxs[group_idx];
+                const BlockDesc<Ti> &src_blk = src_basis->blocks[src_block_idx];
+                const Tv *sa = src_vec + src_blk.offset + (int64)src_a_idx * src_blk.num_b;
+
+                const Tv *pa = mixed_cache.phases.data()
+                    + (group_idx * tgt_num_a + a) * 2;
+
+                const Tv *pb = mixed_b_cache.phases.data() + group_idx * mixed_b_cache.shift;
+                const int *si = mixed_b_cache.src_b_idxs.data() + group_idx * tgt_num_b;
+                const int *di = mixed_b_cache.dst_b_idxs.data() + group_idx * tgt_num_b;
+
+#pragma omp simd
+                for (int b = 0; b < valid_count; ++b)
+                {
+                    const int b_local = di[b];
+                    const bool b_is_new = b_is_new_cache[b_local];
+                    Tv *accum_b = nullptr;
+                    if (a_is_new && !b_is_new)
+                        accum_b = accum_new_a_old_b;
+                    else if (!a_is_new && b_is_new)
+                        accum_b = accum_old_a_new_b;
+                    else if (a_is_new && b_is_new)
+                        accum_b = accum_new_a_new_b;
+                    else
+                        continue;
+
+                    accum_b[b_local] += sa[si[b]]
+                        * compute_coeff_select<Tv>(b, pa, pb, tgt_num_b, group.rank);
+                }
+            }
+        };
+
+        accumulate_fixed_category(pure_a_groups, pure_a_cache, pure_a_b_cache,
+                                  true, false, accum_new_a_old_b);
+        accumulate_fixed_category(pure_b_groups, pure_b_cache, pure_b_b_cache,
+                                  false, true, accum_old_a_new_b);
+        accumulate_mixed();
 
         for (int b_local = 0; b_local < tgt_num_b; ++b_local)
         {
@@ -550,27 +627,12 @@ void sci_select_external_block(
             tile_desc.num_b = cur_num_b;
             tile_desc.offset = 0;
 
-            dispatch_select_instant_groups<Ti, Tv>(
-                tile_desc, src_basis, net->pure_a_groups, part1_a_cache, src_vec,
-                a_start, b_start, full_block,
-                tgt_basis->all_bstrs,
-                is_new_b,
-                a_diag_phase.data(), b_diag_phase.data(), total_diag_rank,
-                variational_energy, eps, true, false,
-                selected_a, selected_b);
-
-            dispatch_select_instant_groups<Ti, Tv>(
-                tile_desc, src_basis, net->pure_b_groups, part2_a_cache, src_vec,
-                a_start, b_start, full_block,
-                tgt_basis->all_bstrs,
-                is_new_b,
-                a_diag_phase.data(), b_diag_phase.data(), total_diag_rank,
-                variational_energy, eps, false, true,
-                selected_a, selected_b);
-
-            dispatch_select_mixed_instant_groups<Ti, Tv>(
-                tile_desc, src_basis, net->mixed_groups, mixed_a_cache, src_vec,
-                a_start, b_start, full_block,
+            dispatch_select_instant_categories<Ti, Tv>(
+                tile_desc, src_basis,
+                net->pure_a_groups, part1_a_cache,
+                net->pure_b_groups, part2_a_cache,
+                net->mixed_groups, mixed_a_cache,
+                src_vec, a_start, b_start, full_block,
                 tgt_basis->all_bstrs,
                 is_new_b,
                 a_diag_phase.data(), b_diag_phase.data(), total_diag_rank,
