@@ -41,25 +41,40 @@ function get_random_mo_phys(norb::Int; seed::Union{Int, Nothing}=nothing)
 end
 
 
+# if abspath(PROGRAM_FILE) == @__FILE__
+#     norb = parse(Int, ARGS[1])
+#     _1_mo, _2_mo = get_random_mo_phys(norb, seed=42)
+    
+#     # 在物理学家记号 <pq|rs> 下，8 重对称性表现为：
+#     # <pq|rs> == <qp|sr> (同时交换 1,2 和 3,4)
+#     # <pq|rs> == <rs|pq> (交换前后两对)
+#     println("_2_mo shape: ", size(_2_mo))
+#     println("Phys symmetry (<pq|rs> == <qp|sr>): ", isapprox(_2_mo[1,2,3,4], _2_mo[2,1,4,3]))
+#     println("Phys symmetry (<pq|rs> == <rs|pq>): ", isapprox(_2_mo[1,2,3,4], _2_mo[3,4,1,2]))
+    
+#     @time if 0 <= norb < 32
+#         int2ham_real_ui64_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+#     elseif 32 <= norb < 64
+#         int2ham_real_ui128_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+#     elseif 64 <= norb < 128
+#         int2ham_real_ui256_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
+#     else
+#         error("Maximum supported is (127o, 254q)")
+#     end
+# end
+
 if abspath(PROGRAM_FILE) == @__FILE__
-    norb = parse(Int, ARGS[1])
-    _1_mo, _2_mo = get_random_mo_phys(norb, seed=42)
-    
-    # 在物理学家记号 <pq|rs> 下，8 重对称性表现为：
-    # <pq|rs> == <qp|sr> (同时交换 1,2 和 3,4)
-    # <pq|rs> == <rs|pq> (交换前后两对)
-    println("_2_mo shape: ", size(_2_mo))
-    println("Phys symmetry (<pq|rs> == <qp|sr>): ", isapprox(_2_mo[1,2,3,4], _2_mo[2,1,4,3]))
-    println("Phys symmetry (<pq|rs> == <rs|pq>): ", isapprox(_2_mo[1,2,3,4], _2_mo[3,4,1,2]))
-    
-    @time if 0 <= norb < 32
-        int2ham_real_ui64_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
-    elseif 32 <= norb < 64
-        int2ham_real_ui128_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
-    elseif 64 <= norb < 128
-        int2ham_real_ui256_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, true)
-    else
-        error("Maximum supported is (127o, 254q)")
+    for norb in 8:2:parse(Int, ARGS[1])
+        _1_mo, _2_mo = get_random_mo_phys(norb, seed=42)        
+        t = @elapsed if 0 <= norb < 32
+            int2ham_real_ui64_f64(norb,  1.0, _1_mo, _2_mo, 1e-12, false)
+        elseif 32 <= norb < 64
+            int2ham_real_ui128_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, false)
+        elseif 64 <= norb < 128
+            int2ham_real_ui256_f64(norb, 1.0, _1_mo, _2_mo, 1e-12, false)
+        else
+            error("Maximum supported is (127o, 254q)")
+        end
+        @printf("norb: %10s     t: %15.4f\n", norb, t)
     end
 end
-

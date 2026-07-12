@@ -12,8 +12,10 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.basis = ARGS[3]
     build(mole)
 
+    _basis = BasisManager(mole)
+
     mole.e_scale = n2_6_31g[1.0]
     mole.orbsym .%= 10
 
-    run_sci_bitstr(mole; max_iter=20, eps=parse(Float64, ARGS[4]), verbose=true)
+    run_sci_bitstr(mole; max_iter=20, eps=parse(Float64, ARGS[4]), a_chunk_size=128, b_chunk_size=128, verbose=true)
 end

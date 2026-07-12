@@ -1,5 +1,6 @@
 #include "sci_basis.hpp"
 #include "sci_select.hpp"
+#include "sci_select_test.hpp"
 #include "otf.hpp"
 
 extern "C"
@@ -50,6 +51,22 @@ extern "C"
         }
         delete[] entries;
         return n;
+    }
+
+    void sci_select_instant_bitstr_f64(
+        void *tgt, void *src, void *net,
+        const bool *is_new_a, const bool *is_new_b,
+        int64 blk, const double *src_vec,
+        double variational_energy, int a_chunk_size, int b_chunk_size, double eps,
+        bool *selected_a, bool *selected_b)
+    {
+        auto *a = static_cast<SciBasisManager<uint32> *>(tgt);
+        auto *b = static_cast<SciBasisManager<uint32> *>(src);
+        auto *c = static_cast<Network_OTF<uint32, double> *>(net);
+        sci_select_external_block<uint32, double>(
+            a, b, c, is_new_a, is_new_b, blk, src_vec,
+            variational_energy, a_chunk_size, b_chunk_size, eps,
+            selected_a, selected_b);
     }
 
     void remap_wavefunction_sci_bitstr_f64(
