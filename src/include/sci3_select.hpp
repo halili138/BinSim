@@ -157,6 +157,7 @@ static ForwardShared<Tv> precompute_shared_chunk(
     int64 tgt_global_offset,
     int64 g_begin, int64 g_end,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_idx_map,
+    int64 num_blocks,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
     bool is_alpha)
 {
@@ -165,9 +166,7 @@ static ForwardShared<Tv> precompute_shared_chunk(
     result.ngs = ngs;
     result.offsets.assign(ngs + 1, 0);
 
-    int64 num_blocks = 0;
-    for (const auto &kv : old_idx_map)
-        num_blocks = std::max<int64>(num_blocks, (int64)kv.second.second + 1);
+    num_blocks = std::max<int64>(0, num_blocks);
     result.num_blocks = num_blocks;
 
     const int64 num_buckets = ngs * num_blocks;
@@ -197,6 +196,9 @@ static ForwardShared<Tv> precompute_shared_chunk(
                 continue;
 
             const auto &src_pos = it->second;
+            if (src_pos.second < 0 || src_pos.second >= num_blocks)
+                continue;
+
             Tv phase_tmp[2] = {};
             if (exc == 0)
                 phase_tmp[0] = Tv(1);
@@ -254,6 +256,7 @@ static void select_pass_a(
     const Ti *new_β, int64 n_new_β,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_a_idx_map,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_b_idx_map,
+    int64 old_b_num_blocks,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
@@ -279,7 +282,7 @@ static void select_pass_a(
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
                 int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, all_groups, false));
+                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, old_b_num_blocks, all_groups, false));
             }
 
             for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
@@ -366,6 +369,7 @@ static void select_pass_b(
     const Ti *old_α, int64 n_old_α,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_b_idx_map,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_a_idx_map,
+    int64 old_a_num_blocks,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
@@ -387,7 +391,7 @@ static void select_pass_b(
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
         {
             int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, all_groups, true));
+            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, old_a_num_blocks, all_groups, true));
         }
 
         for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
