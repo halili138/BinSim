@@ -173,6 +173,17 @@ static ForwardShared<Tv> precompute_shared_chunk(
     const int64 num_buckets = ngs * num_blocks;
     std::vector<int64> cnts(num_buckets);
 
+    struct SharedHit
+    {
+        int64 local_g;
+        int src_blk_idx;
+        int dst_idx;
+        int src_idx;
+        Tv phase0;
+        Tv phase1;
+    };
+    std::vector<SharedHit> hits;
+
     for (int64 i = 0; i < n_tgt_chunk; ++i)
     {
         Ti dst = tgt_chunk[i];
@@ -184,7 +195,23 @@ static ForwardShared<Tv> precompute_shared_chunk(
             auto it = old_idx_map.find(src);
             if (it == old_idx_map.end())
                 continue;
-            ++cnts[local_g * num_blocks + it->second.second];
+
+            const auto &src_pos = it->second;
+            Tv phase_tmp[2] = {};
+            if (exc == 0)
+                phase_tmp[0] = Tv(1);
+            else if (is_alpha)
+                precompute_phase_select<Ti, Tv>(src, group.unique_zas, group.num_za, group.wa, phase_tmp, 1, group.rank);
+            else
+                precompute_phase_select<Ti, Tv>(src, group.unique_zbs, group.num_zb, group.wb, phase_tmp, 1, group.rank);
+
+            hits.push_back({local_g,
+                            src_pos.second,
+                            static_cast<int>(tgt_global_offset + i),
+                            src_pos.first,
+                            phase_tmp[0],
+                            group.rank >= 2 ? phase_tmp[1] : Tv{}});
+            ++cnts[local_g * num_blocks + src_pos.second];
         }
     }
 
@@ -204,36 +231,14 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
     std::vector<int64> pos = result.block_offsets;
 
-    for (int64 i = 0; i < n_tgt_chunk; ++i)
+    for (const auto &hit : hits)
     {
-        Ti dst = tgt_chunk[i];
-        for (int64 local_g = 0; local_g < ngs; ++local_g)
-        {
-            const auto &group = all_groups[g_begin + local_g];
-            Ti exc = is_alpha ? group.ax : group.bx;
-            Ti src = dst ^ exc;
-            auto it = old_idx_map.find(src);
-            if (it == old_idx_map.end())
-                continue;
-
-            int src_blk_idx = it->second.second;
-            int64 p = pos[local_g * num_blocks + src_blk_idx]++;
-            result.dst_idxs[p] = static_cast<int>(tgt_global_offset + i);
-            result.src_idxs[p] = it->second.first;
-            result.src_blk_idxs[p] = src_blk_idx;
-
-            Tv phase_tmp[2] = {};
-            if (exc == 0)
-                phase_tmp[0] = Tv(1);
-            else if (is_alpha)
-                precompute_phase_select<Ti, Tv>(src, group.unique_zas, group.num_za, group.wa, phase_tmp, 1, group.rank);
-            else
-                precompute_phase_select<Ti, Tv>(src, group.unique_zbs, group.num_zb, group.wb, phase_tmp, 1, group.rank);
-
-            result.phase0[p] = phase_tmp[0];
-            if (group.rank >= 2)
-                result.phase1[p] = phase_tmp[1];
-        }
+        int64 p = pos[hit.local_g * num_blocks + hit.src_blk_idx]++;
+        result.dst_idxs[p] = hit.dst_idx;
+        result.src_idxs[p] = hit.src_idx;
+        result.src_blk_idxs[p] = hit.src_blk_idx;
+        result.phase0[p] = hit.phase0;
+        result.phase1[p] = hit.phase1;
     }
 
     return result;
