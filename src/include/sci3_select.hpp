@@ -11,7 +11,8 @@ struct ForwardShared
     std::vector<int> dst_idxs;        // flat: global b index into target array
     std::vector<int> src_idxs;        // flat: local b index within source block
     std::vector<int> src_blk_idxs;    // flat: source block index
-    std::vector<Tv> phases;           // flat: 2 doubles per entry (rank-1 padded)
+    std::vector<Tv> phase0;           // flat: first phase component per entry
+    std::vector<Tv> phase1;           // flat: second phase component per entry (rank-1 unused)
 
     std::pair<int64, int64> range(int64 group, int64 src_blk_idx) const
     {
@@ -146,7 +147,8 @@ static ForwardShared<Tv> precompute_shared(
     result.dst_idxs.assign(total, 0);
     result.src_idxs.assign(total, 0);
     result.src_blk_idxs.assign(total, 0);
-    result.phases.assign(total * 2, Tv{});
+    result.phase0.assign(total, Tv{});
+    result.phase1.assign(total, Tv{});
 
     std::vector<int64> pos = result.block_offsets;
 
@@ -167,29 +169,28 @@ static ForwardShared<Tv> precompute_shared(
             result.src_idxs[p] = it->second.first;
             result.src_blk_idxs[p] = src_blk_idx;
 
-            Tv *phase_ptr = result.phases.data() + p * 2;
+            Tv phase_tmp[2] = {};
             if (exc == 0)
             {
                 // identity: first component = 1, rest = 0
-                phase_ptr[0] = Tv(1);
-                phase_ptr[1] = Tv{};
+                phase_tmp[0] = Tv(1);
             }
             else if (is_alpha)
             {
                 precompute_phase_select<Ti, Tv>(
                     src, groups[g].unique_zas, groups[g].num_za, groups[g].wa,
-                    phase_ptr, 1, groups[g].rank);
-                if (groups[g].rank == 1)
-                    phase_ptr[1] = Tv{};
+                    phase_tmp, 1, groups[g].rank);
             }
             else
             {
                 precompute_phase_select<Ti, Tv>(
                     src, groups[g].unique_zbs, groups[g].num_zb, groups[g].wb,
-                    phase_ptr, 1, groups[g].rank);
-                if (groups[g].rank == 1)
-                    phase_ptr[1] = Tv{};
+                    phase_tmp, 1, groups[g].rank);
             }
+
+            result.phase0[p] = phase_tmp[0];
+            if (groups[g].rank >= 2)
+                result.phase1[p] = phase_tmp[1];
         }
     }
 
@@ -256,11 +257,14 @@ static void select_pass_a(
                     {
                         int old_ib = shared_b_old.dst_idxs[j];
                         int src_ib = shared_b_old.src_idxs[j];
-                        const Tv *pb = shared_b_old.phases.data() + j * 2;
+                        Tv pb0 = shared_b_old.phase0[j];
 
-                        Tv coeff = pa[0] * pb[0];
+                        Tv coeff = pa[0] * pb0;
                         if (group.rank >= 2)
-                            coeff += pa[1] * pb[1];
+                        {
+                            Tv pb1 = shared_b_old.phase1[j];
+                            coeff += pa[1] * pb1;
+                        }
 
                         int64 src_gid = row_base + src_ib;
 
@@ -275,11 +279,14 @@ static void select_pass_a(
                     {
                         int new_ib = shared_b_new.dst_idxs[j];
                         int src_ib = shared_b_new.src_idxs[j];
-                        const Tv *pb = shared_b_new.phases.data() + j * 2;
+                        Tv pb0 = shared_b_new.phase0[j];
 
-                        Tv coeff = pa[0] * pb[0];
+                        Tv coeff = pa[0] * pb0;
                         if (group.rank >= 2)
-                            coeff += pa[1] * pb[1];
+                        {
+                            Tv pb1 = shared_b_new.phase1[j];
+                            coeff += pa[1] * pb1;
+                        }
 
                         int64 src_gid = row_base + src_ib;
 
@@ -375,11 +382,14 @@ static void select_pass_b(
                 {
                     int old_ia = shared_a_old.dst_idxs[j];
                     int src_ia = shared_a_old.src_idxs[j];
-                    const Tv *pa = shared_a_old.phases.data() + j * 2;
+                    Tv pa0 = shared_a_old.phase0[j];
 
-                    Tv coeff = pa[0] * pb[0];
+                    Tv coeff = pa0 * pb[0];
                     if (group.rank >= 2)
-                        coeff += pa[1] * pb[1];
+                    {
+                        Tv pa1 = shared_a_old.phase1[j];
+                        coeff += pa1 * pb[1];
+                    }
 
                     int64 src_gid = col_or_row_base + src_ia * blk.num_b;
 
