@@ -378,22 +378,6 @@ static void select_pass_b(
     const int64 num_b_chunks = (n_new_β + target_chunk_size - 1) / target_chunk_size;
     const ankerl::unordered_dense::set<Ti> new_b_set(new_β, new_β + n_new_β);
 
-    std::vector<std::vector<std::vector<std::vector<int>>>> blink_chunks;
-    blink_chunks.reserve(num_b_chunks);
-    for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
-    {
-        const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
-        const int64 b_count = b_end - b_begin;
-        auto &link_chunks = blink_chunks.emplace_back();
-        link_chunks.reserve(num_group_chunks);
-        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-        {
-            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
-        }
-    }
-
     for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
     {
         const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
@@ -412,7 +396,14 @@ static void select_pass_b(
             const int64 b_begin = b_chunk * target_chunk_size;
             const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
             const int64 b_count = b_end - b_begin;
-            const auto &link_chunks = blink_chunks[b_chunk];
+            std::vector<std::vector<std::vector<int>>> link_chunks;
+            link_chunks.reserve(num_group_chunks);
+            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+            {
+                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                    new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
+            }
 
 #pragma omp parallel
             {
