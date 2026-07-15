@@ -126,11 +126,13 @@ extern "C"
         select_pass_a<uint32, double>(
             new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
             old_a_idx, old_b_idx,
+            basis->num_blocks,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p1, p3);
         select_pass_b<uint32, double>(
             new_b, n_new_b, old_a, n_old_a,
             old_b_idx, old_a_idx,
+            basis->num_blocks,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p2);
 
