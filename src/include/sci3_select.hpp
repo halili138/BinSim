@@ -99,6 +99,63 @@ static std::vector<std::vector<int>> build_old2old_link(
     return link;
 }
 
+
+template <typename Ti, typename Tv>
+static std::vector<std::vector<int>> build_old2new_link_chunk(
+    const Ti *dst_chunk, int64 n_dst_chunk,
+    const Ti *all_new_strs, int64 n_all_new,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+    int64 g_begin, int64 g_end,
+    bool is_alpha)
+{
+    ankerl::unordered_dense::set<Ti> new_set(all_new_strs, all_new_strs + n_all_new);
+    const int64 ngs = std::max<int64>(0, g_end - g_begin);
+    std::vector<std::vector<int>> link(n_dst_chunk);
+
+#pragma omp parallel for schedule(dynamic)
+    for (int64 i = 0; i < n_dst_chunk; ++i)
+    {
+        Ti dst = dst_chunk[i];
+        for (int64 local_g = 0; local_g < ngs; ++local_g)
+        {
+            const auto &group = groups[g_begin + local_g];
+            Ti exc = is_alpha ? group.ax : group.bx;
+            if (exc == 0)
+                continue;
+            if (new_set.find(dst ^ exc) == new_set.end())
+                link[i].push_back(static_cast<int>(local_g));
+        }
+    }
+    return link;
+}
+
+template <typename Ti, typename Tv>
+static std::vector<std::vector<int>> build_old2old_link_chunk(
+    const Ti *dst_chunk, int64 n_dst_chunk,
+    const Ti *all_old_strs, int64 n_all_old,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
+    int64 g_begin, int64 g_end,
+    bool is_alpha)
+{
+    ankerl::unordered_dense::set<Ti> old_set(all_old_strs, all_old_strs + n_all_old);
+    const int64 ngs = std::max<int64>(0, g_end - g_begin);
+    std::vector<std::vector<int>> link(n_dst_chunk);
+
+#pragma omp parallel for schedule(dynamic)
+    for (int64 i = 0; i < n_dst_chunk; ++i)
+    {
+        Ti dst = dst_chunk[i];
+        for (int64 local_g = 0; local_g < ngs; ++local_g)
+        {
+            const auto &group = groups[g_begin + local_g];
+            Ti exc = is_alpha ? group.ax : group.bx;
+            if (old_set.find(dst ^ exc) != old_set.end())
+                link[i].push_back(static_cast<int>(local_g));
+        }
+    }
+    return link;
+}
+
 template <typename Ti, typename Tv>
 static ForwardShared<Tv> precompute_shared_chunk(
     const Ti *tgt_chunk, int64 n_tgt_chunk,
@@ -192,7 +249,6 @@ static void select_pass_a(
     const Ti *new_α, int64 n_new_α,
     const Ti *old_β, int64 n_old_β,
     const Ti *new_β, int64 n_new_β,
-    const std::vector<std::vector<int>> &alink,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_a_idx_map,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_b_idx_map,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
@@ -223,59 +279,76 @@ static void select_pass_a(
                                                                         g_begin, g_end, old_b_idx_map, all_groups, false));
             }
 
-#pragma omp parallel
+            for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
             {
-                std::vector<Tv> accum(b_count);
-                std::vector<std::pair<Ti, Ti>> thread_out;
+                const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
+                const int64 a_count = a_end - a_begin;
+                std::vector<std::vector<std::vector<int>>> link_chunks;
+                link_chunks.reserve(num_group_chunks);
+                for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+                {
+                    int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                        new_α + a_begin, a_count, new_α, n_new_α, all_groups, g_begin, g_end, true));
+                }
+
+#pragma omp parallel
+                {
+                    std::vector<Tv> accum(b_count);
+                    std::vector<std::pair<Ti, Ti>> thread_out;
 
 #pragma omp for schedule(dynamic)
-                for (int64 ia = 0; ia < n_new_α; ++ia)
-                {
-                    Ti dst_a = new_α[ia];
-                    std::fill(accum.begin(), accum.end(), Tv{});
-
-                    for (int ig : alink[ia])
+                    for (int64 local_ia = 0; local_ia < a_count; ++local_ia)
                     {
-                        const auto &group = all_groups[ig];
-                        Ti src_a = dst_a ^ group.ax;
-                        auto it = old_a_idx_map.find(src_a);
-                        if (it == old_a_idx_map.end())
-                            continue;
-                        int src_ia = it->second.first;
-                        int src_a_blk_idx = it->second.second;
+                        Ti dst_a = new_α[a_begin + local_ia];
+                        std::fill(accum.begin(), accum.end(), Tv{});
 
-                        Tv pa[2] = {};
-                        precompute_phase_select<Ti, Tv>(src_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
-                        if (group.rank == 1)
-                            pa[1] = Tv{};
-
-                        const int64 chunk_id = ig / group_chunk_size;
-                        const int64 g_begin = chunk_id * group_chunk_size;
-                        const auto &shared = shared_chunks[chunk_id];
-                        const auto &blk = src_blocks[src_a_blk_idx];
-                        const int64 row_base = blk.offset + src_ia * blk.num_b;
-                        auto [off, end] = shared.range(ig - g_begin, src_a_blk_idx);
-                        for (int64 j = off; j < end; ++j)
+                        for (int64 chunk_id = 0; chunk_id < (int64)link_chunks.size(); ++chunk_id)
                         {
-                            int beta_idx = shared.dst_idxs[j];
-                            int src_ib = shared.src_idxs[j];
-                            Tv coeff = pa[0] * shared.phase0[j];
-                            if (group.rank >= 2)
-                                coeff += pa[1] * shared.phase1[j];
-                            accum[beta_idx - b_begin] += src_psi[row_base + src_ib] * coeff;
+                            const int64 g_begin = chunk_id * group_chunk_size;
+                            const auto &shared = shared_chunks[chunk_id];
+                            for (int local_g : link_chunks[chunk_id][local_ia])
+                            {
+                                const int64 ig = g_begin + local_g;
+                                const auto &group = all_groups[ig];
+                                Ti src_a = dst_a ^ group.ax;
+                                auto it = old_a_idx_map.find(src_a);
+                                if (it == old_a_idx_map.end())
+                                    continue;
+                                int src_ia = it->second.first;
+                                int src_a_blk_idx = it->second.second;
+
+                                Tv pa[2] = {};
+                                precompute_phase_select<Ti, Tv>(src_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
+                                if (group.rank == 1)
+                                    pa[1] = Tv{};
+
+                                const auto &blk = src_blocks[src_a_blk_idx];
+                                const int64 row_base = blk.offset + src_ia * blk.num_b;
+                                auto [off, end] = shared.range(local_g, src_a_blk_idx);
+                                for (int64 j = off; j < end; ++j)
+                                {
+                                    int beta_idx = shared.dst_idxs[j];
+                                    int src_ib = shared.src_idxs[j];
+                                    Tv coeff = pa[0] * shared.phase0[j];
+                                    if (group.rank >= 2)
+                                        coeff += pa[1] * shared.phase1[j];
+                                    accum[beta_idx - b_begin] += src_psi[row_base + src_ib] * coeff;
+                                }
+                            }
+                        }
+
+                        for (int64 local_b = 0; local_b < b_count; ++local_b)
+                        {
+                            Tv v = accum[local_b];
+                            if (v != Tv{} && v * v > E_var_sq * eps_sq)
+                                thread_out.emplace_back(dst_a, beta[b_begin + local_b]);
                         }
                     }
 
-                    for (int64 local_b = 0; local_b < b_count; ++local_b)
-                    {
-                        Tv v = accum[local_b];
-                        if (v != Tv{} && v * v > E_var_sq * eps_sq)
-                            thread_out.emplace_back(dst_a, beta[b_begin + local_b]);
-                    }
-                }
-
 #pragma omp critical
-                out.insert(out.end(), std::make_move_iterator(thread_out.begin()), std::make_move_iterator(thread_out.end()));
+                    out.insert(out.end(), std::make_move_iterator(thread_out.begin()), std::make_move_iterator(thread_out.end()));
+                }
             }
         }
     };
@@ -288,7 +361,6 @@ template <typename Ti, typename Tv>
 static void select_pass_b(
     const Ti *new_β, int64 n_new_β,
     const Ti *old_α, int64 n_old_α,
-    const std::vector<std::vector<int>> &blink,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_b_idx_map,
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_a_idx_map,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
@@ -316,59 +388,76 @@ static void select_pass_b(
                                                                     g_begin, g_end, old_a_idx_map, all_groups, true));
         }
 
-#pragma omp parallel
+        for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
         {
-            std::vector<Tv> accum(a_count);
-            std::vector<std::pair<Ti, Ti>> thread_p2;
+            const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+            const int64 b_count = b_end - b_begin;
+            std::vector<std::vector<std::vector<int>>> link_chunks;
+            link_chunks.reserve(num_group_chunks);
+            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+            {
+                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                    new_β + b_begin, b_count, new_β, n_new_β, all_groups, g_begin, g_end, false));
+            }
+
+#pragma omp parallel
+            {
+                std::vector<Tv> accum(a_count);
+                std::vector<std::pair<Ti, Ti>> thread_p2;
 
 #pragma omp for schedule(dynamic)
-            for (int64 ib = 0; ib < n_new_β; ++ib)
-            {
-                Ti dst_b = new_β[ib];
-                std::fill(accum.begin(), accum.end(), Tv{});
-
-                for (int ig : blink[ib])
+                for (int64 local_ib = 0; local_ib < b_count; ++local_ib)
                 {
-                    const auto &group = all_groups[ig];
-                    Ti src_b = dst_b ^ group.bx;
-                    auto it = old_b_idx_map.find(src_b);
-                    if (it == old_b_idx_map.end())
-                        continue;
-                    int src_ib = it->second.first;
-                    int src_b_blk_idx = it->second.second;
+                    Ti dst_b = new_β[b_begin + local_ib];
+                    std::fill(accum.begin(), accum.end(), Tv{});
 
-                    Tv pb[2] = {};
-                    precompute_phase_select<Ti, Tv>(src_b, group.unique_zbs, group.num_zb, group.wb, pb, 1, group.rank);
-                    if (group.rank == 1)
-                        pb[1] = Tv{};
-
-                    const int64 chunk_id = ig / group_chunk_size;
-                    const int64 g_begin = chunk_id * group_chunk_size;
-                    const auto &shared = shared_chunks[chunk_id];
-                    const auto &blk = src_blocks[src_b_blk_idx];
-                    const int64 col_or_row_base = blk.offset + src_ib;
-                    auto [off, end] = shared.range(ig - g_begin, src_b_blk_idx);
-                    for (int64 j = off; j < end; ++j)
+                    for (int64 chunk_id = 0; chunk_id < (int64)link_chunks.size(); ++chunk_id)
                     {
-                        int old_ia = shared.dst_idxs[j];
-                        int src_ia = shared.src_idxs[j];
-                        Tv coeff = shared.phase0[j] * pb[0];
-                        if (group.rank >= 2)
-                            coeff += shared.phase1[j] * pb[1];
-                        accum[old_ia - a_begin] += src_psi[col_or_row_base + src_ia * blk.num_b] * coeff;
+                        const int64 g_begin = chunk_id * group_chunk_size;
+                        const auto &shared = shared_chunks[chunk_id];
+                        for (int local_g : link_chunks[chunk_id][local_ib])
+                        {
+                            const int64 ig = g_begin + local_g;
+                            const auto &group = all_groups[ig];
+                            Ti src_b = dst_b ^ group.bx;
+                            auto it = old_b_idx_map.find(src_b);
+                            if (it == old_b_idx_map.end())
+                                continue;
+                            int src_ib = it->second.first;
+                            int src_b_blk_idx = it->second.second;
+
+                            Tv pb[2] = {};
+                            precompute_phase_select<Ti, Tv>(src_b, group.unique_zbs, group.num_zb, group.wb, pb, 1, group.rank);
+                            if (group.rank == 1)
+                                pb[1] = Tv{};
+
+                            const auto &blk = src_blocks[src_b_blk_idx];
+                            const int64 col_or_row_base = blk.offset + src_ib;
+                            auto [off, end] = shared.range(local_g, src_b_blk_idx);
+                            for (int64 j = off; j < end; ++j)
+                            {
+                                int old_ia = shared.dst_idxs[j];
+                                int src_ia = shared.src_idxs[j];
+                                Tv coeff = shared.phase0[j] * pb[0];
+                                if (group.rank >= 2)
+                                    coeff += shared.phase1[j] * pb[1];
+                                accum[old_ia - a_begin] += src_psi[col_or_row_base + src_ia * blk.num_b] * coeff;
+                            }
+                        }
+                    }
+
+                    for (int64 local_a = 0; local_a < a_count; ++local_a)
+                    {
+                        Tv v = accum[local_a];
+                        if (v != Tv{} && v * v > E_var_sq * eps_sq)
+                            thread_p2.emplace_back(old_α[a_begin + local_a], dst_b);
                     }
                 }
 
-                for (int64 local_a = 0; local_a < a_count; ++local_a)
-                {
-                    Tv v = accum[local_a];
-                    if (v != Tv{} && v * v > E_var_sq * eps_sq)
-                        thread_p2.emplace_back(old_α[a_begin + local_a], dst_b);
-                }
-            }
-
 #pragma omp critical
-            out_p2.insert(out_p2.end(), std::make_move_iterator(thread_p2.begin()), std::make_move_iterator(thread_p2.end()));
+                out_p2.insert(out_p2.end(), std::make_move_iterator(thread_p2.begin()), std::make_move_iterator(thread_p2.end()));
+            }
         }
     }
 }

@@ -122,17 +122,15 @@ extern "C"
         auto old_a_idx = build_idx_map<uint32>(basis, true);
         auto old_b_idx = build_idx_map<uint32>(basis, false);
 
-        auto a_n2o = build_old2new_link<uint32, double>(new_a, n_new_a, all_groups, true);
-        auto b_n2o = build_old2new_link<uint32, double>(new_b, n_new_b, all_groups, false);
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(
             new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
-            a_n2o, old_a_idx, old_b_idx,
+            old_a_idx, old_b_idx,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p1, p3);
         select_pass_b<uint32, double>(
             new_b, n_new_b, old_a, n_old_a,
-            b_n2o, old_b_idx, old_a_idx,
+            old_b_idx, old_a_idx,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p2);
 
