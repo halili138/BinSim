@@ -127,9 +127,16 @@ extern "C"
         auto a_o2o = build_old2old_link<uint32, double>(old_a, n_old_a, all_groups, true);
         auto b_o2o = build_old2old_link<uint32, double>(old_b, n_old_b, all_groups, false);
 
-        auto shared_b_new = precompute_shared<uint32, double>(new_b, n_new_b, old_b_idx, b_n2o, all_groups, false);
-        auto shared_b_old = precompute_shared<uint32, double>(old_b, n_old_b, old_b_idx, b_o2o, all_groups, false);
-        auto shared_a_old = precompute_shared<uint32, double>(old_a, n_old_a, old_a_idx, a_o2o, all_groups, true);
+        constexpr bool sort_shared_buckets_by_src_idx = true;
+        auto shared_b_new = precompute_shared<uint32, double>(
+            new_b, n_new_b, old_b_idx, b_n2o, all_groups, false,
+            sort_shared_buckets_by_src_idx);
+        auto shared_b_old = precompute_shared<uint32, double>(
+            old_b, n_old_b, old_b_idx, b_o2o, all_groups, false,
+            sort_shared_buckets_by_src_idx);
+        auto shared_a_old = precompute_shared<uint32, double>(
+            old_a, n_old_a, old_a_idx, a_o2o, all_groups, true,
+            sort_shared_buckets_by_src_idx);
 
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(

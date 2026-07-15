@@ -1,5 +1,6 @@
 #pragma once
 #include "sci_select_test.hpp"
+#include <algorithm>
 #include <limits>
 
 template <typename Tv>
@@ -105,7 +106,8 @@ static ForwardShared<Tv> precompute_shared(
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_idx_map,
     const std::vector<std::vector<int>> &link,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    bool is_alpha)
+    bool is_alpha,
+    bool sort_buckets_by_src_idx = false)
 {
     int64 ngs = (int64)groups.size();
     ForwardShared<Tv> result;
@@ -193,6 +195,67 @@ static ForwardShared<Tv> precompute_shared(
         }
     }
 
+    // Optionally keep each (group, source block) bucket ordered by the local source index.
+    // This makes select_pass_b's fixed-src_ib access pattern walk
+    // src_psi[blk.offset + src_ia * blk.num_b + src_ib] with monotonically
+    // increasing src_ia, which is friendlier to hardware prefetchers and avoids
+    // random row jumps inside the block. It is opt-in because sorting adds
+    // preprocessing cost, but callers can enable it for every shared table used
+    // by the selection passes when the select loops dominate runtime.
+    if (sort_buckets_by_src_idx)
+    {
+        struct SharedEntry
+        {
+            int dst_idx;
+            int src_idx;
+            int src_blk_idx;
+            Tv phase0;
+            Tv phase1;
+        };
+
+        std::vector<SharedEntry> bucket_entries;
+        for (int64 bucket = 0; bucket < num_buckets; ++bucket)
+        {
+            int64 off = result.block_offsets[bucket];
+            int64 end = result.block_offsets[bucket + 1];
+            if (end - off <= 1)
+                continue;
+
+            bucket_entries.clear();
+            bucket_entries.reserve(static_cast<size_t>(end - off));
+            for (int64 p = off; p < end; ++p)
+            {
+                const Tv *phase_ptr = result.phases.data() + p * 2;
+                bucket_entries.push_back({
+                    result.dst_idxs[p],
+                    result.src_idxs[p],
+                    result.src_blk_idxs[p],
+                    phase_ptr[0],
+                    phase_ptr[1],
+                });
+            }
+
+            std::stable_sort(
+                bucket_entries.begin(), bucket_entries.end(),
+                [](const SharedEntry &lhs, const SharedEntry &rhs) {
+                    if (lhs.src_idx != rhs.src_idx)
+                        return lhs.src_idx < rhs.src_idx;
+                    return lhs.dst_idx < rhs.dst_idx;
+                });
+
+            for (int64 p = off; p < end; ++p)
+            {
+                const auto &entry = bucket_entries[static_cast<size_t>(p - off)];
+                result.dst_idxs[p] = entry.dst_idx;
+                result.src_idxs[p] = entry.src_idx;
+                result.src_blk_idxs[p] = entry.src_blk_idx;
+                Tv *phase_ptr = result.phases.data() + p * 2;
+                phase_ptr[0] = entry.phase0;
+                phase_ptr[1] = entry.phase1;
+            }
+        }
+    }
+
     return result;
 }
 
@@ -262,6 +325,18 @@ static void select_pass_a(
                     for (int64 j = off; j < end; ++j)
                     {
                         int old_ib = shared_b_old.dst_idxs[j];
+                        if (mark_old[old_ib] != epoch_old)
+                        {
+                            mark_old[old_ib] = epoch_old;
+                            accum_old[old_ib] = Tv{};
+                            touched_old.push_back(old_ib);
+                        }
+                    }
+
+#pragma omp simd
+                    for (int64 j = off; j < end; ++j)
+                    {
+                        int old_ib = shared_b_old.dst_idxs[j];
                         int src_ib = shared_b_old.src_idxs[j];
                         const Tv *pb = shared_b_old.phases.data() + j * 2;
 
@@ -271,12 +346,6 @@ static void select_pass_a(
 
                         int64 src_gid = row_base + src_ib;
 
-                        if (mark_old[old_ib] != epoch_old)
-                        {
-                            mark_old[old_ib] = epoch_old;
-                            accum_old[old_ib] = Tv{};
-                            touched_old.push_back(old_ib);
-                        }
                         accum_old[old_ib] += src_psi[src_gid] * coeff;
                     }
                 }
@@ -284,6 +353,18 @@ static void select_pass_a(
                 // ---- Part 3: new_β ----
                 {
                     auto [off, end] = shared_b_new.range(ig, src_a_blk_idx);
+                    for (int64 j = off; j < end; ++j)
+                    {
+                        int new_ib = shared_b_new.dst_idxs[j];
+                        if (mark_new[new_ib] != epoch_new)
+                        {
+                            mark_new[new_ib] = epoch_new;
+                            accum_new[new_ib] = Tv{};
+                            touched_new.push_back(new_ib);
+                        }
+                    }
+
+#pragma omp simd
                     for (int64 j = off; j < end; ++j)
                     {
                         int new_ib = shared_b_new.dst_idxs[j];
@@ -296,12 +377,6 @@ static void select_pass_a(
 
                         int64 src_gid = row_base + src_ib;
 
-                        if (mark_new[new_ib] != epoch_new)
-                        {
-                            mark_new[new_ib] = epoch_new;
-                            accum_new[new_ib] = Tv{};
-                            touched_new.push_back(new_ib);
-                        }
                         accum_new[new_ib] += src_psi[src_gid] * coeff;
                     }
                 }
@@ -411,6 +486,23 @@ static void select_pass_b(
                 for (int64 j = off; j < end; ++j)
                 {
                     int old_ia = shared_a_old.dst_idxs[j];
+                    if (mark_old[old_ia] != epoch_old)
+                    {
+                        mark_old[old_ia] = epoch_old;
+                        accum_old[old_ia] = Tv{};
+                        touched_old.push_back(old_ia);
+                    }
+                }
+
+                // The scalar mark pass above keeps touched_old updates ordered and
+                // separate from the arithmetic loop. For one group/bucket, old_ia is
+                // unique because dst -> (dst ^ excitation) is one-to-one, so the
+                // scatter accumulation below has no loop-carried dependency and can
+                // be safely vectorized.
+#pragma omp simd
+                for (int64 j = off; j < end; ++j)
+                {
+                    int old_ia = shared_a_old.dst_idxs[j];
                     int src_ia = shared_a_old.src_idxs[j];
                     const Tv *pa = shared_a_old.phases.data() + j * 2;
 
@@ -420,12 +512,6 @@ static void select_pass_b(
 
                     int64 src_gid = col_or_row_base + static_cast<int64>(src_ia) * blk.num_b;
 
-                    if (mark_old[old_ia] != epoch_old)
-                    {
-                        mark_old[old_ia] = epoch_old;
-                        accum_old[old_ia] = Tv{};
-                        touched_old.push_back(old_ia);
-                    }
                     accum_old[old_ia] += src_psi[src_gid] * coeff;
                 }
             }
