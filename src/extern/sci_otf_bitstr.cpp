@@ -115,7 +115,7 @@ extern "C"
         uint32_t **out_a, uint32_t **out_b, int64 *n_pairs)
     {
         auto *basis = static_cast<SciBasisManager<uint32> *>(src_basis);
-        auto *otf   = static_cast<Network_OTF<uint32, double> *>(net);
+        auto *otf = static_cast<Network_OTF<uint32, double> *>(net);
 
         auto all_groups = flatten_groups<uint32, double>(otf);
 
@@ -127,16 +127,9 @@ extern "C"
         auto a_o2o = build_old2old_link<uint32, double>(old_a, n_old_a, all_groups, true);
         auto b_o2o = build_old2old_link<uint32, double>(old_b, n_old_b, all_groups, false);
 
-        constexpr bool sort_shared_buckets_by_src_idx = true;
-        auto shared_b_new = precompute_shared<uint32, double>(
-            new_b, n_new_b, old_b_idx, b_n2o, all_groups, false,
-            sort_shared_buckets_by_src_idx);
-        auto shared_b_old = precompute_shared<uint32, double>(
-            old_b, n_old_b, old_b_idx, b_o2o, all_groups, false,
-            sort_shared_buckets_by_src_idx);
-        auto shared_a_old = precompute_shared<uint32, double>(
-            old_a, n_old_a, old_a_idx, a_o2o, all_groups, true,
-            sort_shared_buckets_by_src_idx);
+        auto shared_b_new = precompute_shared<uint32, double>(new_b, n_new_b, old_b_idx, b_n2o, all_groups, false);
+        auto shared_b_old = precompute_shared<uint32, double>(old_b, n_old_b, old_b_idx, b_o2o, all_groups, false);
+        auto shared_a_old = precompute_shared<uint32, double>(old_a, n_old_a, old_a_idx, a_o2o, all_groups, true);
 
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(
@@ -162,9 +155,24 @@ extern "C"
         *out_b = (uint32_t *)malloc((size_t)(*n_pairs) * sizeof(uint32_t));
 
         int64 idx = 0;
-        for (const auto &[a, b] : p1) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
-        for (const auto &[a, b] : p2) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
-        for (const auto &[a, b] : p3) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
+        for (const auto &[a, b] : p1)
+        {
+            (*out_a)[idx] = a;
+            (*out_b)[idx] = b;
+            ++idx;
+        }
+        for (const auto &[a, b] : p2)
+        {
+            (*out_a)[idx] = a;
+            (*out_b)[idx] = b;
+            ++idx;
+        }
+        for (const auto &[a, b] : p3)
+        {
+            (*out_a)[idx] = a;
+            (*out_b)[idx] = b;
+            ++idx;
+        }
     }
 
     void destroy_sci_basis_manager_bitstr_f64(void *ptr) { destroy_sci_basis_manager<uint32>(static_cast<SciBasisManager<uint32> *>(ptr)); }
