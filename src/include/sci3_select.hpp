@@ -50,54 +50,6 @@ static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(
 }
 
 template <typename Ti, typename Tv>
-static std::vector<std::vector<int>> build_old2new_link(
-    const Ti *new_strs, int64 n,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    bool is_alpha)
-{
-    ankerl::unordered_dense::set<Ti> new_set(new_strs, new_strs + n);
-    std::vector<std::vector<int>> link(n);
-
-#pragma omp parallel for schedule(dynamic)
-    for (int64 i = 0; i < n; ++i)
-    {
-        Ti str = new_strs[i];
-        for (int g = 0; g < (int)groups.size(); ++g)
-        {
-            Ti exc = is_alpha ? groups[g].ax : groups[g].bx;
-            if (exc == 0)
-                continue;
-            if (new_set.find(str ^ exc) == new_set.end())
-                link[i].push_back(g);
-        }
-    }
-    return link;
-}
-
-template <typename Ti, typename Tv>
-static std::vector<std::vector<int>> build_old2old_link(
-    const Ti *old_strs, int64 n,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    bool is_alpha)
-{
-    ankerl::unordered_dense::set<Ti> old_set(old_strs, old_strs + n);
-    std::vector<std::vector<int>> link(n);
-
-#pragma omp parallel for schedule(dynamic)
-    for (int64 i = 0; i < n; ++i)
-    {
-        Ti str = old_strs[i];
-        for (int g = 0; g < (int)groups.size(); ++g)
-        {
-            Ti exc = is_alpha ? groups[g].ax : groups[g].bx;
-            if (old_set.find(str ^ exc) != old_set.end())
-                link[i].push_back(g);
-        }
-    }
-    return link;
-}
-
-template <typename Ti, typename Tv>
 static std::vector<std::vector<int>> build_old2new_link_chunk(
     const Ti *dst_chunk, int64 n_dst_chunk,
     const ankerl::unordered_dense::set<Ti> &new_set,
