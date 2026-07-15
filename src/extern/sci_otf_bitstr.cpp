@@ -124,22 +124,15 @@ extern "C"
 
         auto a_n2o = build_old2new_link<uint32, double>(new_a, n_new_a, all_groups, true);
         auto b_n2o = build_old2new_link<uint32, double>(new_b, n_new_b, all_groups, false);
-        auto a_o2o = build_old2old_link<uint32, double>(old_a, n_old_a, all_groups, true);
-        auto b_o2o = build_old2old_link<uint32, double>(old_b, n_old_b, all_groups, false);
-
-        auto shared_b_new = precompute_shared<uint32, double>(new_b, n_new_b, old_b_idx, b_n2o, all_groups, false);
-        auto shared_b_old = precompute_shared<uint32, double>(old_b, n_old_b, old_b_idx, b_o2o, all_groups, false);
-        auto shared_a_old = precompute_shared<uint32, double>(old_a, n_old_a, old_a_idx, a_o2o, all_groups, true);
-
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(
             new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
-            a_n2o, old_a_idx, shared_b_old, shared_b_new,
+            a_n2o, old_a_idx, old_b_idx,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p1, p3);
         select_pass_b<uint32, double>(
             new_b, n_new_b, old_a, n_old_a,
-            b_n2o, old_b_idx, shared_a_old,
+            b_n2o, old_b_idx, old_a_idx,
             all_groups, src_psi, basis->blocks,
             E_var, eps, p2);
 
