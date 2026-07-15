@@ -9,18 +9,34 @@ struct ForwardShared
     int64 ngs;
     int64 num_blocks;
     std::vector<int64> offsets;       // [ngs+1], group totals retained for diagnostics
-    std::vector<int64> block_offsets; // [ngs * num_blocks + 1], grouped by (group, src block)
-    std::vector<int> dst_idxs;        // flat: global b index into target array
-    std::vector<int> src_idxs;        // flat: local b index within source block
-    std::vector<int> src_blk_idxs;    // flat: source block index
-    std::vector<Tv> phases;           // flat: 2 doubles per entry (rank-1 padded)
+    std::vector<int64> block_offsets;       // [ngs * num_blocks + 1], combined group totals for diagnostics
+    std::vector<int64> rank1_block_offsets; // [ngs * num_blocks + 1], rank-1 entries by (group, src block)
+    std::vector<int64> rank2_block_offsets; // [ngs * num_blocks + 1], rank-2 entries by (group, src block)
+    std::vector<int> dst_idxs;              // flat: global b index into target array; rank-1 entries precede rank-2 entries
+    std::vector<int> src_idxs;              // flat: local b index within source block
+    std::vector<int> src_blk_idxs;          // flat: source block index
+    std::vector<Tv> phase0;                 // flat: first phase component for every entry
+    std::vector<Tv> phase1;                 // flat: second phase component for rank-2 entries only
 
-    std::pair<int64, int64> range(int64 group, int64 src_blk_idx) const
+    std::pair<int64, int64> rank1_range(int64 group, int64 src_blk_idx) const
     {
         if (group < 0 || group >= ngs || src_blk_idx < 0 || src_blk_idx >= num_blocks)
             return {0, 0};
         int64 key = group * num_blocks + src_blk_idx;
-        return {block_offsets[key], block_offsets[key + 1]};
+        return {rank1_block_offsets[key], rank1_block_offsets[key + 1]};
+    }
+
+    std::pair<int64, int64> rank2_range(int64 group, int64 src_blk_idx) const
+    {
+        if (group < 0 || group >= ngs || src_blk_idx < 0 || src_blk_idx >= num_blocks)
+            return {0, 0};
+        int64 key = group * num_blocks + src_blk_idx;
+        return {rank2_block_offsets[key], rank2_block_offsets[key + 1]};
+    }
+
+    int64 rank2_phase_idx(int64 entry_idx) const
+    {
+        return entry_idx - rank2_block_offsets[0];
     }
 };
 
@@ -119,10 +135,9 @@ static ForwardShared<Tv> precompute_shared(
         num_blocks = std::max<int64>(num_blocks, (int64)kv.second.second + 1);
     result.num_blocks = num_blocks;
 
-    // count pass: bucket entries by (group, source block) so lookups can select
-    // exactly the compatible block range during the select passes.
     const int64 num_buckets = ngs * num_blocks;
-    std::vector<int64> cnts(num_buckets);
+    std::vector<int64> rank1_cnts(num_buckets);
+    std::vector<int64> rank2_cnts(num_buckets);
     for (int64 i = 0; i < n_tgt; ++i)
     {
         Ti dst = tgt_strs[i];
@@ -133,24 +148,39 @@ static ForwardShared<Tv> precompute_shared(
             auto it = old_idx_map.find(src);
             if (it == old_idx_map.end())
                 continue;
-            ++cnts[(int64)g * num_blocks + it->second.second];
+            int64 key = (int64)g * num_blocks + it->second.second;
+            if (groups[g].rank >= 2)
+                ++rank2_cnts[key];
+            else
+                ++rank1_cnts[key];
         }
     }
 
+    result.rank1_block_offsets.assign(num_buckets + 1, 0);
+    for (int64 b = 0; b < num_buckets; ++b)
+        result.rank1_block_offsets[b + 1] = result.rank1_block_offsets[b] + rank1_cnts[b];
+
+    const int64 rank1_total = result.rank1_block_offsets[num_buckets];
+    result.rank2_block_offsets.assign(num_buckets + 1, rank1_total);
+    for (int64 b = 0; b < num_buckets; ++b)
+        result.rank2_block_offsets[b + 1] = result.rank2_block_offsets[b] + rank2_cnts[b];
+
     result.block_offsets.assign(num_buckets + 1, 0);
     for (int64 b = 0; b < num_buckets; ++b)
-        result.block_offsets[b + 1] = result.block_offsets[b] + cnts[b];
+        result.block_offsets[b + 1] = result.block_offsets[b] + rank1_cnts[b] + rank2_cnts[b];
     for (int64 g = 0; g < ngs; ++g)
         result.offsets[g + 1] = result.block_offsets[(g + 1) * num_blocks];
 
-    int64 total = result.block_offsets[num_buckets];
+    const int64 total = result.rank2_block_offsets[num_buckets];
+    const int64 rank2_total = total - rank1_total;
     result.dst_idxs.assign(total, 0);
     result.src_idxs.assign(total, 0);
     result.src_blk_idxs.assign(total, 0);
-    result.phases.assign(total * 2, Tv{});
+    result.phase0.assign(total, Tv{});
+    result.phase1.assign(rank2_total, Tv{});
 
-    // fill pass
-    std::vector<int64> pos = result.block_offsets;
+    std::vector<int64> rank1_pos = result.rank1_block_offsets;
+    std::vector<int64> rank2_pos = result.rank2_block_offsets;
 
     for (int64 i = 0; i < n_tgt; ++i)
     {
@@ -163,96 +193,59 @@ static ForwardShared<Tv> precompute_shared(
             if (it == old_idx_map.end())
                 continue;
 
+            const bool is_rank2 = groups[g].rank >= 2;
             int src_blk_idx = it->second.second;
-            int64 p = pos[(int64)g * num_blocks + src_blk_idx]++;
+            int64 key = (int64)g * num_blocks + src_blk_idx;
+            int64 p = is_rank2 ? rank2_pos[key]++ : rank1_pos[key]++;
             result.dst_idxs[p] = (int)i;
             result.src_idxs[p] = it->second.first;
             result.src_blk_idxs[p] = src_blk_idx;
 
-            Tv *phase_ptr = result.phases.data() + p * 2;
+            Tv phase[2] = {Tv{}, Tv{}};
             if (exc == 0)
-            {
-                // identity: first component = 1, rest = 0
-                phase_ptr[0] = Tv(1);
-                phase_ptr[1] = Tv{};
-            }
+                phase[0] = Tv(1);
             else if (is_alpha)
-            {
-                precompute_phase_select<Ti, Tv>(
-                    src, groups[g].unique_zas, groups[g].num_za, groups[g].wa,
-                    phase_ptr, 1, groups[g].rank);
-                if (groups[g].rank == 1)
-                    phase_ptr[1] = Tv{};
-            }
+                precompute_phase_select<Ti, Tv>(src, groups[g].unique_zas, groups[g].num_za, groups[g].wa, phase, 1, groups[g].rank);
             else
-            {
-                precompute_phase_select<Ti, Tv>(
-                    src, groups[g].unique_zbs, groups[g].num_zb, groups[g].wb,
-                    phase_ptr, 1, groups[g].rank);
-                if (groups[g].rank == 1)
-                    phase_ptr[1] = Tv{};
-            }
+                precompute_phase_select<Ti, Tv>(src, groups[g].unique_zbs, groups[g].num_zb, groups[g].wb, phase, 1, groups[g].rank);
+
+            result.phase0[p] = phase[0];
+            if (is_rank2)
+                result.phase1[p - rank1_total] = phase[1];
         }
     }
 
-    // Optionally keep each (group, source block) bucket ordered by the local source index.
-    // This makes select_pass_b's fixed-src_ib access pattern walk
-    // src_psi[blk.offset + src_ia * blk.num_b + src_ib] with monotonically
-    // increasing src_ia, which is friendlier to hardware prefetchers and avoids
-    // random row jumps inside the block. It is opt-in because sorting adds
-    // preprocessing cost, but callers can enable it for every shared table used
-    // by the selection passes when the select loops dominate runtime.
     if (sort_buckets_by_src_idx)
     {
-        struct SharedEntry
-        {
-            int dst_idx;
-            int src_idx;
-            int src_blk_idx;
-            Tv phase0;
-            Tv phase1;
-        };
-
+        struct SharedEntry { int dst_idx; int src_idx; int src_blk_idx; Tv phase0; Tv phase1; };
         std::vector<SharedEntry> bucket_entries;
-        for (int64 bucket = 0; bucket < num_buckets; ++bucket)
-        {
-            int64 off = result.block_offsets[bucket];
-            int64 end = result.block_offsets[bucket + 1];
+        auto sort_range = [&](int64 off, int64 end, bool is_rank2) {
             if (end - off <= 1)
-                continue;
-
+                return;
             bucket_entries.clear();
             bucket_entries.reserve(static_cast<size_t>(end - off));
             for (int64 p = off; p < end; ++p)
-            {
-                const Tv *phase_ptr = result.phases.data() + p * 2;
-                bucket_entries.push_back({
-                    result.dst_idxs[p],
-                    result.src_idxs[p],
-                    result.src_blk_idxs[p],
-                    phase_ptr[0],
-                    phase_ptr[1],
-                });
-            }
-
-            std::stable_sort(
-                bucket_entries.begin(), bucket_entries.end(),
-                [](const SharedEntry &lhs, const SharedEntry &rhs) {
-                    if (lhs.src_idx != rhs.src_idx)
-                        return lhs.src_idx < rhs.src_idx;
-                    return lhs.dst_idx < rhs.dst_idx;
-                });
-
+                bucket_entries.push_back({result.dst_idxs[p], result.src_idxs[p], result.src_blk_idxs[p], result.phase0[p], is_rank2 ? result.phase1[p - rank1_total] : Tv{}});
+            std::stable_sort(bucket_entries.begin(), bucket_entries.end(), [](const SharedEntry &lhs, const SharedEntry &rhs) {
+                if (lhs.src_idx != rhs.src_idx)
+                    return lhs.src_idx < rhs.src_idx;
+                return lhs.dst_idx < rhs.dst_idx;
+            });
             for (int64 p = off; p < end; ++p)
             {
                 const auto &entry = bucket_entries[static_cast<size_t>(p - off)];
                 result.dst_idxs[p] = entry.dst_idx;
                 result.src_idxs[p] = entry.src_idx;
                 result.src_blk_idxs[p] = entry.src_blk_idx;
-                Tv *phase_ptr = result.phases.data() + p * 2;
-                phase_ptr[0] = entry.phase0;
-                phase_ptr[1] = entry.phase1;
+                result.phase0[p] = entry.phase0;
+                if (is_rank2)
+                    result.phase1[p - rank1_total] = entry.phase1;
             }
+        };
+        for (int64 bucket = 0; bucket < num_buckets; ++bucket)
+        {
+            sort_range(result.rank1_block_offsets[bucket], result.rank1_block_offsets[bucket + 1], false);
+            sort_range(result.rank2_block_offsets[bucket], result.rank2_block_offsets[bucket + 1], true);
         }
     }
 
@@ -284,8 +277,6 @@ static void select_pass_a(
         std::vector<Tv> accum_new(n_new_β);
         std::vector<int> mark_old(n_old_β, 0);
         std::vector<int> mark_new(n_new_β, 0);
-        std::vector<int> touched_old;
-        std::vector<int> touched_new;
         int epoch_old = 1;
         int epoch_new = 1;
         std::vector<std::pair<Ti, Ti>> thread_p1, thread_p3;
@@ -294,9 +285,6 @@ static void select_pass_a(
         for (int64 ia = 0; ia < n_new_α; ++ia)
         {
             Ti dst_a = new_α[ia];
-
-            touched_old.clear();
-            touched_new.clear();
 
             for (int ig : alink[ia])
             {
@@ -321,70 +309,96 @@ static void select_pass_a(
 
                 // ---- Part 1: old_β ----
                 {
-                    auto [off, end] = shared_b_old.range(ig, src_a_blk_idx);
-                    for (int64 j = off; j < end; ++j)
+                    auto [r1_off, r1_end] = shared_b_old.rank1_range(ig, src_a_blk_idx);
+                    auto [r2_off, r2_end] = shared_b_old.rank2_range(ig, src_a_blk_idx);
+                    for (int64 j = r1_off; j < r1_end; ++j)
                     {
                         int old_ib = shared_b_old.dst_idxs[j];
                         if (mark_old[old_ib] != epoch_old)
                         {
                             mark_old[old_ib] = epoch_old;
                             accum_old[old_ib] = Tv{};
-                            touched_old.push_back(old_ib);
+                        }
+                    }
+                    for (int64 j = r2_off; j < r2_end; ++j)
+                    {
+                        int old_ib = shared_b_old.dst_idxs[j];
+                        if (mark_old[old_ib] != epoch_old)
+                        {
+                            mark_old[old_ib] = epoch_old;
+                            accum_old[old_ib] = Tv{};
                         }
                     }
 
 #pragma omp simd
-                    for (int64 j = off; j < end; ++j)
+                    for (int64 j = r1_off; j < r1_end; ++j)
                     {
                         int old_ib = shared_b_old.dst_idxs[j];
                         int src_ib = shared_b_old.src_idxs[j];
-                        const Tv *pb = shared_b_old.phases.data() + j * 2;
-
-                        Tv coeff = pa[0] * pb[0];
-                        if (group.rank >= 2)
-                            coeff += pa[1] * pb[1];
-
+                        Tv coeff = pa[0] * shared_b_old.phase0[j];
                         int64 src_gid = row_base + src_ib;
-
+                        accum_old[old_ib] += src_psi[src_gid] * coeff;
+                    }
+#pragma omp simd
+                    for (int64 j = r2_off; j < r2_end; ++j)
+                    {
+                        int old_ib = shared_b_old.dst_idxs[j];
+                        int src_ib = shared_b_old.src_idxs[j];
+                        Tv coeff = pa[0] * shared_b_old.phase0[j] + pa[1] * shared_b_old.phase1[shared_b_old.rank2_phase_idx(j)];
+                        int64 src_gid = row_base + src_ib;
                         accum_old[old_ib] += src_psi[src_gid] * coeff;
                     }
                 }
 
                 // ---- Part 3: new_β ----
                 {
-                    auto [off, end] = shared_b_new.range(ig, src_a_blk_idx);
-                    for (int64 j = off; j < end; ++j)
+                    auto [r1_off, r1_end] = shared_b_new.rank1_range(ig, src_a_blk_idx);
+                    auto [r2_off, r2_end] = shared_b_new.rank2_range(ig, src_a_blk_idx);
+                    for (int64 j = r1_off; j < r1_end; ++j)
                     {
                         int new_ib = shared_b_new.dst_idxs[j];
                         if (mark_new[new_ib] != epoch_new)
                         {
                             mark_new[new_ib] = epoch_new;
                             accum_new[new_ib] = Tv{};
-                            touched_new.push_back(new_ib);
+                        }
+                    }
+                    for (int64 j = r2_off; j < r2_end; ++j)
+                    {
+                        int new_ib = shared_b_new.dst_idxs[j];
+                        if (mark_new[new_ib] != epoch_new)
+                        {
+                            mark_new[new_ib] = epoch_new;
+                            accum_new[new_ib] = Tv{};
                         }
                     }
 
 #pragma omp simd
-                    for (int64 j = off; j < end; ++j)
+                    for (int64 j = r1_off; j < r1_end; ++j)
                     {
                         int new_ib = shared_b_new.dst_idxs[j];
                         int src_ib = shared_b_new.src_idxs[j];
-                        const Tv *pb = shared_b_new.phases.data() + j * 2;
-
-                        Tv coeff = pa[0] * pb[0];
-                        if (group.rank >= 2)
-                            coeff += pa[1] * pb[1];
-
+                        Tv coeff = pa[0] * shared_b_new.phase0[j];
                         int64 src_gid = row_base + src_ib;
-
+                        accum_new[new_ib] += src_psi[src_gid] * coeff;
+                    }
+#pragma omp simd
+                    for (int64 j = r2_off; j < r2_end; ++j)
+                    {
+                        int new_ib = shared_b_new.dst_idxs[j];
+                        int src_ib = shared_b_new.src_idxs[j];
+                        Tv coeff = pa[0] * shared_b_new.phase0[j] + pa[1] * shared_b_new.phase1[shared_b_new.rank2_phase_idx(j)];
+                        int64 src_gid = row_base + src_ib;
                         accum_new[new_ib] += src_psi[src_gid] * coeff;
                     }
                 }
             }
 
             // eps_check old_β → P1
-            for (int ib : touched_old)
+            for (int64 ib = 0; ib < n_old_β; ++ib)
             {
+                if (mark_old[ib] != epoch_old)
+                    continue;
                 Tv v = accum_old[ib];
                 if (v == Tv{})
                     continue;
@@ -392,8 +406,10 @@ static void select_pass_a(
                     thread_p1.emplace_back(dst_a, old_β[ib]);
             }
             // eps_check new_β → P3
-            for (int ib : touched_new)
+            for (int64 ib = 0; ib < n_new_β; ++ib)
             {
+                if (mark_new[ib] != epoch_new)
+                    continue;
                 Tv v = accum_new[ib];
                 if (v == Tv{})
                     continue;
@@ -449,7 +465,6 @@ static void select_pass_b(
     {
         std::vector<Tv> accum_old(n_old_α);
         std::vector<int> mark_old(n_old_α, 0);
-        std::vector<int> touched_old;
         int epoch_old = 1;
         std::vector<std::pair<Ti, Ti>> thread_p2;
 
@@ -457,8 +472,6 @@ static void select_pass_b(
         for (int64 ib = 0; ib < n_new_β; ++ib)
         {
             Ti dst_b = new_β[ib];
-
-            touched_old.clear();
 
             for (int ig : blink[ib])
             {
@@ -482,43 +495,57 @@ static void select_pass_b(
                 const int64 col_or_row_base = blk.offset + src_ib;
 
                 // ---- Part 2: old_α ----
-                auto [off, end] = shared_a_old.range(ig, src_b_blk_idx);
-                for (int64 j = off; j < end; ++j)
+                auto [r1_off, r1_end] = shared_a_old.rank1_range(ig, src_b_blk_idx);
+                auto [r2_off, r2_end] = shared_a_old.rank2_range(ig, src_b_blk_idx);
+                for (int64 j = r1_off; j < r1_end; ++j)
                 {
                     int old_ia = shared_a_old.dst_idxs[j];
                     if (mark_old[old_ia] != epoch_old)
                     {
                         mark_old[old_ia] = epoch_old;
                         accum_old[old_ia] = Tv{};
-                        touched_old.push_back(old_ia);
+                    }
+                }
+                for (int64 j = r2_off; j < r2_end; ++j)
+                {
+                    int old_ia = shared_a_old.dst_idxs[j];
+                    if (mark_old[old_ia] != epoch_old)
+                    {
+                        mark_old[old_ia] = epoch_old;
+                        accum_old[old_ia] = Tv{};
                     }
                 }
 
-                // The scalar mark pass above keeps touched_old updates ordered and
+                // The scalar mark pass above keeps first-touch resets ordered and
                 // separate from the arithmetic loop. For one group/bucket, old_ia is
                 // unique because dst -> (dst ^ excitation) is one-to-one, so the
                 // scatter accumulation below has no loop-carried dependency and can
                 // be safely vectorized.
 #pragma omp simd
-                for (int64 j = off; j < end; ++j)
+                for (int64 j = r1_off; j < r1_end; ++j)
                 {
                     int old_ia = shared_a_old.dst_idxs[j];
                     int src_ia = shared_a_old.src_idxs[j];
-                    const Tv *pa = shared_a_old.phases.data() + j * 2;
-
-                    Tv coeff = pa[0] * pb[0];
-                    if (group.rank >= 2)
-                        coeff += pa[1] * pb[1];
-
+                    Tv coeff = shared_a_old.phase0[j] * pb[0];
                     int64 src_gid = col_or_row_base + static_cast<int64>(src_ia) * blk.num_b;
-
+                    accum_old[old_ia] += src_psi[src_gid] * coeff;
+                }
+#pragma omp simd
+                for (int64 j = r2_off; j < r2_end; ++j)
+                {
+                    int old_ia = shared_a_old.dst_idxs[j];
+                    int src_ia = shared_a_old.src_idxs[j];
+                    Tv coeff = shared_a_old.phase0[j] * pb[0] + shared_a_old.phase1[shared_a_old.rank2_phase_idx(j)] * pb[1];
+                    int64 src_gid = col_or_row_base + static_cast<int64>(src_ia) * blk.num_b;
                     accum_old[old_ia] += src_psi[src_gid] * coeff;
                 }
             }
 
             // eps_check old_α → P2
-            for (int ia : touched_old)
+            for (int64 ia = 0; ia < n_old_α; ++ia)
             {
+                if (mark_old[ia] != epoch_old)
+                    continue;
                 Tv v = accum_old[ia];
                 if (v == Tv{})
                     continue;
