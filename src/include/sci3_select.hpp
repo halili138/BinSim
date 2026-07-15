@@ -280,20 +280,18 @@ static void select_pass_a(
         }
     }
 
-    auto run_beta_side = [&](const Ti *beta, int64 n_beta,
-                             std::vector<std::pair<Ti, Ti>> &out) {
-        for (int64 b_begin = 0; b_begin < n_beta; b_begin += target_chunk_size)
+    for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
+    {
+        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
+        const int64 a_count = a_end - a_begin;
+        std::vector<std::vector<std::vector<int>>> link_chunks;
+        link_chunks.reserve(num_group_chunks);
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
-            const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_beta);
-            const int64 b_count = b_end - b_begin;
-            std::vector<ForwardShared<Tv>> shared_chunks;
-            shared_chunks.reserve(num_group_chunks);
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-            {
-                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin,
-                                                                        g_begin, g_end, old_b_idx_map, all_groups, false));
-            }
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+        }
 
             for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
             {
@@ -360,11 +358,11 @@ static void select_pass_a(
                     out.insert(out.end(), std::make_move_iterator(thread_out.begin()), std::make_move_iterator(thread_out.end()));
                 }
             }
-        }
-    };
+        };
 
-    run_beta_side(old_β, n_old_β, out_p1);
-    run_beta_side(new_β, n_new_β, out_p3);
+        run_beta_side(old_β, n_old_β, out_p1);
+        run_beta_side(new_β, n_new_β, out_p3);
+    }
 }
 
 template <typename Ti, typename Tv>
@@ -403,17 +401,17 @@ static void select_pass_b(
         }
     }
 
-    for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
+    for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
     {
-        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
-        const int64 a_count = a_end - a_begin;
-        std::vector<ForwardShared<Tv>> shared_chunks;
-        shared_chunks.reserve(num_group_chunks);
+        const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+        const int64 b_count = b_end - b_begin;
+        std::vector<std::vector<std::vector<int>>> link_chunks;
+        link_chunks.reserve(num_group_chunks);
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
             int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin,
-                                                                    g_begin, g_end, old_a_idx_map, all_groups, true));
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
         }
 
         for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
