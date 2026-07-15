@@ -168,5 +168,8 @@ extern "C"
         }
     }
 
-    void destroy_sci_basis_manager_bitstr_f64(void *ptr) { destroy_sci_basis_manager<uint32>(static_cast<SciBasisManager<uint32> *>(ptr)); }
+    void destroy_sci_basis_manager_bitstr_f64(void *ptr)
+    {
+        destroy_sci_basis_manager<uint32>(static_cast<SciBasisManager<uint32> *>(ptr));
+    }
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "sci_select_test.hpp"
+#include <cassert>
 
 template <typename Tv>
 struct ForwardShared
@@ -16,8 +17,9 @@ struct ForwardShared
 
     std::pair<int64, int64> range(int64 group, int64 src_blk_idx) const
     {
-        if (group < 0 || group >= ngs || src_blk_idx < 0 || src_blk_idx >= num_blocks)
-            return {0, 0};
+        assert(group >= 0 && group < ngs);
+        assert(src_blk_idx >= 0 && src_blk_idx < num_blocks);
+
         int64 key = group * num_blocks + src_blk_idx;
         return {block_offsets[key], block_offsets[key + 1]};
     }
