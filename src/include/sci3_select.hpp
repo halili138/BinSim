@@ -103,12 +103,11 @@ static std::vector<std::vector<int>> build_old2old_link(
 template <typename Ti, typename Tv>
 static std::vector<std::vector<int>> build_old2new_link_chunk(
     const Ti *dst_chunk, int64 n_dst_chunk,
-    const Ti *all_new_strs, int64 n_all_new,
+    const ankerl::unordered_dense::set<Ti> &new_set,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
     int64 g_begin, int64 g_end,
     bool is_alpha)
 {
-    ankerl::unordered_dense::set<Ti> new_set(all_new_strs, all_new_strs + n_all_new);
     const int64 ngs = std::max<int64>(0, g_end - g_begin);
     std::vector<std::vector<int>> link(n_dst_chunk);
 
@@ -132,12 +131,11 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
 template <typename Ti, typename Tv>
 static std::vector<std::vector<int>> build_old2old_link_chunk(
     const Ti *dst_chunk, int64 n_dst_chunk,
-    const Ti *all_old_strs, int64 n_all_old,
+    const ankerl::unordered_dense::set<Ti> &old_set,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
     int64 g_begin, int64 g_end,
     bool is_alpha)
 {
-    ankerl::unordered_dense::set<Ti> old_set(all_old_strs, all_old_strs + n_all_old);
     const int64 ngs = std::max<int64>(0, g_end - g_begin);
     std::vector<std::vector<int>> link(n_dst_chunk);
 
@@ -263,33 +261,34 @@ static void select_pass_a(
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
     const int64 num_group_chunks = ((int64)all_groups.size() + group_chunk_size - 1) / group_chunk_size;
+    const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
 
-    auto run_beta_side = [&](const Ti *beta, int64 n_beta,
-                             std::vector<std::pair<Ti, Ti>> &out) {
-        for (int64 b_begin = 0; b_begin < n_beta; b_begin += target_chunk_size)
+    for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
+    {
+        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
+        const int64 a_count = a_end - a_begin;
+        std::vector<std::vector<std::vector<int>>> link_chunks;
+        link_chunks.reserve(num_group_chunks);
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
-            const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_beta);
-            const int64 b_count = b_end - b_begin;
-            std::vector<ForwardShared<Tv>> shared_chunks;
-            shared_chunks.reserve(num_group_chunks);
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-            {
-                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin,
-                                                                        g_begin, g_end, old_b_idx_map, all_groups, false));
-            }
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+        }
 
-            for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
+        auto run_beta_side = [&](const Ti *beta, int64 n_beta,
+                                 std::vector<std::pair<Ti, Ti>> &out) {
+            for (int64 b_begin = 0; b_begin < n_beta; b_begin += target_chunk_size)
             {
-                const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
-                const int64 a_count = a_end - a_begin;
-                std::vector<std::vector<std::vector<int>>> link_chunks;
-                link_chunks.reserve(num_group_chunks);
+                const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_beta);
+                const int64 b_count = b_end - b_begin;
+                std::vector<ForwardShared<Tv>> shared_chunks;
+                shared_chunks.reserve(num_group_chunks);
                 for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
                 {
                     int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                        new_α + a_begin, a_count, new_α, n_new_α, all_groups, g_begin, g_end, true));
+                    shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin,
+                                                                            g_begin, g_end, old_b_idx_map, all_groups, false));
                 }
 
 #pragma omp parallel
@@ -350,11 +349,11 @@ static void select_pass_a(
                     out.insert(out.end(), std::make_move_iterator(thread_out.begin()), std::make_move_iterator(thread_out.end()));
                 }
             }
-        }
-    };
+        };
 
-    run_beta_side(old_β, n_old_β, out_p1);
-    run_beta_side(new_β, n_new_β, out_p3);
+        run_beta_side(old_β, n_old_β, out_p1);
+        run_beta_side(new_β, n_new_β, out_p3);
+    }
 }
 
 template <typename Ti, typename Tv>
@@ -374,31 +373,32 @@ static void select_pass_b(
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
     const int64 num_group_chunks = ((int64)all_groups.size() + group_chunk_size - 1) / group_chunk_size;
+    const ankerl::unordered_dense::set<Ti> new_b_set(new_β, new_β + n_new_β);
 
-    for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
+    for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
     {
-        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
-        const int64 a_count = a_end - a_begin;
-        std::vector<ForwardShared<Tv>> shared_chunks;
-        shared_chunks.reserve(num_group_chunks);
+        const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+        const int64 b_count = b_end - b_begin;
+        std::vector<std::vector<std::vector<int>>> link_chunks;
+        link_chunks.reserve(num_group_chunks);
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
             int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin,
-                                                                    g_begin, g_end, old_a_idx_map, all_groups, true));
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
         }
 
-        for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
+        for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
         {
-            const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
-            const int64 b_count = b_end - b_begin;
-            std::vector<std::vector<std::vector<int>>> link_chunks;
-            link_chunks.reserve(num_group_chunks);
+            const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
+            const int64 a_count = a_end - a_begin;
+            std::vector<ForwardShared<Tv>> shared_chunks;
+            shared_chunks.reserve(num_group_chunks);
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
             {
                 int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                    new_β + b_begin, b_count, new_β, n_new_β, all_groups, g_begin, g_end, false));
+                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin,
+                                                                        g_begin, g_end, old_a_idx_map, all_groups, true));
             }
 
 #pragma omp parallel
