@@ -177,15 +177,13 @@ static ForwardShared<Tv> precompute_shared(
             }
             else if (is_alpha)
             {
-                precompute_phase_select<Ti, Tv>(
-                    src, groups[g].unique_zas, groups[g].num_za, groups[g].wa,
-                    phase_tmp, 1, groups[g].rank);
+                precompute_phase_select<Ti, Tv>(src, groups[g].unique_zas, groups[g].num_za,
+                                                groups[g].wa, phase_tmp, 1, groups[g].rank);
             }
             else
             {
-                precompute_phase_select<Ti, Tv>(
-                    src, groups[g].unique_zbs, groups[g].num_zb, groups[g].wb,
-                    phase_tmp, 1, groups[g].rank);
+                precompute_phase_select<Ti, Tv>(src, groups[g].unique_zbs, groups[g].num_zb,
+                                                groups[g].wb, phase_tmp, 1, groups[g].rank);
             }
 
             result.phase0[p] = phase_tmp[0];
@@ -242,9 +240,7 @@ static void select_pass_a(
 
                 // fresh alpha phase
                 Tv pa[2] = {};
-                precompute_phase_select<Ti, Tv>(
-                    src_a, group.unique_zas, group.num_za, group.wa,
-                    pa, 1, group.rank);
+                precompute_phase_select<Ti, Tv>(src_a, group.unique_zas, group.num_za, group.wa, pa, 1, group.rank);
                 if (group.rank == 1)
                     pa[1] = Tv{};
 
@@ -257,13 +253,11 @@ static void select_pass_a(
                     {
                         int old_ib = shared_b_old.dst_idxs[j];
                         int src_ib = shared_b_old.src_idxs[j];
-                        Tv pb0 = shared_b_old.phase0[j];
 
-                        Tv coeff = pa[0] * pb0;
+                        Tv coeff = pa[0] * shared_b_old.phase0[j];
                         if (group.rank >= 2)
                         {
-                            Tv pb1 = shared_b_old.phase1[j];
-                            coeff += pa[1] * pb1;
+                            coeff += pa[1] * shared_b_old.phase1[j];
                         }
 
                         int64 src_gid = row_base + src_ib;
@@ -279,13 +273,11 @@ static void select_pass_a(
                     {
                         int new_ib = shared_b_new.dst_idxs[j];
                         int src_ib = shared_b_new.src_idxs[j];
-                        Tv pb0 = shared_b_new.phase0[j];
 
-                        Tv coeff = pa[0] * pb0;
+                        Tv coeff = pa[0] * shared_b_new.phase0[j];
                         if (group.rank >= 2)
                         {
-                            Tv pb1 = shared_b_new.phase1[j];
-                            coeff += pa[1] * pb1;
+                            coeff += pa[1] * shared_b_new.phase1[j];
                         }
 
                         int64 src_gid = row_base + src_ib;
@@ -367,9 +359,7 @@ static void select_pass_b(
 
                 // fresh beta phase
                 Tv pb[2] = {};
-                precompute_phase_select<Ti, Tv>(
-                    src_b, group.unique_zbs, group.num_zb, group.wb,
-                    pb, 1, group.rank);
+                precompute_phase_select<Ti, Tv>(src_b, group.unique_zbs, group.num_zb, group.wb, pb, 1, group.rank);
                 if (group.rank == 1)
                     pb[1] = Tv{};
 
@@ -382,13 +372,11 @@ static void select_pass_b(
                 {
                     int old_ia = shared_a_old.dst_idxs[j];
                     int src_ia = shared_a_old.src_idxs[j];
-                    Tv pa0 = shared_a_old.phase0[j];
 
-                    Tv coeff = pa0 * pb[0];
+                    Tv coeff = shared_a_old.phase0[j] * pb[0];
                     if (group.rank >= 2)
                     {
-                        Tv pa1 = shared_a_old.phase1[j];
-                        coeff += pa1 * pb[1];
+                        coeff += shared_a_old.phase1[j] * pb[1];
                     }
 
                     int64 src_gid = col_or_row_base + src_ia * blk.num_b;
