@@ -204,31 +204,33 @@ static void select_pass_a(
 {
     Tv eps_sq = eps * eps;
     Tv E_var_sq = E_var * E_var;
+    constexpr int64 alpha_chunk_size = 32;
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
 
-#pragma omp parallel
+    for (int64 a_begin = 0; a_begin < n_new_α; a_begin += alpha_chunk_size)
     {
-        std::vector<Tv> accum_old(n_old_β);
-        std::vector<Tv> accum_new(n_new_β);
-        std::vector<std::pair<Ti, Ti>> thread_p1, thread_p3;
+        const int64 a_end = std::min<int64>(a_begin + alpha_chunk_size, n_new_α);
+        const int64 a_count = a_end - a_begin;
+        std::vector<Tv> accum_old(a_count * n_old_β, Tv{});
+        std::vector<Tv> accum_new(a_count * n_new_β, Tv{});
+        std::vector<std::pair<Ti, Ti>> chunk_p1, chunk_p3;
 
-#pragma omp for schedule(dynamic)
-        for (int64 ia = 0; ia < n_new_α; ++ia)
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
-            Ti dst_a = new_α[ia];
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
 
-            std::fill(accum_old.begin(), accum_old.end(), Tv{});
-            std::fill(accum_new.begin(), accum_new.end(), Tv{});
-
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+            for (int64 b_begin = 0; b_begin < n_old_β; b_begin += target_chunk_size)
             {
-                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                for (int64 b_begin = 0; b_begin < n_old_β; b_begin += target_chunk_size)
+                int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_old_β);
+                auto shared_b_old = precompute_shared_chunk<Ti, Tv>(old_β + b_begin, b_end - b_begin, b_begin,
+                                                                    g_begin, g_end, old_b_idx_map, all_groups, false);
+#pragma omp parallel for schedule(dynamic)
+                for (int64 local_a = 0; local_a < a_count; ++local_a)
                 {
-                    int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_old_β);
-                    auto shared_b_old = precompute_shared_chunk<Ti, Tv>(old_β + b_begin, b_end - b_begin, b_begin,
-                                                                        g_begin, g_end, old_b_idx_map, all_groups, false);
+                    const int64 ia = a_begin + local_a;
+                    Ti dst_a = new_α[ia];
+                    Tv *accum = accum_old.data() + local_a * n_old_β;
                     for (int ig : alink[ia])
                     {
                         if (ig < g_begin || ig >= g_end)
@@ -256,16 +258,23 @@ static void select_pass_a(
                             Tv coeff = pa[0] * shared_b_old.phase0[j];
                             if (group.rank >= 2)
                                 coeff += pa[1] * shared_b_old.phase1[j];
-                            accum_old[old_ib] += src_psi[row_base + src_ib] * coeff;
+                            accum[old_ib] += src_psi[row_base + src_ib] * coeff;
                         }
                     }
                 }
+            }
 
-                for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
+            for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
+            {
+                int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+                auto shared_b_new = precompute_shared_chunk<Ti, Tv>(new_β + b_begin, b_end - b_begin, b_begin,
+                                                                    g_begin, g_end, old_b_idx_map, all_groups, false);
+#pragma omp parallel for schedule(dynamic)
+                for (int64 local_a = 0; local_a < a_count; ++local_a)
                 {
-                    int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
-                    auto shared_b_new = precompute_shared_chunk<Ti, Tv>(new_β + b_begin, b_end - b_begin, b_begin,
-                                                                        g_begin, g_end, old_b_idx_map, all_groups, false);
+                    const int64 ia = a_begin + local_a;
+                    Ti dst_a = new_α[ia];
+                    Tv *accum = accum_new.data() + local_a * n_new_β;
                     for (int ig : alink[ia])
                     {
                         if (ig < g_begin || ig >= g_end)
@@ -293,31 +302,35 @@ static void select_pass_a(
                             Tv coeff = pa[0] * shared_b_new.phase0[j];
                             if (group.rank >= 2)
                                 coeff += pa[1] * shared_b_new.phase1[j];
-                            accum_new[new_ib] += src_psi[row_base + src_ib] * coeff;
+                            accum[new_ib] += src_psi[row_base + src_ib] * coeff;
                         }
                     }
                 }
             }
+        }
 
+        for (int64 local_a = 0; local_a < a_count; ++local_a)
+        {
+            const Ti dst_a = new_α[a_begin + local_a];
+            const Tv *old_accum = accum_old.data() + local_a * n_old_β;
             for (int64 ib = 0; ib < n_old_β; ++ib)
             {
-                Tv v = accum_old[ib];
+                Tv v = old_accum[ib];
                 if (v != Tv{} && v * v > E_var_sq * eps_sq)
-                    thread_p1.emplace_back(dst_a, old_β[ib]);
+                    chunk_p1.emplace_back(dst_a, old_β[ib]);
             }
+
+            const Tv *new_accum = accum_new.data() + local_a * n_new_β;
             for (int64 ib = 0; ib < n_new_β; ++ib)
             {
-                Tv v = accum_new[ib];
+                Tv v = new_accum[ib];
                 if (v != Tv{} && v * v > E_var_sq * eps_sq)
-                    thread_p3.emplace_back(dst_a, new_β[ib]);
+                    chunk_p3.emplace_back(dst_a, new_β[ib]);
             }
         }
 
-#pragma omp critical
-        {
-            out_p1.insert(out_p1.end(), std::make_move_iterator(thread_p1.begin()), std::make_move_iterator(thread_p1.end()));
-            out_p3.insert(out_p3.end(), std::make_move_iterator(thread_p3.begin()), std::make_move_iterator(thread_p3.end()));
-        }
+        out_p1.insert(out_p1.end(), std::make_move_iterator(chunk_p1.begin()), std::make_move_iterator(chunk_p1.end()));
+        out_p3.insert(out_p3.end(), std::make_move_iterator(chunk_p3.begin()), std::make_move_iterator(chunk_p3.end()));
     }
 }
 
@@ -336,29 +349,31 @@ static void select_pass_b(
 {
     Tv eps_sq = eps * eps;
     Tv E_var_sq = E_var * E_var;
+    constexpr int64 beta_chunk_size = 32;
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
 
-#pragma omp parallel
+    for (int64 beta_begin = 0; beta_begin < n_new_β; beta_begin += beta_chunk_size)
     {
-        std::vector<Tv> accum_old(n_old_α);
-        std::vector<std::pair<Ti, Ti>> thread_p2;
+        const int64 beta_end = std::min<int64>(beta_begin + beta_chunk_size, n_new_β);
+        const int64 beta_count = beta_end - beta_begin;
+        std::vector<Tv> accum_old(beta_count * n_old_α, Tv{});
+        std::vector<std::pair<Ti, Ti>> chunk_p2;
 
-#pragma omp for schedule(dynamic)
-        for (int64 ib = 0; ib < n_new_β; ++ib)
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
         {
-            Ti dst_b = new_β[ib];
-
-            std::fill(accum_old.begin(), accum_old.end(), Tv{});
-
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+            for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
             {
-                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
+                int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
+                auto shared_a_old = precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_end - a_begin, a_begin,
+                                                                    g_begin, g_end, old_a_idx_map, all_groups, true);
+#pragma omp parallel for schedule(dynamic)
+                for (int64 local_b = 0; local_b < beta_count; ++local_b)
                 {
-                    int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
-                    auto shared_a_old = precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_end - a_begin, a_begin,
-                                                                        g_begin, g_end, old_a_idx_map, all_groups, true);
+                    const int64 ib = beta_begin + local_b;
+                    Ti dst_b = new_β[ib];
+                    Tv *accum = accum_old.data() + local_b * n_old_α;
                     for (int ig : blink[ib])
                     {
                         if (ig < g_begin || ig >= g_end)
@@ -386,23 +401,25 @@ static void select_pass_b(
                             Tv coeff = shared_a_old.phase0[j] * pb[0];
                             if (group.rank >= 2)
                                 coeff += shared_a_old.phase1[j] * pb[1];
-                            accum_old[old_ia] += src_psi[col_or_row_base + src_ia * blk.num_b] * coeff;
+                            accum[old_ia] += src_psi[col_or_row_base + src_ia * blk.num_b] * coeff;
                         }
                     }
                 }
             }
+        }
 
+        for (int64 local_b = 0; local_b < beta_count; ++local_b)
+        {
+            const Ti dst_b = new_β[beta_begin + local_b];
+            const Tv *accum = accum_old.data() + local_b * n_old_α;
             for (int64 ia = 0; ia < n_old_α; ++ia)
             {
-                Tv v = accum_old[ia];
+                Tv v = accum[ia];
                 if (v != Tv{} && v * v > E_var_sq * eps_sq)
-                    thread_p2.emplace_back(old_α[ia], dst_b);
+                    chunk_p2.emplace_back(old_α[ia], dst_b);
             }
         }
 
-#pragma omp critical
-        {
-            out_p2.insert(out_p2.end(), std::make_move_iterator(thread_p2.begin()), std::make_move_iterator(thread_p2.end()));
-        }
+        out_p2.insert(out_p2.end(), std::make_move_iterator(chunk_p2.begin()), std::make_move_iterator(chunk_p2.end()));
     }
 }
