@@ -264,22 +264,6 @@ static void select_pass_a(
     const int64 num_a_chunks = (n_new_α + target_chunk_size - 1) / target_chunk_size;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
 
-    std::vector<std::vector<std::vector<std::vector<int>>>> alink_chunks;
-    alink_chunks.reserve(num_a_chunks);
-    for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
-    {
-        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
-        const int64 a_count = a_end - a_begin;
-        auto &link_chunks = alink_chunks.emplace_back();
-        link_chunks.reserve(num_group_chunks);
-        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-        {
-            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
-        }
-    }
-
     auto run_beta_side = [&](const Ti *beta, int64 n_beta,
                              std::vector<std::pair<Ti, Ti>> &out) {
         for (int64 b_begin = 0; b_begin < n_beta; b_begin += target_chunk_size)
@@ -300,7 +284,14 @@ static void select_pass_a(
                 const int64 a_begin = a_chunk * target_chunk_size;
                 const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
                 const int64 a_count = a_end - a_begin;
-                const auto &link_chunks = alink_chunks[a_chunk];
+                std::vector<std::vector<std::vector<int>>> link_chunks;
+                link_chunks.reserve(num_group_chunks);
+                for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+                {
+                    int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                        new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+                }
 
 #pragma omp parallel
                 {
