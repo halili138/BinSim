@@ -1,6 +1,7 @@
 #include "sci_basis.hpp"
 #include "sci_select.hpp"
 #include "sci_select_test.hpp"
+#include "sci3_select.hpp"
 #include "otf.hpp"
 
 extern "C"
@@ -102,6 +103,62 @@ extern "C"
     int64 sci_basis_dim_bitstr(void *ptr) { return static_cast<SciBasisManager<uint32> *>(ptr)->dim; }
 
     int64 sci_basis_num_blocks_bitstr(void *ptr) { return static_cast<SciBasisManager<uint32> *>(ptr)->num_blocks; }
+
+    void sci3_select_bitstr_f64(
+        const uint32_t *new_a, int64 n_new_a,
+        const uint32_t *new_b, int64 n_new_b,
+        const uint32_t *old_a, int64 n_old_a,
+        const uint32_t *old_b, int64 n_old_b,
+        void *src_basis,
+        void *net,
+        double *src_psi, double E_var, double eps,
+        uint32_t **out_a, uint32_t **out_b, int64 *n_pairs)
+    {
+        auto *basis = static_cast<SciBasisManager<uint32> *>(src_basis);
+        auto *otf   = static_cast<Network_OTF<uint32, double> *>(net);
+
+        auto all_groups = flatten_groups<uint32, double>(otf);
+
+        auto old_a_idx = build_idx_map<uint32>(basis, true);
+        auto old_b_idx = build_idx_map<uint32>(basis, false);
+
+        auto a_n2o = build_old2new_link<uint32, double>(new_a, n_new_a, all_groups, true);
+        auto b_n2o = build_old2new_link<uint32, double>(new_b, n_new_b, all_groups, false);
+        auto a_o2o = build_old2old_link<uint32, double>(old_a, n_old_a, all_groups, true);
+        auto b_o2o = build_old2old_link<uint32, double>(old_b, n_old_b, all_groups, false);
+
+        auto shared_b_new = precompute_shared<uint32, double>(new_b, n_new_b, old_b_idx, b_n2o, all_groups, false);
+        auto shared_b_old = precompute_shared<uint32, double>(old_b, n_old_b, old_b_idx, b_o2o, all_groups, false);
+        auto shared_a_old = precompute_shared<uint32, double>(old_a, n_old_a, old_a_idx, a_o2o, all_groups, true);
+
+        std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
+        select_pass_a<uint32, double>(
+            new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
+            a_n2o, old_a_idx, shared_b_old, shared_b_new,
+            all_groups, src_psi, basis->blocks,
+            E_var, eps, p1, p3);
+        select_pass_b<uint32, double>(
+            new_b, n_new_b, old_a, n_old_a,
+            b_n2o, old_b_idx, shared_a_old,
+            all_groups, src_psi, basis->blocks,
+            E_var, eps, p2);
+
+        *n_pairs = (int64)(p1.size() + p2.size() + p3.size());
+        if (*n_pairs == 0)
+        {
+            *out_a = nullptr;
+            *out_b = nullptr;
+            return;
+        }
+
+        *out_a = (uint32_t *)malloc((size_t)(*n_pairs) * sizeof(uint32_t));
+        *out_b = (uint32_t *)malloc((size_t)(*n_pairs) * sizeof(uint32_t));
+
+        int64 idx = 0;
+        for (const auto &[a, b] : p1) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
+        for (const auto &[a, b] : p2) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
+        for (const auto &[a, b] : p3) { (*out_a)[idx] = a; (*out_b)[idx] = b; ++idx; }
+    }
 
     void destroy_sci_basis_manager_bitstr_f64(void *ptr) { destroy_sci_basis_manager<uint32>(static_cast<SciBasisManager<uint32> *>(ptr)); }
 }

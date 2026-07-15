@@ -11,19 +11,19 @@ function test_vqe(mole)
     gs      = get_bounds_0based(ham.axs, ham.bxs)
     ngs     = length(gs) - 1
 
-    svd_groups = compress_by_svd(ham)
-    c=Dict{Float64, Int}()
-    for g in svd_groups
-        r = g.ncs/g.rank
-        if haskey(c, r)
-            c[r] += 1
-        else
-            c[r] = 1
-        end
-    end
-    for (k,v) in c
-        @printf("Ng/rank: %-6.2f      per: %.2f %%\n", k, v/ngs * 100)
-    end
+    # svd_groups = compress_by_svd(ham)
+    # c=Dict{Float64, Int}()
+    # for g in svd_groups
+    #     r = g.ncs/g.rank
+    #     if haskey(c, r)
+    #         c[r] += 1
+    #     else
+    #         c[r] = 1
+    #     end
+    # end
+    # for (k,v) in c
+    #     @printf("Ng/rank: %-6.2f      per: %.2f %%\n", k, v/ngs * 100)
+    # end
     
     # orbs    = Orbitals(); kernel(mole, orbs, generalize=false)
     # pool    = FEB(orbs)
