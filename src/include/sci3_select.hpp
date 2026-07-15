@@ -277,8 +277,6 @@ static void select_pass_a(
         std::vector<Tv> accum_new(n_new_β);
         std::vector<int> mark_old(n_old_β, 0);
         std::vector<int> mark_new(n_new_β, 0);
-        std::vector<int> touched_old;
-        std::vector<int> touched_new;
         int epoch_old = 1;
         int epoch_new = 1;
         std::vector<std::pair<Ti, Ti>> thread_p1, thread_p3;
@@ -287,9 +285,6 @@ static void select_pass_a(
         for (int64 ia = 0; ia < n_new_α; ++ia)
         {
             Ti dst_a = new_α[ia];
-
-            touched_old.clear();
-            touched_new.clear();
 
             for (int ig : alink[ia])
             {
@@ -323,7 +318,6 @@ static void select_pass_a(
                         {
                             mark_old[old_ib] = epoch_old;
                             accum_old[old_ib] = Tv{};
-                            touched_old.push_back(old_ib);
                         }
                     }
                     for (int64 j = r2_off; j < r2_end; ++j)
@@ -333,7 +327,6 @@ static void select_pass_a(
                         {
                             mark_old[old_ib] = epoch_old;
                             accum_old[old_ib] = Tv{};
-                            touched_old.push_back(old_ib);
                         }
                     }
 
@@ -368,7 +361,6 @@ static void select_pass_a(
                         {
                             mark_new[new_ib] = epoch_new;
                             accum_new[new_ib] = Tv{};
-                            touched_new.push_back(new_ib);
                         }
                     }
                     for (int64 j = r2_off; j < r2_end; ++j)
@@ -378,7 +370,6 @@ static void select_pass_a(
                         {
                             mark_new[new_ib] = epoch_new;
                             accum_new[new_ib] = Tv{};
-                            touched_new.push_back(new_ib);
                         }
                     }
 
@@ -404,8 +395,10 @@ static void select_pass_a(
             }
 
             // eps_check old_β → P1
-            for (int ib : touched_old)
+            for (int64 ib = 0; ib < n_old_β; ++ib)
             {
+                if (mark_old[ib] != epoch_old)
+                    continue;
                 Tv v = accum_old[ib];
                 if (v == Tv{})
                     continue;
@@ -413,8 +406,10 @@ static void select_pass_a(
                     thread_p1.emplace_back(dst_a, old_β[ib]);
             }
             // eps_check new_β → P3
-            for (int ib : touched_new)
+            for (int64 ib = 0; ib < n_new_β; ++ib)
             {
+                if (mark_new[ib] != epoch_new)
+                    continue;
                 Tv v = accum_new[ib];
                 if (v == Tv{})
                     continue;
@@ -470,7 +465,6 @@ static void select_pass_b(
     {
         std::vector<Tv> accum_old(n_old_α);
         std::vector<int> mark_old(n_old_α, 0);
-        std::vector<int> touched_old;
         int epoch_old = 1;
         std::vector<std::pair<Ti, Ti>> thread_p2;
 
@@ -478,8 +472,6 @@ static void select_pass_b(
         for (int64 ib = 0; ib < n_new_β; ++ib)
         {
             Ti dst_b = new_β[ib];
-
-            touched_old.clear();
 
             for (int ig : blink[ib])
             {
@@ -512,7 +504,6 @@ static void select_pass_b(
                     {
                         mark_old[old_ia] = epoch_old;
                         accum_old[old_ia] = Tv{};
-                        touched_old.push_back(old_ia);
                     }
                 }
                 for (int64 j = r2_off; j < r2_end; ++j)
@@ -522,11 +513,10 @@ static void select_pass_b(
                     {
                         mark_old[old_ia] = epoch_old;
                         accum_old[old_ia] = Tv{};
-                        touched_old.push_back(old_ia);
                     }
                 }
 
-                // The scalar mark pass above keeps touched_old updates ordered and
+                // The scalar mark pass above keeps first-touch resets ordered and
                 // separate from the arithmetic loop. For one group/bucket, old_ia is
                 // unique because dst -> (dst ^ excitation) is one-to-one, so the
                 // scatter accumulation below has no loop-carried dependency and can
@@ -552,8 +542,10 @@ static void select_pass_b(
             }
 
             // eps_check old_α → P2
-            for (int ia : touched_old)
+            for (int64 ia = 0; ia < n_old_α; ++ia)
             {
+                if (mark_old[ia] != epoch_old)
+                    continue;
                 Tv v = accum_old[ia];
                 if (v == Tv{})
                     continue;
