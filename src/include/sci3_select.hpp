@@ -67,7 +67,6 @@ static std::vector<std::vector<int>> build_old2new_link(
             Ti exc = is_alpha ? groups[g].ax : groups[g].bx;
             if (exc == 0)
                 continue;
-            // include if src (= str ^ exc) is NOT in new_strs
             if (new_set.find(str ^ exc) == new_set.end())
                 link[i].push_back(g);
         }
@@ -91,7 +90,6 @@ static std::vector<std::vector<int>> build_old2old_link(
         for (int g = 0; g < (int)groups.size(); ++g)
         {
             Ti exc = is_alpha ? groups[g].ax : groups[g].bx;
-            // include if src (= str ^ exc) IS in old_strs
             if (old_set.find(str ^ exc) != old_set.end())
                 link[i].push_back(g);
         }
@@ -276,8 +274,7 @@ static void select_pass_a(
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
                 int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin,
-                                                                        g_begin, g_end, old_b_idx_map, all_groups, false));
+                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, all_groups, false));
             }
 
             for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
@@ -290,8 +287,7 @@ static void select_pass_a(
                 for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
                 {
                     int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                        new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
                 }
 
 #pragma omp parallel
@@ -386,8 +382,7 @@ static void select_pass_b(
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
         {
             int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin,
-                                                                    g_begin, g_end, old_a_idx_map, all_groups, true));
+            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, all_groups, true));
         }
 
         for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
@@ -400,8 +395,7 @@ static void select_pass_b(
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
                 int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
-                    new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
+                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
             }
 
 #pragma omp parallel
