@@ -261,7 +261,24 @@ static void select_pass_a(
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
     const int64 num_group_chunks = ((int64)all_groups.size() + group_chunk_size - 1) / group_chunk_size;
+    const int64 num_a_chunks = (n_new_α + target_chunk_size - 1) / target_chunk_size;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
+
+    std::vector<std::vector<std::vector<std::vector<int>>>> alink_chunks;
+    alink_chunks.reserve(num_a_chunks);
+    for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
+    {
+        const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
+        const int64 a_count = a_end - a_begin;
+        auto &link_chunks = alink_chunks.emplace_back();
+        link_chunks.reserve(num_group_chunks);
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+        {
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+        }
+    }
 
     for (int64 a_begin = 0; a_begin < n_new_α; a_begin += target_chunk_size)
     {
@@ -276,20 +293,12 @@ static void select_pass_a(
                 new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
         }
 
-        auto run_beta_side = [&](const Ti *beta, int64 n_beta,
-                                 std::vector<std::pair<Ti, Ti>> &out) {
-            for (int64 b_begin = 0; b_begin < n_beta; b_begin += target_chunk_size)
+            for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
             {
-                const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_beta);
-                const int64 b_count = b_end - b_begin;
-                std::vector<ForwardShared<Tv>> shared_chunks;
-                shared_chunks.reserve(num_group_chunks);
-                for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-                {
-                    int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                    shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin,
-                                                                            g_begin, g_end, old_b_idx_map, all_groups, false));
-                }
+                const int64 a_begin = a_chunk * target_chunk_size;
+                const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_new_α);
+                const int64 a_count = a_end - a_begin;
+                const auto &link_chunks = alink_chunks[a_chunk];
 
 #pragma omp parallel
                 {
@@ -373,7 +382,24 @@ static void select_pass_b(
     constexpr int64 group_chunk_size = 512;
     constexpr int64 target_chunk_size = 4096;
     const int64 num_group_chunks = ((int64)all_groups.size() + group_chunk_size - 1) / group_chunk_size;
+    const int64 num_b_chunks = (n_new_β + target_chunk_size - 1) / target_chunk_size;
     const ankerl::unordered_dense::set<Ti> new_b_set(new_β, new_β + n_new_β);
+
+    std::vector<std::vector<std::vector<std::vector<int>>>> blink_chunks;
+    blink_chunks.reserve(num_b_chunks);
+    for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
+    {
+        const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+        const int64 b_count = b_end - b_begin;
+        auto &link_chunks = blink_chunks.emplace_back();
+        link_chunks.reserve(num_group_chunks);
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
+        {
+            int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
+            link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(
+                new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
+        }
+    }
 
     for (int64 b_begin = 0; b_begin < n_new_β; b_begin += target_chunk_size)
     {
@@ -388,18 +414,12 @@ static void select_pass_b(
                 new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
         }
 
-        for (int64 a_begin = 0; a_begin < n_old_α; a_begin += target_chunk_size)
+        for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
         {
-            const int64 a_end = std::min<int64>(a_begin + target_chunk_size, n_old_α);
-            const int64 a_count = a_end - a_begin;
-            std::vector<ForwardShared<Tv>> shared_chunks;
-            shared_chunks.reserve(num_group_chunks);
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += group_chunk_size)
-            {
-                int64 g_end = std::min<int64>(g_begin + group_chunk_size, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin,
-                                                                        g_begin, g_end, old_a_idx_map, all_groups, true));
-            }
+            const int64 b_begin = b_chunk * target_chunk_size;
+            const int64 b_end = std::min<int64>(b_begin + target_chunk_size, n_new_β);
+            const int64 b_count = b_end - b_begin;
+            const auto &link_chunks = blink_chunks[b_chunk];
 
 #pragma omp parallel
             {
