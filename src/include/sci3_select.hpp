@@ -1,5 +1,6 @@
 #pragma once
 #include "sci_select_test.hpp"
+#include <limits>
 
 template <typename Tv>
 struct ForwardShared
@@ -196,6 +197,12 @@ static void select_pass_a(
     {
         std::vector<Tv> accum_old(n_old_β);
         std::vector<Tv> accum_new(n_new_β);
+        std::vector<int> mark_old(n_old_β, 0);
+        std::vector<int> mark_new(n_new_β, 0);
+        std::vector<int> touched_old;
+        std::vector<int> touched_new;
+        int epoch_old = 1;
+        int epoch_new = 1;
         std::vector<std::pair<Ti, Ti>> thread_p1, thread_p3;
 
 #pragma omp for schedule(dynamic)
@@ -203,8 +210,8 @@ static void select_pass_a(
         {
             Ti dst_a = new_α[ia];
 
-            std::fill(accum_old.begin(), accum_old.end(), Tv{});
-            std::fill(accum_new.begin(), accum_new.end(), Tv{});
+            touched_old.clear();
+            touched_new.clear();
 
             for (int ig : alink[ia])
             {
@@ -245,6 +252,12 @@ static void select_pass_a(
                         const auto &blk = src_blocks[src_a_blk_idx];
                         int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
 
+                        if (mark_old[old_ib] != epoch_old)
+                        {
+                            mark_old[old_ib] = epoch_old;
+                            accum_old[old_ib] = Tv{};
+                            touched_old.push_back(old_ib);
+                        }
                         accum_old[old_ib] += src_psi[src_gid] * coeff;
                     }
                 }
@@ -270,13 +283,19 @@ static void select_pass_a(
                         const auto &blk = src_blocks[src_a_blk_idx];
                         int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
 
+                        if (mark_new[new_ib] != epoch_new)
+                        {
+                            mark_new[new_ib] = epoch_new;
+                            accum_new[new_ib] = Tv{};
+                            touched_new.push_back(new_ib);
+                        }
                         accum_new[new_ib] += src_psi[src_gid] * coeff;
                     }
                 }
             }
 
             // eps_check old_β → P1
-            for (int64 ib = 0; ib < n_old_β; ++ib)
+            for (int ib : touched_old)
             {
                 Tv v = accum_old[ib];
                 if (v == Tv{})
@@ -285,7 +304,7 @@ static void select_pass_a(
                     thread_p1.emplace_back(dst_a, old_β[ib]);
             }
             // eps_check new_β → P3
-            for (int64 ib = 0; ib < n_new_β; ++ib)
+            for (int ib : touched_new)
             {
                 Tv v = accum_new[ib];
                 if (v == Tv{})
@@ -293,6 +312,21 @@ static void select_pass_a(
                 if (v * v > E_var_sq * eps_sq)
                     thread_p3.emplace_back(dst_a, new_β[ib]);
             }
+
+            if (epoch_old == std::numeric_limits<int>::max())
+            {
+                std::fill(mark_old.begin(), mark_old.end(), 0);
+                epoch_old = 1;
+            }
+            else
+                ++epoch_old;
+            if (epoch_new == std::numeric_limits<int>::max())
+            {
+                std::fill(mark_new.begin(), mark_new.end(), 0);
+                epoch_new = 1;
+            }
+            else
+                ++epoch_new;
         }
 
 #pragma omp critical
@@ -326,6 +360,9 @@ static void select_pass_b(
 #pragma omp parallel
     {
         std::vector<Tv> accum_old(n_old_α);
+        std::vector<int> mark_old(n_old_α, 0);
+        std::vector<int> touched_old;
+        int epoch_old = 1;
         std::vector<std::pair<Ti, Ti>> thread_p2;
 
 #pragma omp for schedule(dynamic)
@@ -333,7 +370,7 @@ static void select_pass_b(
         {
             Ti dst_b = new_β[ib];
 
-            std::fill(accum_old.begin(), accum_old.end(), Tv{});
+            touched_old.clear();
 
             for (int ig : blink[ib])
             {
@@ -373,12 +410,18 @@ static void select_pass_b(
                     const auto &blk = src_blocks[src_b_blk_idx];
                     int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
 
+                    if (mark_old[old_ia] != epoch_old)
+                    {
+                        mark_old[old_ia] = epoch_old;
+                        accum_old[old_ia] = Tv{};
+                        touched_old.push_back(old_ia);
+                    }
                     accum_old[old_ia] += src_psi[src_gid] * coeff;
                 }
             }
 
             // eps_check old_α → P2
-            for (int64 ia = 0; ia < n_old_α; ++ia)
+            for (int ia : touched_old)
             {
                 Tv v = accum_old[ia];
                 if (v == Tv{})
@@ -386,6 +429,14 @@ static void select_pass_b(
                 if (v * v > E_var_sq * eps_sq)
                     thread_p2.emplace_back(old_α[ia], dst_b);
             }
+
+            if (epoch_old == std::numeric_limits<int>::max())
+            {
+                std::fill(mark_old.begin(), mark_old.end(), 0);
+                epoch_old = 1;
+            }
+            else
+                ++epoch_old;
         }
 
 #pragma omp critical
