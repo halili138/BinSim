@@ -253,6 +253,9 @@ static void select_pass_a(
                 if (group.rank == 1)
                     pa[1] = Tv{};
 
+                const auto &blk = src_blocks[src_a_blk_idx];
+                const int64 row_base = blk.offset + static_cast<int64>(src_ia) * blk.num_b;
+
                 // ---- Part 1: old_β ----
                 {
                     auto [off, end] = shared_b_old.range(ig, src_a_blk_idx);
@@ -266,8 +269,7 @@ static void select_pass_a(
                         if (group.rank >= 2)
                             coeff += pa[1] * pb[1];
 
-                        const auto &blk = src_blocks[src_a_blk_idx];
-                        int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
+                        int64 src_gid = row_base + src_ib;
 
                         if (mark_old[old_ib] != epoch_old)
                         {
@@ -292,8 +294,7 @@ static void select_pass_a(
                         if (group.rank >= 2)
                             coeff += pa[1] * pb[1];
 
-                        const auto &blk = src_blocks[src_a_blk_idx];
-                        int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
+                        int64 src_gid = row_base + src_ib;
 
                         if (mark_new[new_ib] != epoch_new)
                         {
@@ -402,6 +403,9 @@ static void select_pass_b(
                 if (group.rank == 1)
                     pb[1] = Tv{};
 
+                const auto &blk = src_blocks[src_b_blk_idx];
+                const int64 col_or_row_base = blk.offset + src_ib;
+
                 // ---- Part 2: old_α ----
                 auto [off, end] = shared_a_old.range(ig, src_b_blk_idx);
                 for (int64 j = off; j < end; ++j)
@@ -414,8 +418,7 @@ static void select_pass_b(
                     if (group.rank >= 2)
                         coeff += pa[1] * pb[1];
 
-                    const auto &blk = src_blocks[src_b_blk_idx];
-                    int64 src_gid = blk.offset + (int64)src_ia * blk.num_b + src_ib;
+                    int64 src_gid = col_or_row_base + static_cast<int64>(src_ia) * blk.num_b;
 
                     if (mark_old[old_ia] != epoch_old)
                     {
