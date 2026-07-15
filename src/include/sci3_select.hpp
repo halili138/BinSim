@@ -5,11 +5,21 @@ template <typename Tv>
 struct ForwardShared
 {
     int64 ngs;
-    std::vector<int64> offsets;    // [ngs+1]
-    std::vector<int> dst_idxs;     // flat: global b index into target array
-    std::vector<int> src_idxs;     // flat: local b index within source block
-    std::vector<int> src_blk_idxs; // flat: source block index
-    std::vector<Tv> phases;        // flat: 2 doubles per entry (rank-1 padded)
+    int64 num_blocks;
+    std::vector<int64> offsets;       // [ngs+1], group totals retained for diagnostics
+    std::vector<int64> block_offsets; // [ngs * num_blocks + 1], grouped by (group, src block)
+    std::vector<int> dst_idxs;        // flat: global b index into target array
+    std::vector<int> src_idxs;        // flat: local b index within source block
+    std::vector<int> src_blk_idxs;    // flat: source block index
+    std::vector<Tv> phases;           // flat: 2 doubles per entry (rank-1 padded)
+
+    std::pair<int64, int64> range(int64 group, int64 src_blk_idx) const
+    {
+        if (group < 0 || group >= ngs || src_blk_idx < 0 || src_blk_idx >= num_blocks)
+            return {0, 0};
+        int64 key = group * num_blocks + src_blk_idx;
+        return {block_offsets[key], block_offsets[key + 1]};
+    }
 };
 
 template <typename Ti, typename Tv>
@@ -101,8 +111,16 @@ static ForwardShared<Tv> precompute_shared(
     result.ngs = ngs;
     result.offsets.assign(ngs + 1, 0);
 
-    // count pass
-    std::vector<int64> cnts(ngs);
+    int64 num_blocks = 0;
+    for (const auto &kv : old_idx_map)
+        num_blocks = std::max<int64>(num_blocks, (int64)kv.second.second + 1);
+    result.num_blocks = num_blocks;
+
+    // count pass: bucket entries by (group, source block) so lookups can select
+    // exactly the compatible block range during the select passes.
+    const int64 num_buckets = ngs * num_blocks;
+    std::vector<int64> cnts(num_buckets);
+
     for (int64 i = 0; i < n_tgt; ++i)
     {
         Ti dst = tgt_strs[i];
@@ -110,23 +128,27 @@ static ForwardShared<Tv> precompute_shared(
         {
             Ti exc = is_alpha ? groups[g].ax : groups[g].bx;
             Ti src = dst ^ exc;
-            if (old_idx_map.find(src) != old_idx_map.end())
-                ++cnts[g];
+            auto it = old_idx_map.find(src);
+            if (it == old_idx_map.end())
+                continue;
+            ++cnts[(int64)g * num_blocks + it->second.second];
         }
     }
-    for (int64 g = 0; g < ngs; ++g)
-        result.offsets[g + 1] = result.offsets[g] + cnts[g];
 
-    int64 total = result.offsets[ngs];
+    result.block_offsets.assign(num_buckets + 1, 0);
+    for (int64 b = 0; b < num_buckets; ++b)
+        result.block_offsets[b + 1] = result.block_offsets[b] + cnts[b];
+
+    for (int64 g = 0; g < ngs; ++g)
+        result.offsets[g + 1] = result.block_offsets[(g + 1) * num_blocks];
+
+    int64 total = result.block_offsets[num_buckets];
     result.dst_idxs.assign(total, 0);
     result.src_idxs.assign(total, 0);
     result.src_blk_idxs.assign(total, 0);
     result.phases.assign(total * 2, Tv{});
 
-    // fill pass
-    std::vector<int64> pos(ngs);
-    for (int64 g = 0; g < ngs; ++g)
-        pos[g] = result.offsets[g];
+    std::vector<int64> pos = result.block_offsets;
 
     for (int64 i = 0; i < n_tgt; ++i)
     {
@@ -139,10 +161,11 @@ static ForwardShared<Tv> precompute_shared(
             if (it == old_idx_map.end())
                 continue;
 
-            int64 p = pos[g]++;
+            int src_blk_idx = it->second.second;
+            int64 p = pos[(int64)g * num_blocks + src_blk_idx]++;
             result.dst_idxs[p] = (int)i;
             result.src_idxs[p] = it->second.first;
-            result.src_blk_idxs[p] = it->second.second;
+            result.src_blk_idxs[p] = src_blk_idx;
 
             Tv *phase_ptr = result.phases.data() + p * 2;
             if (exc == 0)
@@ -228,14 +251,9 @@ static void select_pass_a(
                 const int64 row_base = blk.offset + src_ia * blk.num_b;
                 // ---- Part 1: old_β ----
                 {
-                    int64 off = shared_b_old.offsets[ig];
-                    int64 end = shared_b_old.offsets[ig + 1];
+                    auto [off, end] = shared_b_old.range(ig, src_a_blk_idx);
                     for (int64 j = off; j < end; ++j)
                     {
-                        int src_b_blk_idx = shared_b_old.src_blk_idxs[j];
-                        if (src_a_blk_idx != src_b_blk_idx)
-                            continue;
-
                         int old_ib = shared_b_old.dst_idxs[j];
                         int src_ib = shared_b_old.src_idxs[j];
                         const Tv *pb = shared_b_old.phases.data() + j * 2;
@@ -252,14 +270,9 @@ static void select_pass_a(
 
                 // ---- Part 3: new_β ----
                 {
-                    int64 off = shared_b_new.offsets[ig];
-                    int64 end = shared_b_new.offsets[ig + 1];
+                    auto [off, end] = shared_b_new.range(ig, src_a_blk_idx);
                     for (int64 j = off; j < end; ++j)
                     {
-                        int src_b_blk_idx = shared_b_new.src_blk_idxs[j];
-                        if (src_a_blk_idx != src_b_blk_idx)
-                            continue;
-
                         int new_ib = shared_b_new.dst_idxs[j];
                         int src_ib = shared_b_new.src_idxs[j];
                         const Tv *pb = shared_b_new.phases.data() + j * 2;
@@ -357,14 +370,9 @@ static void select_pass_b(
                 const int64 col_or_row_base = blk.offset + src_ib;
 
                 // ---- Part 2: old_α ----
-                int64 off = shared_a_old.offsets[ig];
-                int64 end = shared_a_old.offsets[ig + 1];
+                auto [off, end] = shared_a_old.range(ig, src_b_blk_idx);
                 for (int64 j = off; j < end; ++j)
                 {
-                    int src_a_blk_idx = shared_a_old.src_blk_idxs[j];
-                    if (src_b_blk_idx != src_a_blk_idx)
-                        continue;
-
                     int old_ia = shared_a_old.dst_idxs[j];
                     int src_ia = shared_a_old.src_idxs[j];
                     const Tv *pa = shared_a_old.phases.data() + j * 2;
