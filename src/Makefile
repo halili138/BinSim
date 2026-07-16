@@ -18,6 +18,7 @@ TARGETS := lib/libham.so lib/libham_real.so lib/libbasis.so lib/libdiag.so lib/l
 		   lib/libcuotf.so \
 		   lib/libdist.so lib/libcudist.so \
 		   lib/libsci_otf.so \
+		   lib/libsci_otf_nosym.so \
 # 		   lib/libcuda_sci_bitstr.so
 
 .PHONY: all clean
@@ -52,6 +53,9 @@ lib/libcudist.so: extern/cudist.cu | lib
 	$(CUXX) $(CUXXFLAGS) $(INC_FLAGS) -o $@ $<
 
 lib/libsci_otf.so: extern/sci_otf.cpp | lib
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
+
+lib/libsci_otf_nosym.so: extern/sci_otf_nosym.cpp | lib
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) $(THIRD_PARTY_INC) -o $@ $<
 
 # lib/libcuda_sci_bitstr.so: extern/cuda_sci_bitstr.cu | lib
