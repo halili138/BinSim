@@ -13,7 +13,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     build(mole)
 
     mole.e_scale = n2_6_31g[1.0]
-    mole.orbsym .%= 10
 
     run_cuda_sci(mole; max_iter=20, max_size=5000, eps=parse(Float64, ARGS[4]), verbose=true, diag_mode=:cpu)
 end

@@ -6,12 +6,12 @@ include("../jl/binsim.jl")
 
 
 function test_adapt_vqe(mole)
-    basis   = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis   = BasisManager(mole)
     ham     = JW_hamiltonian(mole)
     orbs    = Orbitals(); kernel(mole, orbs, generalize=false)
     pool    = FEB(orbs)
 
-    lv      = get_hf(basis, mole.nelec)
+    lv      = get_hf(basis)
     rv      = zeros(Float64, basis.dim)
     v0_idxs = findall(x -> x != 0, lv) 
     v0_vals = lv[v0_idxs]
@@ -51,8 +51,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.basis = ARGS[3]
 
     build(mole)
-
-    mole.orbsym = Int64.(mole.orbsym .% 10)
 
     test_adapt_vqe(mole)
 end

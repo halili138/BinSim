@@ -13,7 +13,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     build(mole)
 
     mole.e_scale = n2_6_31g[parse(Float64, ARGS[2])]
-    mole.orbsym .%= 10
 
     run_sci_nosym(mole; max_iter=20, eps=parse(Float64, ARGS[4]), verbose=true)
 end

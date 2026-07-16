@@ -6,9 +6,9 @@ include("../jl/binsim.jl")
 
 
 function test_hvec(mole, nsteps)
-    basis = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis = BasisManager(mole)
     ham   = JW_hamiltonian(mole)
-    v     = get_hf(basis, mole.nelec)
+    v     = get_hf(basis)
     w     = zeros(Float64, basis.dim)
     funcs = OTF_Functions(basis, ham, typeof(ham)[])
 
@@ -22,11 +22,11 @@ end
 
 
 function test_cost_fun(mole, nsteps)
-    basis       = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis       = BasisManager(mole)
     ham         = JW_hamiltonian(mole)
     orbs        = Orbitals(); kernel(mole, orbs, generalize=false)
     pool        = FEB(orbs)
-    v           = get_hf(basis, mole.nelec)
+    v           = get_hf(basis)
     w           = zeros(Float64, basis.dim)
     funcs       = OTF_Functions(basis, ham, pool, time_print=false)
 
@@ -52,10 +52,10 @@ end
 
 
 function test_trotter(mole, nsteps)
-    basis       = BasisManager(mole.norb, mole.nelec, mole.orbsym)
+    basis       = BasisManager(mole)
     orbs        = Orbitals(); kernel(mole, orbs, generalize=false)
     pool        = FEB(orbs)
-    v           = get_hf(basis, mole.nelec)
+    v           = get_hf(basis)
     funcs       = OTF_Functions(basis, eltype(pool)(), pool, time_print=false)
 
     v0_idxs     = findall(x -> x != 0, v) 
@@ -82,8 +82,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.basis = ARGS[2]
 
     build(mole)
-
-    mole.orbsym = Int64.(mole.orbsym .% 10)
 
     ARGS[3] == "1" && test_hvec(mole, 10)
     ARGS[3] == "2" && test_cost_fun(mole, 10)

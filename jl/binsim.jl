@@ -82,9 +82,11 @@ const eps3::Float64 = 1e-16
 
 include("integer.jl")
 include("tools.jl")
+
+include("sysinfo.jl")
 include("geo.jl")
-include("save_int.jl")
-include("load_data.jl")
+include("geo_pyscf_dist.jl")
+
 include("binqubitabab.jl")
 include("binqubitaabb.jl")
 include("hamiltonian.jl")

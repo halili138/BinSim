@@ -59,8 +59,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     build(mole)
 
-    mole.orbsym = Int64.(mole.orbsym .% 10)
-
     test_vqe(mole)
 end
 
@@ -76,7 +74,6 @@ end
 
 #         build(mole)
 
-#         # mole.orbsym = Int64.(mole.orbsym .% 10)
 #         mole.orbsym = zeros(Int64, mole.norb)
 
 #         e_opt, _, _ = test_vqe(mole)

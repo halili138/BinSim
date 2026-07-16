@@ -8,7 +8,6 @@ function h_chain(nh::Int, ratio::Float64=1.0)
     return geo
 end
 
-
 function mole_geo(name::String, ratio::Float64=1.0)
     geo = ""
 
@@ -138,74 +137,9 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H   $(-x)  $(-x)  $( x);
         "
     elseif name == "c2h4"
-        a1 = 1.33 * ratio
-        a2 = 1.08 * ratio
-        θ = deg2rad(180 - 121.3)
-
-        (c1x, c1y, c1z) = (-a1 / 2, 0.0, 0.0)
-        (c2x, c2y, c2z) = (a1 / 2, 0.0, 0.0)
-
-        h1x = c1x - a2 * cos(θ)
-        h1y = c1y + a2 * sin(θ)
-        h1z = 0.0
-
-        h2y = c1y - a2 * sin(θ)
-        h2x = c1x - a2 * cos(θ)
-        h2z = 0.0
-
-        h3x = c2x + a2 * cos(θ)
-        h3y = c2y + a2 * sin(θ)
-        h3z = 0.0
-
-        h4x = c2x + a2 * cos(θ)
-        h4y = c2y - a2 * sin(θ)
-        h4z = 0.0
-
-        geo = "
-        C $(c1x)  $(c1y)  $(c1z);
-        C $(c2x)  $(c2y)  $(c2z);
-        H $(h1x)  $(h1y)  $(h1z);
-        H $(h2x)  $(h2y)  $(h2z);
-        H $(h3x)  $(h3y)  $(h3z);
-        H $(h4x)  $(h4y)  $(h4z);
-        "
+        geo = ethylene_geo(ratio, 0.0)
     elseif name == "c2h6"
-        a1 = 1.54 * ratio
-        a2 = 1.09 * ratio
-        θ = deg2rad(109.5)
-        (c1x, c1y, c1z) = (0.0, 0.0, 0.0)
-        (c2x, c2y, c2z) = (a1, 0.0, 0.0)
-        # C1上的氢原子（指向-X方向）
-        h1x = a2 * cos(θ)
-        h1y = a2 * sin(θ)
-        h1z = 0.0
-        h2x = a2 * cos(θ)
-        h2y = a2 * sin(θ) * cos(deg2rad(120))
-        h2z = a2 * sin(θ) * sin(deg2rad(120))
-        h3x = a2 * cos(θ)
-        h3y = a2 * sin(θ) * cos(deg2rad(240))
-        h3z = a2 * sin(θ) * sin(deg2rad(240))
-        # C2上的氢原子（指向+X方向，与C1上的氢交错60°）
-        # 修正：使用 -cos(θ) 或 cos(π-θ)，因为θ>90°，cos(θ)<0
-        h4x = a1 - a2 * cos(θ)  # 等价于 a1 + a2 * cos(π-θ)
-        h4y = a2 * sin(θ) * cos(deg2rad(60))
-        h4z = a2 * sin(θ) * sin(deg2rad(60))
-        h5x = a1 - a2 * cos(θ)
-        h5y = a2 * sin(θ) * cos(deg2rad(180))
-        h5z = a2 * sin(θ) * sin(deg2rad(180))
-        h6x = a1 - a2 * cos(θ)
-        h6y = a2 * sin(θ) * cos(deg2rad(300))
-        h6z = a2 * sin(θ) * sin(deg2rad(300))
-        geo = "
-        C $(c1x) $(c1y) $(c1z)
-        C $(c2x) $(c2y) $(c2z)
-        H $(h1x) $(h1y) $(h1z)
-        H $(h2x) $(h2y) $(h2z)
-        H $(h3x) $(h3y) $(h3z)
-        H $(h4x) $(h4y) $(h4z)
-        H $(h5x) $(h5y) $(h5z)
-        H $(h6x) $(h6y) $(h6z)
-        "
+        geo = ethane_geo(ratio, 60.0)
     elseif name == "c6h6"
         cc_bond = 1.39 * ratio
         ch_bond = 1.08 * ratio
@@ -364,6 +298,9 @@ function mole_geo(name::String, ratio::Float64=1.0)
         H   $(h3x) $(h3y) $(z_hm);
         H   $(h3x) $(-h3y) $(z_hm);
         "
+    elseif occursin(r"^h\d+$", name)
+        nh = parse(Int, match(r"\d+", name).match)
+        geo = h_chain(nh, ratio)
     else
         throw(DomainError("No corresponding geometry name!"))
     end
@@ -371,18 +308,7 @@ function mole_geo(name::String, ratio::Float64=1.0)
     return geo
 end
 
-
-function molecule_geometry(name::String, ratio::Float64)
-    if name in ["h$i" for i in 2:2:120]
-        nH = parse(Int, match(r"\d+", name).match)
-        return h_chain(nH, ratio)
-    else
-        return mole_geo(name, ratio)
-    end
-end
-
-
-function build_ethane_geometry(ratio=1.0, phi_deg=60.0)
+function ethane_geo(ratio::Float64, phi_deg::Float64)
     a1 = 1.54 * ratio
     a2 = 1.09 * ratio
     θ = deg2rad(109.5)
@@ -431,8 +357,7 @@ function build_ethane_geometry(ratio=1.0, phi_deg=60.0)
     return geo
 end
 
-
-function build_ethylene_geometry(ratio=1.0, phi_deg=0.0)
+function ethylene_geo(ratio::Float64, phi_deg::Float64)
     # 乙烯的标准几何参数
     a_cc = 1.339 * ratio  # C=C 双键键长
     a_ch = 1.087 * ratio  # C-H 键长
@@ -486,3 +411,196 @@ function build_ethylene_geometry(ratio=1.0, phi_deg=0.0)
     return geo
 end
 
+function scf_mole(geo::String, basis::String, save_path::String)
+    gto = pyimport("pyscf.gto")
+    scf = pyimport("pyscf.scf")
+
+    mol = gto.M(atom=geo, basis=basis, spin=0.0, symmetry=true)
+    println("Use symmetry. Molecule point group: $(mol.groupname)")
+
+    norb = mol.nao_nr()
+    nelec::Tuple{Int64,Int64} = mol.nelec
+    energy_nuc::Float64 = mol.energy_nuc()
+    println("Norb: $(norb)   Ne: $(nelec)")
+
+    norb > 120 && error("Only support norb <= 120")
+
+    mf = scf.RHF(mol)
+    println("Running RHF...")
+    mf.kernel()
+    orbsym = mf.orbsym
+    e_scf = mf.e_tot
+
+    orbsym = hasproperty(mf, :orbsym) ? mf.orbsym : ones(Int64, norb)
+    orbsym .%= 10
+    
+    pushfirst!(pyimport("sys")."path", pypath)
+    pyfun = pyimport("mole_pbc_int")
+    one_body_mo::Array{Float64,2}, two_body_mo::Array{Float64,4} = pyfun.mol_int(mf)
+
+    e_scale = e_scf
+
+    dir = dirname(save_path)
+    mkpath(dir)
+    jldopen(save_path, "w") do file
+        file["norb"] = norb
+        file["nelec"] = nelec
+        file["orbsym"] = orbsym
+        file["energy_nuc"] = energy_nuc
+        file["one_body_mo"] = one_body_mo
+        file["two_body_mo"] = two_body_mo
+        file["e_scale"] = e_scale
+    end
+
+    println("Saved to $(save_path)\n")
+
+    return norb, nelec, orbsym, energy_nuc, one_body_mo, two_body_mo, e_scale
+end
+
+function build(mole::Mole)
+    name  = mole.name
+    ratio = mole.ratio
+    basis = mole.basis
+
+    filename = "$(name)-$(ratio)-$(basis).jld2"
+    filepath = joinpath(jld2path, filename)
+
+    try
+        jldopen(filepath, "r") do file
+            mole.norb        = file["norb"]
+            mole.nelec       = file["nelec"]
+            mole.orbsym      = file["orbsym"]
+            mole.energy_nuc  = file["energy_nuc"]
+            mole.one_body_mo = file["one_body_mo"]
+            mole.two_body_mo = file["two_body_mo"]
+            mole.e_scale     = file["e_scale"]
+        end
+
+        if is_rank0_or_serial()
+            println("Successfully read data from: $(abspath(filepath))")
+            println("  name: $(name)")
+            println("  ratio: $(ratio)")
+            println("  basis: $(basis)")
+        end
+    catch
+        geo = mole_geo(name, ratio)
+        norb, nelec, orbsym, energy_nuc, one_body_mo, two_body_mo, e_save = scf_mole(geo, basis, filepath)
+        mole.norb        = norb
+        mole.nelec       = nelec
+        mole.orbsym      = orbsym
+        mole.energy_nuc  = energy_nuc
+        mole.one_body_mo = one_body_mo
+        mole.two_body_mo = two_body_mo
+        mole.e_scale     = e_save
+    end
+
+    norb   = mole.norb
+    na, nb = mole.nelec
+    ne     = na + nb
+    nq     = norb * 2
+
+    if is_rank0_or_serial()
+        @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
+        na, nb, ne, norb, nq)
+    end
+end
+
+function build_ethane_diff_angle(mole::Mole, phi_deg::Float64)
+    @assert lowercase(mole.name) == "c2h6" "build_ethane_diff_angle requires mole.name == \"c2h6\""
+
+    name   = mole.name
+    ratio  = mole.ratio
+    basis  = mole.basis
+
+    filename = "ethane-$(ratio)-$(phi_deg)-$(basis).jld2"
+    filepath = joinpath(jld2path, filename)
+
+    try
+        jldopen(filepath, "r") do file
+            mole.norb        = file["norb"]
+            mole.nelec       = file["nelec"]
+            mole.orbsym      = file["orbsym"]
+            mole.energy_nuc  = file["energy_nuc"]
+            mole.one_body_mo = file["one_body_mo"]
+            mole.two_body_mo = file["two_body_mo"]
+            mole.e_scale     = file["e_scale"]
+        end
+
+        if is_rank0_or_serial()
+            println("Successfully read data from: $(abspath(filepath))")
+            println("  name: $(name)  phi_deg: $(phi_deg)")
+            println("  ratio: $(ratio)")
+            println("  basis: $(basis)")
+        end
+    catch
+        geo = ethane_geo(ratio, phi_deg)
+        norb, nelec, orbsym, energy_nuc, one_body_mo, two_body_mo, e_save = scf_mole(geo, basis, filepath)
+        mole.norb        = norb
+        mole.nelec       = nelec
+        mole.orbsym      = orbsym
+        mole.energy_nuc  = energy_nuc
+        mole.one_body_mo = one_body_mo
+        mole.two_body_mo = two_body_mo
+        mole.e_scale     = e_save
+    end
+
+    norb   = mole.norb
+    na, nb = mole.nelec
+    ne     = na + nb
+    nq     = norb * 2
+
+    if is_rank0_or_serial()
+        @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
+        na, nb, ne, norb, nq)
+    end
+end
+
+function build_ethylene_diff_angle(mole::Mole, phi_deg::Float64)
+    @assert lowercase(mole.name) == "c2h4" "build_ethylene_diff_angle requires mole.name == \"c2h4\""
+
+    name   = mole.name
+    ratio  = mole.ratio
+    basis  = mole.basis
+
+    filename = "ethylene-$(ratio)-$(phi_deg)-$(basis).jld2"
+    filepath = joinpath(jld2path, filename)
+
+    try
+        jldopen(filepath, "r") do file
+            mole.norb        = file["norb"]
+            mole.nelec       = file["nelec"]
+            mole.orbsym      = file["orbsym"]
+            mole.energy_nuc  = file["energy_nuc"]
+            mole.one_body_mo = file["one_body_mo"]
+            mole.two_body_mo = file["two_body_mo"]
+            mole.e_scale     = file["e_scale"]
+        end
+
+        if is_rank0_or_serial()
+            println("Successfully read data from: $(abspath(filepath))")
+            println("  name: $(name)  phi_deg: $(phi_deg)")
+            println("  ratio: $(ratio)")
+            println("  basis: $(basis)")
+        end
+    catch
+        geo = ethylene_geo(ratio, phi_deg)
+        norb, nelec, orbsym, energy_nuc, one_body_mo, two_body_mo, e_save = scf_mole(geo, basis, filepath)
+        mole.norb        = norb
+        mole.nelec       = nelec
+        mole.orbsym      = orbsym
+        mole.energy_nuc  = energy_nuc
+        mole.one_body_mo = one_body_mo
+        mole.two_body_mo = two_body_mo
+        mole.e_scale     = e_save
+    end
+
+    norb   = mole.norb
+    na, nb = mole.nelec
+    ne     = na + nb
+    nq     = norb * 2
+
+    if is_rank0_or_serial()
+        @printf("  nα: %d, nβ: %d, ne: %d, norb: %d, nq: %d\n\n", 
+        na, nb, ne, norb, nq)
+    end
+end

@@ -34,7 +34,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.ratio = _ratio
     mole.basis = _basis
     build(mole)
-    mole.orbsym .%= 10 
+
     ham = JW_hamiltonian(mole)
 
     if _mode == "serial"
