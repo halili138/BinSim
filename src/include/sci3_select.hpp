@@ -440,3 +440,28 @@ static void select_pass_b(
         }
     }
 }
+
+inline constexpr int DIAG_STRIDE = 128;
+template <typename Ti, typename Tv>
+static void precompute_diag_phases(
+    const Ti *strs, int num_strs,
+    const Ti *zs, const Tv *w, int num_zs, int rank, 
+    Tv *ps)
+{
+    for (int i = 0; i < num_strs; ++i)
+    {
+        Ti str = strs[i];
+        Tv *pi = ps + i;
+        for (int r = 0; r < rank; ++r)
+        {
+            const Tv *wr = w + r * num_zs;
+            Tv vr = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                bool parity = std::popcount(str & zs[k]) & 1;
+                vr += parity ? -wr[k] : wr[k];
+            }
+            pi[r * DIAG_STRIDE] = vr;
+        }
+    }
+}

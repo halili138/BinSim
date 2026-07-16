@@ -225,13 +225,28 @@ function select_pass_a!(
     output_p1 = Vector{Tuple{Ti,Ti}}()
     output_p3 = Vector{Tuple{Ti,Ti}}()
 
-    new_a_diag_ps = zeros(Tv, new_astrs * diag.rank);
-    new_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
-    old_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
+    # new_a_diag_ps = zeros(Tv, new_astrs * diag.rank);
+    # new_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
+    # old_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
 
     # function precompute_diag_phases!(strs, ps, diag_group, side::Symbol)
+    #     rank = diag_group.rank
+    #     ps   = zeros(Tv, length(strs) * rank);
+    #     if side == :alpha
+    #         zs = diag_group.unique_zas
+    #         w  = diag_group.wa 
+    #     else
+    #         zs = diag_group.unique_zbs
+    #         w  = diag_group.wb 
+    #     end
+        
     #     for (i, str) in enumerate(strs)
-            
+    #         for r in 1:rank
+    #             for k in eachindex(zs)
+                    
+    #             end
+    #         end
+    #         p = precompute_phase(str, zs, w, diag_group.rank)
     #     end
     # end
 
