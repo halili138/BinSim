@@ -133,17 +133,17 @@ extern "C"
             const auto &g = dg[0];
 
             auto alloc_diag = [&](int64 n) {
-                return std::vector<double>((size_t)(n * diag_rank), 0.0);
+                return std::vector<double>((size_t)(diag_phase_stride(n) * diag_rank), 0.0);
             };
             pa_d  = alloc_diag(n_new_a);
             pb_do = alloc_diag(n_old_b);
             pb_dn = alloc_diag(n_new_b);
             pa_do = alloc_diag(n_old_a);
 
-            precompute_diag_phases<uint32, double, true> (new_a, n_new_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_d.data());
-            precompute_diag_phases<uint32, double, false>(old_b, n_old_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_do.data());
-            precompute_diag_phases<uint32, double, false>(new_b, n_new_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_dn.data());
-            precompute_diag_phases<uint32, double, true> (old_a, n_old_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_do.data());
+            precompute_diag_phases<uint32, double, true> (new_a, n_new_a, g.unique_zas, g.wa, g.num_za, g.rank, diag_phase_stride(n_new_a), pa_d.data());
+            precompute_diag_phases<uint32, double, false>(old_b, n_old_b, g.unique_zbs, g.wb, g.num_zb, g.rank, diag_phase_stride(n_old_b), pb_do.data());
+            precompute_diag_phases<uint32, double, false>(new_b, n_new_b, g.unique_zbs, g.wb, g.num_zb, g.rank, diag_phase_stride(n_new_b), pb_dn.data());
+            precompute_diag_phases<uint32, double, true> (old_a, n_old_a, g.unique_zas, g.wa, g.num_za, g.rank, diag_phase_stride(n_old_a), pa_do.data());
         }
 
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
