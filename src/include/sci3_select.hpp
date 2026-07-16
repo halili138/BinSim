@@ -264,6 +264,7 @@ static void select_pass_a(
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     const Tv *pa_diag, const Tv *pb_diag_old, const Tv *pb_diag_new, int diag_rank,
+    int64 pa_diag_stride, int64 pb_diag_old_stride, int64 pb_diag_new_stride,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p1,
     std::vector<std::pair<Ti, Ti>> &out_p3)
@@ -272,7 +273,7 @@ static void select_pass_a(
     const int64 num_a_chunks = (n_new_α + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
 
-    auto run_beta_side = [&](const Ti *beta, int64 n_beta, const Tv *pb_diag, std::vector<std::pair<Ti, Ti>> &out)
+    auto run_beta_side = [&](const Ti *beta, int64 n_beta, const Tv *pb_diag, int64 pb_diag_stride, std::vector<std::pair<Ti, Ti>> &out)
     {
         for (int64 b_begin = 0; b_begin < n_beta; b_begin += TARGET_CHUNK_SIZE)
         {
@@ -351,13 +352,11 @@ static void select_pass_a(
                             if (v == Tv{})
                                 continue;
                             Tv Haa = {};
-                            const int64 pa_stride = diag_phase_stride(n_new_α);
-                            const int64 pb_stride = diag_phase_stride(n_beta);
                             const int64 a_idx = a_begin + local_ia;
                             const int64 b_idx = b_begin + local_b;
                             for (int r = 0; r < diag_rank; ++r)
                             {
-                                Haa += pa_diag[r * pa_stride + a_idx] * pb_diag[r * pb_stride + b_idx];
+                                Haa += pa_diag[r * pa_diag_stride + a_idx] * pb_diag[r * pb_diag_stride + b_idx];
                             }
                             if (!sci_eps_check(v, Haa, E_var, eps))
                                 continue;
@@ -372,8 +371,8 @@ static void select_pass_a(
         }
     };
 
-    run_beta_side(old_β, n_old_β, pb_diag_old, out_p1);
-    run_beta_side(new_β, n_new_β, pb_diag_new, out_p3);
+    run_beta_side(old_β, n_old_β, pb_diag_old, pb_diag_old_stride, out_p1);
+    run_beta_side(new_β, n_new_β, pb_diag_new, pb_diag_new_stride, out_p3);
 }
 
 template <typename Ti, typename Tv>
@@ -387,6 +386,7 @@ static void select_pass_b(
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     const Tv *pb_diag, const Tv *pa_diag_old, int diag_rank,
+    int64 pb_diag_stride, int64 pa_diag_old_stride,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p2)
 {
@@ -471,13 +471,11 @@ static void select_pass_b(
                         if (v == Tv{})
                             continue;
                         Tv Haa = {};
-                        const int64 pa_stride = diag_phase_stride(n_old_α);
-                        const int64 pb_stride = diag_phase_stride(n_new_β);
                         const int64 a_idx = a_begin + local_a;
                         const int64 b_idx = b_begin + local_ib;
                         for (int r = 0; r < diag_rank; ++r)
                         {
-                            Haa += pa_diag_old[r * pa_stride + a_idx] * pb_diag[r * pb_stride + b_idx];
+                            Haa += pa_diag_old[r * pa_diag_old_stride + a_idx] * pb_diag[r * pb_diag_stride + b_idx];
                         }
                         if (!sci_eps_check(v, Haa, E_var, eps))
                             continue;
