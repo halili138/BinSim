@@ -221,17 +221,23 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
 inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 9;
 inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 15;
+inline constexpr int64 DIAG_SIMD_WIDTH = 8;
+
+static inline int64 diag_phase_stride(int64 n)
+{
+    return ((std::max<int64>(0, n) + DIAG_SIMD_WIDTH - 1) / DIAG_SIMD_WIDTH) * DIAG_SIMD_WIDTH;
+}
 
 template <typename Ti, typename Tv, bool IsAlpha>
 static void precompute_diag_phases(
-    const Ti *strs, int num_strs,
-    const Ti *zs, const Tv *w, int num_zs, int rank,
+    const Ti *strs, int64 num_strs,
+    const Ti *zs, const Tv *w, int num_zs, int rank, int64 stride,
     Tv *ps)
 {
-    for (int i = 0; i < num_strs; ++i)
+    assert(stride >= num_strs);
+    for (int64 i = 0; i < num_strs; ++i)
     {
         Ti str = strs[i];
-        Tv *pi = ps + i * rank;
         for (int r = 0; r < rank; ++r)
         {
             const Tv *wr = w + r * num_zs;
@@ -241,7 +247,7 @@ static void precompute_diag_phases(
                 bool parity = std::popcount(str & zs[k]) & 1;
                 vr += parity ? -wr[k] : wr[k];
             }
-            pi[r] = vr;
+            ps[r * stride + i] = vr;
         }
     }
 }
@@ -345,11 +351,13 @@ static void select_pass_a(
                             if (v == Tv{})
                                 continue;
                             Tv Haa = {};
-                            const Tv *par = pa_diag + (a_begin + local_ia) * diag_rank;
-                            const Tv *pbr = pb_diag + (b_begin + local_b) * diag_rank;
+                            const int64 pa_stride = diag_phase_stride(n_new_α);
+                            const int64 pb_stride = diag_phase_stride(n_beta);
+                            const int64 a_idx = a_begin + local_ia;
+                            const int64 b_idx = b_begin + local_b;
                             for (int r = 0; r < diag_rank; ++r)
                             {
-                                Haa += par[r] * pbr[r];
+                                Haa += pa_diag[r * pa_stride + a_idx] * pb_diag[r * pb_stride + b_idx];
                             }
                             if (!sci_eps_check(v, Haa, E_var, eps))
                                 continue;
@@ -463,11 +471,13 @@ static void select_pass_b(
                         if (v == Tv{})
                             continue;
                         Tv Haa = {};
-                        const Tv *par = pa_diag_old + (a_begin + local_a) * diag_rank;
-                        const Tv *pbr = pb_diag + (b_begin + local_ib) * diag_rank;
+                        const int64 pa_stride = diag_phase_stride(n_old_α);
+                        const int64 pb_stride = diag_phase_stride(n_new_β);
+                        const int64 a_idx = a_begin + local_a;
+                        const int64 b_idx = b_begin + local_ib;
                         for (int r = 0; r < diag_rank; ++r)
                         {
-                            Haa += par[r] * pbr[r];
+                            Haa += pa_diag_old[r * pa_stride + a_idx] * pb_diag[r * pb_stride + b_idx];
                         }
                         if (!sci_eps_check(v, Haa, E_var, eps))
                             continue;
