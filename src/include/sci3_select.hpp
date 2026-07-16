@@ -352,11 +352,11 @@ static void select_pass_a(
                             if (v == Tv{})
                                 continue;
                             Tv Haa = {};
-                            const int64 a_idx = a_begin + local_ia;
-                            const int64 b_idx = b_begin + local_b;
+                            const Tv *paa = pa_diag + a_begin + local_ia;
+                            const Tv *pbb = pb_diag + b_begin + local_b;
                             for (int r = 0; r < diag_rank; ++r)
                             {
-                                Haa += pa_diag[r * pa_diag_stride + a_idx] * pb_diag[r * pb_diag_stride + b_idx];
+                                Haa += paa[r * pa_diag_stride] * pbb[r * pb_diag_stride];
                             }
                             if (!sci_eps_check(v, Haa, E_var, eps))
                                 continue;
@@ -471,11 +471,11 @@ static void select_pass_b(
                         if (v == Tv{})
                             continue;
                         Tv Haa = {};
-                        const int64 a_idx = a_begin + local_a;
-                        const int64 b_idx = b_begin + local_ib;
+                        const Tv *paa = pa_diag_old + a_begin + local_a;
+                        const Tv *pbb = pb_diag + b_begin + local_ib;
                         for (int r = 0; r < diag_rank; ++r)
                         {
-                            Haa += pa_diag_old[r * pa_diag_old_stride + a_idx] * pb_diag[r * pb_diag_stride + b_idx];
+                            Haa += paa[r * pa_diag_old_stride] * pbb[r * pb_diag_stride];
                         }
                         if (!sci_eps_check(v, Haa, E_var, eps))
                             continue;
