@@ -1,63 +1,5 @@
 #pragma once
-#include "sci_basis_nosym.hpp"
-#include <cassert>
-
-// ============================================================
-// A. Utility (same as symm version)
-// ============================================================
-
-template <typename Tv>
-FORCE_INLINE auto sqnorm(const Tv &v)
-{
-    if constexpr (std::is_arithmetic_v<Tv>)
-        return v * v;
-    else
-        return v.real() * v.real() + v.imag() * v.imag();
-}
-
-template <typename Tv>
-FORCE_INLINE bool sci_eps_check(Tv acc, Tv haa, Tv e_var, double eps)
-{
-    if (acc == Tv{})
-        return false;
-    Tv denom = e_var - haa;
-    double dn_sq = sqnorm(denom);
-    if (dn_sq == 0.0)
-        return false;
-    return sqnorm(acc) / dn_sq > eps * eps;
-}
-
-template <typename Ti, typename Tv>
-FORCE_INLINE void precompute_phase_select(
-    Ti str, const Ti *zas, int nza, const Tv *wa, Tv *dst, int stride, int rank)
-{
-    if (rank == 1)
-    {
-        Tv v = Tv{};
-        for (int i = 0; i < nza; ++i)
-        {
-            Tv phase = (std::popcount(str & zas[i]) & 1) ? Tv(-1) : Tv(1);
-            v += wa[i] * phase;
-        }
-        dst[0] = v;
-    }
-    else
-    {
-        Tv v0 = Tv{}, v1 = Tv{};
-        for (int i = 0; i < nza; ++i)
-        {
-            Tv phase = (std::popcount(str & zas[i]) & 1) ? Tv(-1) : Tv(1);
-            v0 += wa[i] * phase;
-            v1 += wa[nza + i] * phase;
-        }
-        dst[0] = v0;
-        dst[stride] = v1;
-    }
-}
-
-// ============================================================
-// B. Forward select — data structures
-// ============================================================
+#include "sci_utils.hpp"
 
 template <typename Tv>
 struct ForwardSharedNosym
@@ -75,20 +17,6 @@ struct ForwardSharedNosym
         return {offsets[group], offsets[group + 1]};
     }
 };
-
-template <typename Ti, typename Tv>
-static std::vector<SVDGroup_OTF<Ti, Tv>> flatten_groups(const Network_OTF<Ti, Tv> *net)
-{
-    std::vector<SVDGroup_OTF<Ti, Tv>> all;
-    all.insert(all.end(), net->pure_a_groups.begin(), net->pure_a_groups.end());
-    all.insert(all.end(), net->pure_b_groups.begin(), net->pure_b_groups.end());
-    all.insert(all.end(), net->mixed_groups.begin(), net->mixed_groups.end());
-    return all;
-}
-
-// ============================================================
-// C. Forward select — helpers
-// ============================================================
 
 template <typename Ti, bool IsAlpha>
 static ankerl::unordered_dense::map<Ti, int> build_idx_map_nosym(const SciBasisManagerNosym<Ti> *basis)
@@ -224,37 +152,6 @@ static ForwardSharedNosym<Tv> precompute_shared_chunk_nosym(
     return result;
 }
 
-inline constexpr int64 NOSYM_GROUP_CHUNK_SIZE = 512;
-inline constexpr int64 NOSYM_TARGET_CHUNK_SIZE = 32768;
-
-template <typename Ti, typename Tv, bool IsAlpha>
-static void precompute_diag_phases_nosym(
-    const Ti *strs, int num_strs,
-    const Ti *zs, const Tv *w, int num_zs, int rank,
-    Tv *ps)
-{
-    for (int i = 0; i < num_strs; ++i)
-    {
-        Ti str = strs[i];
-        Tv *pi = ps + i * rank;
-        for (int r = 0; r < rank; ++r)
-        {
-            const Tv *wr = w + r * num_zs;
-            Tv vr = {};
-            for (int k = 0; k < num_zs; ++k)
-            {
-                bool parity = std::popcount(str & zs[k]) & 1;
-                vr += parity ? -wr[k] : wr[k];
-            }
-            pi[r] = vr;
-        }
-    }
-}
-
-// ============================================================
-// D. Forward select — select_pass_a / select_pass_b
-// ============================================================
-
 template <typename Ti, typename Tv>
 static void select_pass_a_nosym(
     const Ti *new_α, int64 n_new_α,
@@ -270,36 +167,36 @@ static void select_pass_a_nosym(
     std::vector<std::pair<Ti, Ti>> &out_p1,
     std::vector<std::pair<Ti, Ti>> &out_p3)
 {
-    const int64 num_group_chunks = ((int64)all_groups.size() + NOSYM_GROUP_CHUNK_SIZE - 1) / NOSYM_GROUP_CHUNK_SIZE;
-    const int64 num_a_chunks = (n_new_α + NOSYM_TARGET_CHUNK_SIZE - 1) / NOSYM_TARGET_CHUNK_SIZE;
+    const int64 num_group_chunks = ((int64)all_groups.size() + GROUP_CHUNK_SIZE - 1) / GROUP_CHUNK_SIZE;
+    const int64 num_a_chunks = (n_new_α + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
 
     auto run_beta_side = [&](const Ti *beta, int64 n_beta, const Tv *pb_diag,
                              std::vector<std::pair<Ti, Ti>> &out)
     {
-        for (int64 b_begin = 0; b_begin < n_beta; b_begin += NOSYM_TARGET_CHUNK_SIZE)
+        for (int64 b_begin = 0; b_begin < n_beta; b_begin += TARGET_CHUNK_SIZE)
         {
-            const int64 b_end = std::min<int64>(b_begin + NOSYM_TARGET_CHUNK_SIZE, n_beta);
+            const int64 b_end = std::min<int64>(b_begin + TARGET_CHUNK_SIZE, n_beta);
             const int64 b_count = b_end - b_begin;
             std::vector<ForwardSharedNosym<Tv>> shared_chunks;
             shared_chunks.reserve(num_group_chunks);
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += NOSYM_GROUP_CHUNK_SIZE)
+            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
-                int64 g_end = std::min<int64>(g_begin + NOSYM_GROUP_CHUNK_SIZE, (int64)all_groups.size());
+                int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
                 shared_chunks.push_back(precompute_shared_chunk_nosym<Ti, Tv, false>(
                     beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, all_groups));
             }
 
             for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
             {
-                const int64 a_begin = a_chunk * NOSYM_TARGET_CHUNK_SIZE;
-                const int64 a_end = std::min<int64>(a_begin + NOSYM_TARGET_CHUNK_SIZE, n_new_α);
+                const int64 a_begin = a_chunk * TARGET_CHUNK_SIZE;
+                const int64 a_end = std::min<int64>(a_begin + TARGET_CHUNK_SIZE, n_new_α);
                 const int64 a_count = a_end - a_begin;
                 std::vector<std::vector<std::vector<int>>> link_chunks;
                 link_chunks.reserve(num_group_chunks);
-                for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += NOSYM_GROUP_CHUNK_SIZE)
+                for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
                 {
-                    int64 g_end = std::min<int64>(g_begin + NOSYM_GROUP_CHUNK_SIZE, (int64)all_groups.size());
+                    int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
                     link_chunks.push_back(build_old2new_link_chunk_nosym<Ti, Tv, true>(
                         new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end));
                 }
@@ -317,7 +214,7 @@ static void select_pass_a_nosym(
 
                         for (int64 chunk_id = 0; chunk_id < (int64)link_chunks.size(); ++chunk_id)
                         {
-                            const int64 g_begin = chunk_id * NOSYM_GROUP_CHUNK_SIZE;
+                            const int64 g_begin = chunk_id * GROUP_CHUNK_SIZE;
                             const auto &shared = shared_chunks[chunk_id];
                             for (int local_g : link_chunks[chunk_id][local_ia])
                             {
@@ -389,33 +286,33 @@ static void select_pass_b_nosym(
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p2)
 {
-    const int64 num_group_chunks = ((int64)all_groups.size() + NOSYM_GROUP_CHUNK_SIZE - 1) / NOSYM_GROUP_CHUNK_SIZE;
-    const int64 num_b_chunks = (n_new_β + NOSYM_TARGET_CHUNK_SIZE - 1) / NOSYM_TARGET_CHUNK_SIZE;
+    const int64 num_group_chunks = ((int64)all_groups.size() + GROUP_CHUNK_SIZE - 1) / GROUP_CHUNK_SIZE;
+    const int64 num_b_chunks = (n_new_β + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_b_set(new_β, new_β + n_new_β);
 
-    for (int64 a_begin = 0; a_begin < n_old_α; a_begin += NOSYM_TARGET_CHUNK_SIZE)
+    for (int64 a_begin = 0; a_begin < n_old_α; a_begin += TARGET_CHUNK_SIZE)
     {
-        const int64 a_end = std::min<int64>(a_begin + NOSYM_TARGET_CHUNK_SIZE, n_old_α);
+        const int64 a_end = std::min<int64>(a_begin + TARGET_CHUNK_SIZE, n_old_α);
         const int64 a_count = a_end - a_begin;
         std::vector<ForwardSharedNosym<Tv>> shared_chunks;
         shared_chunks.reserve(num_group_chunks);
-        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += NOSYM_GROUP_CHUNK_SIZE)
+        for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
         {
-            int64 g_end = std::min<int64>(g_begin + NOSYM_GROUP_CHUNK_SIZE, (int64)all_groups.size());
+            int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
             shared_chunks.push_back(precompute_shared_chunk_nosym<Ti, Tv, true>(
                 old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, all_groups));
         }
 
         for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
         {
-            const int64 b_begin = b_chunk * NOSYM_TARGET_CHUNK_SIZE;
-            const int64 b_end = std::min<int64>(b_begin + NOSYM_TARGET_CHUNK_SIZE, n_new_β);
+            const int64 b_begin = b_chunk * TARGET_CHUNK_SIZE;
+            const int64 b_end = std::min<int64>(b_begin + TARGET_CHUNK_SIZE, n_new_β);
             const int64 b_count = b_end - b_begin;
             std::vector<std::vector<std::vector<int>>> link_chunks;
             link_chunks.reserve(num_group_chunks);
-            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += NOSYM_GROUP_CHUNK_SIZE)
+            for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
-                int64 g_end = std::min<int64>(g_begin + NOSYM_GROUP_CHUNK_SIZE, (int64)all_groups.size());
+                int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
                 link_chunks.push_back(build_old2new_link_chunk_nosym<Ti, Tv, false>(
                     new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end));
             }
@@ -433,7 +330,7 @@ static void select_pass_b_nosym(
 
                     for (int64 chunk_id = 0; chunk_id < (int64)link_chunks.size(); ++chunk_id)
                     {
-                        const int64 g_begin = chunk_id * NOSYM_GROUP_CHUNK_SIZE;
+                        const int64 g_begin = chunk_id * GROUP_CHUNK_SIZE;
                         const auto &shared = shared_chunks[chunk_id];
                         for (int local_g : link_chunks[chunk_id][local_ib])
                         {
@@ -486,10 +383,6 @@ static void select_pass_b_nosym(
         }
     }
 }
-
-// ============================================================
-// E. H-vector contract (flat, no blocks) — used by hvec_svd_nosym!
-// ============================================================
 
 template <int Rank, typename Ti, typename Tv>
 static void gather_diag_nosym(

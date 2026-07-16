@@ -1,67 +1,5 @@
 #pragma once
-#include "sci_basis.hpp"
-#include <cassert>
-
-// ============================================================
-// A. Utility functions
-// ============================================================
-
-template <typename Tv>
-FORCE_INLINE auto sqnorm(const Tv &v)
-{
-    if constexpr (std::is_arithmetic_v<Tv>)
-        return v * v;
-    else
-        return v.real() * v.real() + v.imag() * v.imag();
-}
-
-template <typename Tv>
-FORCE_INLINE bool sci_eps_check(Tv acc, Tv haa, Tv e_var, double eps)
-{
-    if (acc == Tv{})
-        return false;
-    Tv denom = e_var - haa;
-    double dn_sq = sqnorm(denom);
-    if (dn_sq == 0.0)
-        return false;
-    return sqnorm(acc) / dn_sq > eps * eps;
-}
-
-// ============================================================
-// B. Phase precomputation utility (used by forward select)
-// ============================================================
-
-template <typename Ti, typename Tv>
-FORCE_INLINE void precompute_phase_select(
-    Ti str, const Ti *zas, int nza, const Tv *wa, Tv *dst, int stride, int rank)
-{
-    if (rank == 1)
-    {
-        Tv v = Tv{};
-        for (int i = 0; i < nza; ++i)
-        {
-            Tv phase = (std::popcount(str & zas[i]) & 1) ? Tv(-1) : Tv(1);
-            v += wa[i] * phase;
-        }
-        dst[0] = v;
-    }
-    else
-    {
-        Tv v0 = Tv{}, v1 = Tv{};
-        for (int i = 0; i < nza; ++i)
-        {
-            Tv phase = (std::popcount(str & zas[i]) & 1) ? Tv(-1) : Tv(1);
-            v0 += wa[i] * phase;
-            v1 += wa[nza + i] * phase;
-        }
-        dst[0] = v0;
-        dst[stride] = v1;
-    }
-}
-
-// ============================================================
-// C. Forward select data structures and helpers
-// ============================================================
+#include "sci_utils.hpp"
 
 template <typename Tv>
 struct ForwardShared
@@ -85,21 +23,11 @@ struct ForwardShared
     }
 };
 
-template <typename Ti, typename Tv>
-static std::vector<SVDGroup_OTF<Ti, Tv>> flatten_groups(const Network_OTF<Ti, Tv> *net)
-{
-    std::vector<SVDGroup_OTF<Ti, Tv>> all;
-    all.insert(all.end(), net->pure_a_groups.begin(), net->pure_a_groups.end());
-    all.insert(all.end(), net->pure_b_groups.begin(), net->pure_b_groups.end());
-    all.insert(all.end(), net->mixed_groups.begin(), net->mixed_groups.end());
-    return all;
-}
-
 template <typename Ti, bool IsAlpha>
 static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(const SciBasisManager<Ti> *basis)
 {
     ankerl::unordered_dense::map<Ti, std::pair<int, int>> idx_map;
-    for (int64 bi = 0; bi < basis->num_blocks; ++bi)
+    for (int bi = 0; bi < basis->num_blocks; ++bi)
     {
         const auto &blk = basis->blocks[bi];
         const Ti *strs;
@@ -114,8 +42,8 @@ static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(const
             strs = blk.bstrs;
             num = blk.num_b;
         }
-        for (int64 j = 0; j < num; ++j)
-            idx_map[strs[j]] = {static_cast<int>(j), static_cast<int>(bi)};
+        for (int j = 0; j < num; ++j)
+            idx_map[strs[j]] = {j, bi};
     }
     return idx_map;
 }
@@ -133,7 +61,7 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
     for (int64 i = 0; i < n_dst_chunk; ++i)
     {
         Ti dst = dst_chunk[i];
-        for (int64 local_g = 0; local_g < ngs; ++local_g)
+        for (int local_g = 0; local_g < ngs; ++local_g)
         {
             const auto &group = groups[g_begin + local_g];
             Ti exc;
@@ -144,35 +72,7 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
             if (exc == 0)
                 continue;
             if (new_set.find(dst ^ exc) == new_set.end())
-                link[i].push_back(static_cast<int>(local_g));
-        }
-    }
-    return link;
-}
-
-template <typename Ti, typename Tv, bool IsAlpha>
-static std::vector<std::vector<int>> build_old2old_link_chunk(
-    const Ti *dst_chunk, int64 n_dst_chunk,
-    const ankerl::unordered_dense::set<Ti> &old_set,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, int64 g_begin, int64 g_end)
-{
-    const int64 ngs = std::max<int64>(0, g_end - g_begin);
-    std::vector<std::vector<int>> link(n_dst_chunk);
-
-#pragma omp parallel for schedule(dynamic)
-    for (int64 i = 0; i < n_dst_chunk; ++i)
-    {
-        Ti dst = dst_chunk[i];
-        for (int64 local_g = 0; local_g < ngs; ++local_g)
-        {
-            const auto &group = groups[g_begin + local_g];
-            Ti exc;
-            if constexpr (IsAlpha)
-                exc = group.ax;
-            else
-                exc = group.bx;
-            if (old_set.find(dst ^ exc) != old_set.end())
-                link[i].push_back(static_cast<int>(local_g));
+                link[i].push_back(local_g);
         }
     }
     return link;
@@ -278,37 +178,6 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
     return result;
 }
-
-inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 9;
-inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 15;
-
-template <typename Ti, typename Tv, bool IsAlpha>
-static void precompute_diag_phases(
-    const Ti *strs, int num_strs,
-    const Ti *zs, const Tv *w, int num_zs, int rank,
-    Tv *ps)
-{
-    for (int i = 0; i < num_strs; ++i)
-    {
-        Ti str = strs[i];
-        Tv *pi = ps + i * rank;
-        for (int r = 0; r < rank; ++r)
-        {
-            const Tv *wr = w + r * num_zs;
-            Tv vr = {};
-            for (int k = 0; k < num_zs; ++k)
-            {
-                bool parity = std::popcount(str & zs[k]) & 1;
-                vr += parity ? -wr[k] : wr[k];
-            }
-            pi[r] = vr;
-        }
-    }
-}
-
-// ============================================================
-// D. Forward select passes
-// ============================================================
 
 template <typename Ti, typename Tv>
 static void select_pass_a(
@@ -541,10 +410,6 @@ static void select_pass_b(
         }
     }
 }
-
-// ============================================================
-// E. H-vector contract infrastructure (used by hvec_svd!)
-// ============================================================
 
 template <int Rank, typename Ti, typename Tv>
 static inline void gather_diag_for_block(
@@ -981,89 +846,6 @@ static inline void gather_mixed_for_block(
                 }
             }
         }
-    }
-}
-
-template <int TypeCode, typename Ti, typename Tv>
-static inline void dispatch_select_chunks_for_block(
-    const BlockDesc<Ti> &tgt_block,
-    const SciBasisManager<Ti> *src_basis,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    const Tv *src_vec, Tv *dst_acc)
-{
-    static_assert(TypeCode >= 1 && TypeCode <= 3);
-
-    const int64 total_ngs = groups.size();
-    if (total_ngs == 0)
-        return;
-
-    const SVDGroup_OTF<Ti, Tv> *groups_ptr = groups.data();
-
-    int64 start = 0;
-    while (start < total_ngs)
-    {
-        const int current_rank = groups_ptr[start].rank;
-        const int dispatch_rank = (current_rank == 1 || current_rank == 2) ? current_rank : 0;
-
-        int64 end = start + 1;
-        while (end < total_ngs)
-        {
-            const int next_rank = groups_ptr[end].rank;
-            const int next_dispatch_rank = (next_rank == 1 || next_rank == 2) ? next_rank : 0;
-            if (next_dispatch_rank != dispatch_rank)
-                break;
-            end++;
-        }
-
-        const int64 chunk_size = end - start;
-        const SVDGroup_OTF<Ti, Tv> *chunk_ptr = groups_ptr + start;
-
-        if constexpr (TypeCode == 1)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            case 2:
-                gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            default:
-                gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            }
-        }
-        else if constexpr (TypeCode == 2)
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            case 2:
-                gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            default:
-                gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            }
-        }
-        else
-        {
-            switch (dispatch_rank)
-            {
-            case 1:
-                gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            case 2:
-                gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            default:
-                gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
-                break;
-            }
-        }
-        start = end;
     }
 }
 

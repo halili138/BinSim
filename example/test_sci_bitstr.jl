@@ -1,4 +1,4 @@
-ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", "8")
+ENV["OMP_NUM_THREADS"] = get(ENV, "OMP_NUM_THREADS", "12")
 ENV["OMP_PROC_BIND"] = get(ENV, "OMP_PROC_BIND", "close")
 ENV["OMP_PLACES"] = get(ENV, "OMP_PLACES", "cores")
 
