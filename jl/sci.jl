@@ -13,15 +13,15 @@ function SciBasisManager()
     SciBasisManager(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[])
 end
 
-function sort_by_sym(arr::Vector{UInt32}, orbsym::Vector{Int64}, num_irreps::Int)
-    by_sym = [Vector{UInt32}() for _ in 1:num_irreps]
+function sort_by_sym(arr::Vector{Ti}, orbsym::Vector{Int64}, num_irreps::Int) where Ti
+    by_sym = [Vector{Ti}() for _ in 1:num_irreps]
     for a in arr
         sym = get_symm(a, orbsym)
         if 0 <= sym < num_irreps
             push!(by_sym[sym+1], a)
         end
     end
-    result = UInt32[]
+    result = Ti[]
     for s in 1:num_irreps
         sort!(by_sym[s])
         append!(result, by_sym[s])
@@ -68,14 +68,13 @@ function SciBasisManager(mole::Mole, astrs::Vector{UInt32}, bstrs::Vector{UInt32
 end
 
 function expand_bitstrings_bitstr(
-    src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32}, 
-    axs::Vector{UInt32}, bxs::Vector{UInt32}, 
+    src_astrs::Vector{Ti}, src_bstrs::Vector{Ti}, 
+    axs::Vector{Ti}, bxs::Vector{Ti}, 
     nelec::Tuple{Int,Int}, orbsym::Vector{Int64}, num_irreps::Int=16
-)
-
+) where Ti
     na, nb = nelec
-    a_map  = Dict{UInt32,Int}(a => 0 for a in src_astrs)
-    b_map  = Dict{UInt32,Int}(b => 0 for b in src_bstrs)
+    a_map  = Dict{Ti,Int}(a => 0 for a in src_astrs)
+    b_map  = Dict{Ti,Int}(b => 0 for b in src_bstrs)
 
     for (ax, bx) in zip(axs, bxs)
         if ax != 0
@@ -101,101 +100,11 @@ function expand_bitstrings_bitstr(
     return dst_astrs, dst_bstrs, is_new_a, is_new_b
 end
 
-function sci_hvec_select_external_bitstr!(
-    dst::SciBasisManager, src::SciBasisManager, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    blk::Int, psi::Vector{Float64}, candidate_diags::Vector{Float64},
-    variational_energy::Float64, chunk_size::Int, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64}
-)
-    buf_a = Vector{UInt32}(undef, dst.dim)
-    buf_b = Vector{UInt32}(undef, dst.dim)
-    buf_v = Vector{Float64}(undef, dst.dim)
-
-    n = @ccall LIB_SCI_BITSTR.sci_hvec_select_external_bitstr_f64(
-        dst.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
-        blk::Int64, psi::Ptr{Float64}, candidate_diags::Ptr{Float64},
-        variational_energy::Cdouble, chunk_size::Cint, eps::Cdouble,
-        buf_a::Ptr{UInt32}, buf_b::Ptr{UInt32}, buf_v::Ptr{Float64},
-        dst.dim::Int64
-    )::Int64
-
-    append!(sel_a, view(buf_a, 1:n))
-    append!(sel_b, view(buf_b, 1:n))
-    append!(sel_v, view(buf_v, 1:n))
-
-    return n
-end
-
-function select_external_block_bitstr!(
-    tgt::SciBasisManager, 
-    src::SciBasisManager,
-    otf::OTF, 
-    psi::Vector{Float64}, 
-    candidate_diags::Vector{Float64},
-    variational_energy::Float64, 
-    chunk_size::Int, 
-    eps::Float64,
-    is_new_a::Vector{Bool}, 
-    is_new_b::Vector{Bool},
-    sel_a::Vector{UInt32}, 
-    sel_b::Vector{UInt32}, 
-    sel_v::Vector{Float64}
-)
-    for blk in 0:tgt.num_blocks-1
-        sci_hvec_select_external_bitstr!(
-            tgt, src, otf, is_new_a, is_new_b,
-            blk, psi, candidate_diags, variational_energy,
-            chunk_size, eps, sel_a, sel_b, sel_v
-        )
-    end
-end
-
-function sci_select_block_instant!(
-    dst::SciBasisManager, src::SciBasisManager, otf::OTF,
-    is_new_a::Vector{Bool}, is_new_b::Vector{Bool},
-    blk::Int, psi::Vector{Float64},
-    variational_energy::Float64, a_chunk_size::Int, b_chunk_size::Int, eps::Float64,
-    selected_a::Vector{Bool}, selected_b::Vector{Bool}
-)
-    @ccall LIB_SCI_BITSTR.sci_select_instant_bitstr_f64(
-        dst.ptr::Ptr{Cvoid}, src.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        is_new_a::Ptr{Bool}, is_new_b::Ptr{Bool},
-        blk::Int64, psi::Ptr{Float64},
-        variational_energy::Cdouble, a_chunk_size::Cint, b_chunk_size::Cint, eps::Cdouble,
-        selected_a::Ptr{Bool}, selected_b::Ptr{Bool}
-    )::Cvoid
-end
-
-function select_instant_all_blocks!(
-    tgt::SciBasisManager, 
-    src::SciBasisManager,
-    otf::OTF, 
-    psi::Vector{Float64}, 
-    variational_energy::Float64, 
-    a_chunk_size::Int, b_chunk_size::Int,
-    eps::Float64,
-    is_new_a::Vector{Bool}, 
-    is_new_b::Vector{Bool},
-    selected_a::Vector{Bool}, 
-    selected_b::Vector{Bool}
-)
-    for blk in 0:tgt.num_blocks-1
-        sci_select_block_instant!(
-            tgt, src, otf, is_new_a, is_new_b,
-            blk, psi, variational_energy,
-            a_chunk_size, b_chunk_size, eps,
-            selected_a, selected_b
-        )
-    end
-end
-
 function merge_bitstrings(
-    src_astrs::Vector{UInt32}, src_bstrs::Vector{UInt32},
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32},
+    src_astrs::Vector{Ti}, src_bstrs::Vector{Ti},
+    sel_a::Vector{Ti}, sel_b::Vector{Ti},
     orbsym::Vector{Int64}, num_irreps::Int=16
-)
+) where Ti
     a_union = sort_by_sym(collect(union(Set(src_astrs), Set(sel_a))), orbsym, num_irreps)
     b_union = sort_by_sym(collect(union(Set(src_bstrs), Set(sel_b))), orbsym, num_irreps)
 
@@ -221,7 +130,7 @@ function get_diags_bitstr!(basis::SciBasisManager, otf::OTF, diags::Vector{Float
     )::Cvoid
 end
 
-function sci3_select_bitstr!(
+function sci_select_bitstr!(
     new_α::Vector{UInt32}, new_β::Vector{UInt32},
     old_α::Vector{UInt32}, old_β::Vector{UInt32},
     src_basis::SciBasisManager, otf::OTF,
@@ -232,7 +141,7 @@ function sci3_select_bitstr!(
     out_b_ref = Ref{Ptr{UInt32}}(C_NULL)
     n_ref = Ref{Int64}(0)
 
-    @ccall LIB_SCI_BITSTR.sci3_select_bitstr_f64(
+    @ccall LIB_SCI_BITSTR.sci_select_bitstr_f64(
         new_α::Ptr{UInt32}, length(new_α)::Int64,
         new_β::Ptr{UInt32}, length(new_β)::Int64,
         old_α::Ptr{UInt32}, length(old_α)::Int64,
@@ -270,208 +179,6 @@ function destroy_sci_basis_manager_bitstr(sb::SciBasisManager)
 end
 
 function run_sci_bitstr(mole::Mole;
-    max_iter::Int=20, eps::Float64=1e-6, a_chunk_size::Int=256, b_chunk_size::Int=256,
-    verbose::Bool=true)
-
-    na, nb  = mole.nelec
-    ham     = JW_hamiltonian(mole)
-    basis   = SciBasisManager(mole, [UInt32(1 << na - 1)], [UInt32(1 << nb - 1)])
-    otf     = OTF(ham, mole.orbsym)
-    all_axs = sort!(unique(ham.axs))
-    all_bxs = sort!(unique(ham.bxs))
-
-    psi     = Float64[1.0]
-
-    diags   = Float64[0.0]
-    @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-    )::Cvoid
-
-    current_energy = diags[1]
-
-    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n\n", basis.dim, current_energy)
-
-    for iter in 1:max_iter
-        t1 = @elapsed new_astrs, new_bstrs, is_new_a, is_new_b = expand_bitstrings_bitstr(
-            basis.astrs, basis.bstrs, all_axs, all_bxs, mole.nelec, mole.orbsym
-        )
-        new_basis = SciBasisManager(mole, new_astrs, new_bstrs, sorted=true)
-
-        selected_a = fill(false, length(new_astrs))
-        selected_b = fill(false, length(new_bstrs))
-
-        t2 = @elapsed select_instant_all_blocks!(
-            new_basis, basis, otf, psi,
-            current_energy, a_chunk_size, b_chunk_size, eps,
-            is_new_a, is_new_b,
-            selected_a, selected_b
-        )
-
-        # extract newly selected strings
-        new_sel_astrs = new_astrs[selected_a.&is_new_a]
-        new_sel_bstrs = new_bstrs[selected_b.&is_new_b]
-        num_sel = length(new_sel_astrs) + length(new_sel_bstrs)
-
-        if verbose
-            @printf("Iteration: %d\n", iter)
-            @printf("  Expand           %d → %d\n", basis.dim, new_basis.dim)
-            @printf("  New pairs        %d\n", num_sel)
-        end
-
-        if num_sel == 0
-            verbose && println("No new states, done.")
-            destroy_sci_basis_manager_bitstr(new_basis)
-            break
-        end
-
-        t4 = @elapsed all_astrs, all_bstrs = merge_bitstrings(
-            basis.astrs, basis.bstrs, new_sel_astrs, new_sel_bstrs, mole.orbsym
-        )
-        all_basis = SciBasisManager(mole, all_astrs, all_bstrs, sorted=true)
-
-        if verbose
-            @printf("  Merged           %d\n", all_basis.dim)
-        end
-
-        all_psi = zeros(Float64, all_basis.dim)
-        t5 = @elapsed remap_wavefunction_bitstr!(basis, psi, all_basis, all_psi, UInt32[], UInt32[], Float64[])
-
-        destroy_sci_basis_manager_bitstr(new_basis)
-        destroy_sci_basis_manager_bitstr(basis)
-        basis, psi = all_basis, all_psi
-
-        diags = zeros(Float64, basis.dim)
-        @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-        )::Cvoid
-
-        hvec = (v, Hv) -> @ccall LIB_SCI_BITSTR.hvec_sci_full_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, v::Ptr{Float64}, Hv::Ptr{Float64}
-        )::Cvoid
-
-        t6 = @elapsed current_energy, psi = davidson(hvec, psi, diags, verbose=false)
-
-        if verbose
-            @printf("  Energy           %.14f\n", current_energy)
-            @printf("  Error            %.3e\n\n", abs(current_energy - mole.e_scale))
-        end
-
-        if verbose
-            @printf("  Expand           %-8.4f seconds\n", t1)
-            @printf("  Select           %-8.4f seconds\n", t2)
-            @printf("  Merge            %-8.4f seconds\n", t4)
-            @printf("  Remap            %-8.4f seconds\n", t5)
-            @printf("  Diag             %-8.4f seconds\n\n", t6)
-        end
-    end
-
-    return basis, psi, diags
-end
-
-function run_sci_bitstr_old(mole::Mole;
-    max_iter::Int=20, eps::Float64=1e-6, chunk_size::Int=256, verbose::Bool=true)
-
-    # SCI selection uses a first-order/CIPSI-style amplitude estimate for each
-    # candidate determinant: abs(Hψ(candidate) / (E - Haa)) > eps, where E is
-    # the current variational energy and Haa is the candidate diagonal matrix
-    # element.  Thus eps thresholds an energy-aware estimated CI coefficient,
-    # not the raw residual |Hψ(candidate)|.
-
-    na, nb  = mole.nelec
-    ham     = JW_hamiltonian(mole)
-    basis   = SciBasisManager(mole, [UInt32(1 << na - 1)], [UInt32(1 << nb - 1)])
-    otf     = OTF(ham, mole.orbsym)
-    all_axs = sort!(unique(ham.axs))
-    all_bxs = sort!(unique(ham.bxs))
-
-    psi     = Float64[1.0]
-
-    diags   = Float64[0.0]
-    @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-    )::Cvoid
-
-    current_energy = diags[1]
-
-    verbose && @printf("Initial basis: dim=%d  E0=%.10f\n\n", basis.dim, current_energy)
-
-    for iter in 1:max_iter
-        # Expand old basis, get new basis
-        t1 = @elapsed new_astrs, new_bstrs, is_new_a, is_new_b = expand_bitstrings_bitstr(
-            basis.astrs, basis.bstrs, all_axs, all_bxs, mole.nelec, mole.orbsym
-        )
-        new_basis = SciBasisManager(mole, new_astrs, new_bstrs, sorted=true)
-        new_diags = zeros(Float64, new_basis.dim)
-        @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-            new_basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, new_diags::Ptr{Float64}
-        )::Cvoid
-
-
-        # Select from new basis, get selected basis
-        sel_astrs = UInt32[]
-        sel_bstrs = UInt32[]
-        sel_vals  = Float64[]
-        t2 = @elapsed select_external_block_bitstr!(
-            new_basis, basis, otf, psi, new_diags,
-            current_energy, chunk_size, eps, is_new_a, is_new_b,
-            sel_astrs, sel_bstrs, sel_vals
-        )
-
-        if verbose
-            @printf("Iteration: %d\n", iter)
-            @printf("  Expand           %d → %d\n", basis.dim, new_basis.dim)
-            @printf("  New pairs        %d\n", length(sel_vals))
-        end
-
-        if length(sel_vals) == 0
-            verbose && println("No new states, done.")
-            break
-        end
-
-
-        # Merge old basis and selected basis, get subspace basis
-        t4 = @elapsed all_astrs, all_bstrs = merge_bitstrings(basis.astrs, basis.bstrs, sel_astrs, sel_bstrs, mole.orbsym)
-        all_basis = SciBasisManager(mole, all_astrs, all_bstrs, sorted=true)
-
-        if verbose
-            @printf("  Merged           %d\n", all_basis.dim)
-        end
-
-        all_psi = zeros(Float64, all_basis.dim)
-        t5 = @elapsed remap_wavefunction_bitstr!(basis, psi, all_basis, all_psi, sel_astrs, sel_bstrs, sel_vals)
-
-
-        # Perform subspace diag on subspace basis
-        basis, psi = all_basis, all_psi
-        diags = zeros(Float64, basis.dim)
-        @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-        )::Cvoid
-
-        hvec = (v, Hv) -> @ccall LIB_SCI_BITSTR.hvec_sci_full_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, v::Ptr{Float64}, Hv::Ptr{Float64}
-        )::Cvoid
-
-        t6 = @elapsed current_energy, psi = davidson(hvec, psi, diags, verbose=false)
-
-        if verbose
-            @printf("  Energy           %.14f\n", current_energy)
-            @printf("  Error            %.3e\n\n", abs(current_energy - mole.e_scale))
-        end
-
-        if verbose
-            @printf("  Expand           %-8.4f seconds\n", t1)
-            @printf("  Select           %-8.4f seconds\n", t2)
-            @printf("  Merge            %-8.4f seconds\n", t4)
-            @printf("  Remap            %-8.4f seconds\n", t5)
-            @printf("  Diag             %-8.4f seconds\n\n", t6)
-        end
-    end
-
-    return basis, psi, diags
-end
-
-function run_sci_bitstr2(mole::Mole;
     max_iter::Int=20, eps::Float64=1e-6, verbose::Bool=true)
 
     na, nb  = mole.nelec
@@ -509,7 +216,7 @@ function run_sci_bitstr2(mole::Mole;
 
         sel_a = UInt32[]
         sel_b = UInt32[]
-        t2 = @elapsed sci3_select_bitstr!(
+        t2 = @elapsed sci_select_bitstr!(
             new_α, new_β, old_α, old_β,
             basis, otf, psi, current_energy, eps,
             sel_a, sel_b

@@ -73,7 +73,7 @@ const LIB_DIST          = joinpath(libpath, "libdist.so"   )
 const LIB_CUDIST        = joinpath(libpath, "libcudist.so" )
 const LIB_CUOTF         = joinpath(libpath, "libcuotf.so"  )
 const LIB_CUDA_SCI      = joinpath(libpath, "libcuda_sci_bitstr.so") 
-const LIB_SCI_BITSTR    = joinpath(libpath, "libsci_otf_bitstr.so")
+const LIB_SCI_BITSTR    = joinpath(libpath, "libsci_otf.so")
 
 const eps1::Float64 = 1e-8
 const eps2::Float64 = 1e-12
