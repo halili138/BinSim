@@ -122,20 +122,46 @@ extern "C"
         auto old_a_idx = build_idx_map<uint32, true>(basis);
         auto old_b_idx = build_idx_map<uint32, false>(basis);
 
+        // ---- precompute diag phases ----
+        const auto &dg = otf->diag_groups;
+        int diag_rank = 0;
+        std::vector<double> pa_d, pb_do, pb_dn, pa_do;
+
+        if (!dg.empty() && dg[0].rank > 0)
+        {
+            diag_rank = dg[0].rank;
+            const auto &g = dg[0];
+
+            auto alloc_diag = [&](int64 n) {
+                return std::vector<double>((size_t)(n * diag_rank), 0.0);
+            };
+            pa_d  = alloc_diag(n_new_a);
+            pb_do = alloc_diag(n_old_b);
+            pb_dn = alloc_diag(n_new_b);
+            pa_do = alloc_diag(n_old_a);
+
+            precompute_diag_phases<uint32, double, true> (new_a, n_new_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_d.data());
+            precompute_diag_phases<uint32, double, false>(old_b, n_old_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_do.data());
+            precompute_diag_phases<uint32, double, false>(new_b, n_new_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_dn.data());
+            precompute_diag_phases<uint32, double, true> (old_a, n_old_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_do.data());
+        }
+
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(
             new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
             old_a_idx, old_b_idx,
             basis->num_blocks,
-            all_groups, otf->diag_groups.empty() ? nullptr : &otf->diag_groups[0],
-            src_psi, basis->blocks,
+            all_groups, src_psi, basis->blocks,
+            pa_d.data(), pb_do.data(), pb_dn.data(),
+            diag_rank,
             E_var, eps, p1, p3);
         select_pass_b<uint32, double>(
             new_b, n_new_b, old_a, n_old_a,
             old_b_idx, old_a_idx,
             basis->num_blocks,
-            all_groups, otf->diag_groups.empty() ? nullptr : &otf->diag_groups[0],
-            src_psi, basis->blocks,
+            all_groups, src_psi, basis->blocks,
+            pb_dn.data(), pa_do.data(),
+            diag_rank,
             E_var, eps, p2);
 
         *n_pairs = (int64)(p1.size() + p2.size() + p3.size());
