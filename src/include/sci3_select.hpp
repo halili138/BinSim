@@ -221,23 +221,17 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
 inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 9;
 inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 15;
-inline constexpr int64 DIAG_SIMD_WIDTH = 8;
-
-static inline int64 diag_phase_stride(int64 n)
-{
-    return ((std::max<int64>(0, n) + DIAG_SIMD_WIDTH - 1) / DIAG_SIMD_WIDTH) * DIAG_SIMD_WIDTH;
-}
 
 template <typename Ti, typename Tv, bool IsAlpha>
 static void precompute_diag_phases(
-    const Ti *strs, int64 num_strs,
-    const Ti *zs, const Tv *w, int num_zs, int rank, int64 stride,
+    const Ti *strs, int num_strs,
+    const Ti *zs, const Tv *w, int num_zs, int rank,
     Tv *ps)
 {
-    assert(stride >= num_strs);
-    for (int64 i = 0; i < num_strs; ++i)
+    for (int i = 0; i < num_strs; ++i)
     {
         Ti str = strs[i];
+        Tv *pi = ps + i * rank;
         for (int r = 0; r < rank; ++r)
         {
             const Tv *wr = w + r * num_zs;
@@ -247,7 +241,7 @@ static void precompute_diag_phases(
                 bool parity = std::popcount(str & zs[k]) & 1;
                 vr += parity ? -wr[k] : wr[k];
             }
-            ps[r * stride + i] = vr;
+            pi[r] = vr;
         }
     }
 }
@@ -264,7 +258,6 @@ static void select_pass_a(
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     const Tv *pa_diag, const Tv *pb_diag_old, const Tv *pb_diag_new, int diag_rank,
-    int64 pa_diag_stride, int64 pb_diag_old_stride, int64 pb_diag_new_stride,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p1,
     std::vector<std::pair<Ti, Ti>> &out_p3)
@@ -273,7 +266,7 @@ static void select_pass_a(
     const int64 num_a_chunks = (n_new_α + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
 
-    auto run_beta_side = [&](const Ti *beta, int64 n_beta, const Tv *pb_diag, int64 pb_diag_stride, std::vector<std::pair<Ti, Ti>> &out)
+    auto run_beta_side = [&](const Ti *beta, int64 n_beta, const Tv *pb_diag, std::vector<std::pair<Ti, Ti>> &out)
     {
         for (int64 b_begin = 0; b_begin < n_beta; b_begin += TARGET_CHUNK_SIZE)
         {
@@ -352,12 +345,10 @@ static void select_pass_a(
                             if (v == Tv{})
                                 continue;
                             Tv Haa = {};
-                            const Tv *paa = pa_diag + a_begin + local_ia;
-                            const Tv *pbb = pb_diag + b_begin + local_b;
+                            const Tv *par = pa_diag + (a_begin + local_ia) * diag_rank;
+                            const Tv *pbr = pb_diag + (b_begin + local_b) * diag_rank;
                             for (int r = 0; r < diag_rank; ++r)
-                            {
-                                Haa += paa[r * pa_diag_stride] * pbb[r * pb_diag_stride];
-                            }
+                                Haa += par[r] * pbr[r];
                             if (!sci_eps_check(v, Haa, E_var, eps))
                                 continue;
                             thread_out.emplace_back(dst_a, beta[b_begin + local_b]);
@@ -371,8 +362,8 @@ static void select_pass_a(
         }
     };
 
-    run_beta_side(old_β, n_old_β, pb_diag_old, pb_diag_old_stride, out_p1);
-    run_beta_side(new_β, n_new_β, pb_diag_new, pb_diag_new_stride, out_p3);
+    run_beta_side(old_β, n_old_β, pb_diag_old, out_p1);
+    run_beta_side(new_β, n_new_β, pb_diag_new, out_p3);
 }
 
 template <typename Ti, typename Tv>
@@ -386,7 +377,6 @@ static void select_pass_b(
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     const Tv *pb_diag, const Tv *pa_diag_old, int diag_rank,
-    int64 pb_diag_stride, int64 pa_diag_old_stride,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p2)
 {
@@ -471,12 +461,10 @@ static void select_pass_b(
                         if (v == Tv{})
                             continue;
                         Tv Haa = {};
-                        const Tv *paa = pa_diag_old + a_begin + local_a;
-                        const Tv *pbb = pb_diag + b_begin + local_ib;
+                        const Tv *par = pa_diag_old + (a_begin + local_a) * diag_rank;
+                        const Tv *pbr = pb_diag + (b_begin + local_ib) * diag_rank;
                         for (int r = 0; r < diag_rank; ++r)
-                        {
-                            Haa += paa[r * pa_diag_old_stride] * pbb[r * pb_diag_stride];
-                        }
+                            Haa += par[r] * pbr[r];
                         if (!sci_eps_check(v, Haa, E_var, eps))
                             continue;
                         thread_p2.emplace_back(old_α[a_begin + local_a], dst_b);
