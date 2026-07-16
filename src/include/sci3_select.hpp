@@ -221,6 +221,38 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
 inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 9;
 inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 15;
+template <typename Ti, typename Tv>
+static void precompute_diag_phases(
+    const Ti *strs, int64 num_strs,
+    const Ti *zs, const Tv *w, int num_zs, int rank,
+    Tv *ps)
+{
+    for (int64 i = 0; i < num_strs; ++i)
+    {
+        Ti str = strs[i];
+        Tv *pi = ps + i;
+        for (int r = 0; r < rank; ++r)
+        {
+            const Tv *wr = w + r * num_zs;
+            Tv vr = {};
+            for (int k = 0; k < num_zs; ++k)
+            {
+                bool parity = std::popcount(str & zs[k]) & 1;
+                vr += parity ? -wr[k] : wr[k];
+            }
+            pi[r * num_strs] = vr;
+        }
+    }
+}
+
+template <typename Tv>
+FORCE_INLINE Tv compute_haa(const Tv *a_diag_phase, const Tv *b_diag_phase, int rank, int64 a_stride, int64 b_stride)
+{
+    Tv haa = {};
+    for (int r = 0; r < rank; ++r)
+        haa += a_diag_phase[r * a_stride] * b_diag_phase[r * b_stride];
+    return haa;
+}
 
 template <typename Ti, typename Tv>
 static void select_pass_a(
@@ -231,14 +263,13 @@ static void select_pass_a(
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_b_idx_map,
     int64 old_b_num_blocks,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
+    const SVDGroup_OTF<Ti, Tv> *diag_group,
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p1,
     std::vector<std::pair<Ti, Ti>> &out_p3)
 {
-    const Tv eps_sq = eps * eps;
-    const Tv E_var_sq = E_var * E_var;
     const int64 num_group_chunks = ((int64)all_groups.size() + GROUP_CHUNK_SIZE - 1) / GROUP_CHUNK_SIZE;
     const int64 num_a_chunks = (n_new_α + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_a_set(new_α, new_α + n_new_α);
@@ -250,6 +281,13 @@ static void select_pass_a(
         {
             const int64 b_end = std::min<int64>(b_begin + TARGET_CHUNK_SIZE, n_beta);
             const int64 b_count = b_end - b_begin;
+            const int diag_rank = diag_group ? diag_group->rank : 0;
+            std::vector<Tv> b_diag_phase(b_count * diag_rank);
+            if (diag_rank > 0)
+                precompute_diag_phases<Ti, Tv>(beta + b_begin, b_count,
+                                               diag_group->unique_zbs, diag_group->wb,
+                                               diag_group->num_zb, diag_rank,
+                                               b_diag_phase.data());
             std::vector<ForwardShared<Tv>> shared_chunks;
             shared_chunks.reserve(num_group_chunks);
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
@@ -263,6 +301,12 @@ static void select_pass_a(
                 const int64 a_begin = a_chunk * TARGET_CHUNK_SIZE;
                 const int64 a_end = std::min<int64>(a_begin + TARGET_CHUNK_SIZE, n_new_α);
                 const int64 a_count = a_end - a_begin;
+                std::vector<Tv> a_diag_phase(a_count * diag_rank);
+                if (diag_rank > 0)
+                    precompute_diag_phases<Ti, Tv>(new_α + a_begin, a_count,
+                                                   diag_group->unique_zas, diag_group->wa,
+                                                   diag_group->num_za, diag_rank,
+                                                   a_diag_phase.data());
                 std::vector<std::vector<std::vector<int>>> link_chunks;
                 link_chunks.reserve(num_group_chunks);
                 for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
@@ -320,7 +364,11 @@ static void select_pass_a(
                         for (int64 local_b = 0; local_b < b_count; ++local_b)
                         {
                             Tv v = accum[local_b];
-                            if (v != Tv{} && v * v > E_var_sq * eps_sq)
+                            const Tv haa = diag_rank > 0
+                                ? compute_haa(a_diag_phase.data() + local_ia,
+                                              b_diag_phase.data() + local_b, diag_rank, a_count, b_count)
+                                : Tv{};
+                            if (sci_eps_check(v, haa, E_var, eps))
                                 thread_out.emplace_back(dst_a, beta[b_begin + local_b]);
                         }
                     }
@@ -344,13 +392,12 @@ static void select_pass_b(
     const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_a_idx_map,
     int64 old_a_num_blocks,
     const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
+    const SVDGroup_OTF<Ti, Tv> *diag_group,
     const Tv *src_psi,
     const BlockDesc<Ti> *src_blocks,
     Tv E_var, Tv eps,
     std::vector<std::pair<Ti, Ti>> &out_p2)
 {
-    const Tv eps_sq = eps * eps;
-    const Tv E_var_sq = E_var * E_var;
     const int64 num_group_chunks = ((int64)all_groups.size() + GROUP_CHUNK_SIZE - 1) / GROUP_CHUNK_SIZE;
     const int64 num_b_chunks = (n_new_β + TARGET_CHUNK_SIZE - 1) / TARGET_CHUNK_SIZE;
     const ankerl::unordered_dense::set<Ti> new_b_set(new_β, new_β + n_new_β);
@@ -359,6 +406,13 @@ static void select_pass_b(
     {
         const int64 a_end = std::min<int64>(a_begin + TARGET_CHUNK_SIZE, n_old_α);
         const int64 a_count = a_end - a_begin;
+        const int diag_rank = diag_group ? diag_group->rank : 0;
+        std::vector<Tv> a_diag_phase(a_count * diag_rank);
+        if (diag_rank > 0)
+            precompute_diag_phases<Ti, Tv>(old_α + a_begin, a_count,
+                                           diag_group->unique_zas, diag_group->wa,
+                                           diag_group->num_za, diag_rank,
+                                           a_diag_phase.data());
         std::vector<ForwardShared<Tv>> shared_chunks;
         shared_chunks.reserve(num_group_chunks);
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
@@ -372,6 +426,12 @@ static void select_pass_b(
             const int64 b_begin = b_chunk * TARGET_CHUNK_SIZE;
             const int64 b_end = std::min<int64>(b_begin + TARGET_CHUNK_SIZE, n_new_β);
             const int64 b_count = b_end - b_begin;
+            std::vector<Tv> b_diag_phase(b_count * diag_rank);
+            if (diag_rank > 0)
+                precompute_diag_phases<Ti, Tv>(new_β + b_begin, b_count,
+                                               diag_group->unique_zbs, diag_group->wb,
+                                               diag_group->num_zb, diag_rank,
+                                               b_diag_phase.data());
             std::vector<std::vector<std::vector<int>>> link_chunks;
             link_chunks.reserve(num_group_chunks);
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
@@ -429,7 +489,11 @@ static void select_pass_b(
                     for (int64 local_a = 0; local_a < a_count; ++local_a)
                     {
                         Tv v = accum[local_a];
-                        if (v != Tv{} && v * v > E_var_sq * eps_sq)
+                        const Tv haa = diag_rank > 0
+                            ? compute_haa(a_diag_phase.data() + local_a,
+                                          b_diag_phase.data() + local_ib, diag_rank, a_count, b_count)
+                            : Tv{};
+                        if (sci_eps_check(v, haa, E_var, eps))
                             thread_p2.emplace_back(old_α[a_begin + local_a], dst_b);
                     }
                 }
@@ -437,31 +501,6 @@ static void select_pass_b(
 #pragma omp critical
                 out_p2.insert(out_p2.end(), std::make_move_iterator(thread_p2.begin()), std::make_move_iterator(thread_p2.end()));
             }
-        }
-    }
-}
-
-inline constexpr int DIAG_STRIDE = 128;
-template <typename Ti, typename Tv>
-static void precompute_diag_phases(
-    const Ti *strs, int num_strs,
-    const Ti *zs, const Tv *w, int num_zs, int rank, 
-    Tv *ps)
-{
-    for (int i = 0; i < num_strs; ++i)
-    {
-        Ti str = strs[i];
-        Tv *pi = ps + i;
-        for (int r = 0; r < rank; ++r)
-        {
-            const Tv *wr = w + r * num_zs;
-            Tv vr = {};
-            for (int k = 0; k < num_zs; ++k)
-            {
-                bool parity = std::popcount(str & zs[k]) & 1;
-                vr += parity ? -wr[k] : wr[k];
-            }
-            pi[r * DIAG_STRIDE] = vr;
         }
     }
 }

@@ -127,13 +127,15 @@ extern "C"
             new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
             old_a_idx, old_b_idx,
             basis->num_blocks,
-            all_groups, src_psi, basis->blocks,
+            all_groups, otf->diag_groups.empty() ? nullptr : &otf->diag_groups[0],
+            src_psi, basis->blocks,
             E_var, eps, p1, p3);
         select_pass_b<uint32, double>(
             new_b, n_new_b, old_a, n_old_a,
             old_b_idx, old_a_idx,
             basis->num_blocks,
-            all_groups, src_psi, basis->blocks,
+            all_groups, otf->diag_groups.empty() ? nullptr : &otf->diag_groups[0],
+            src_psi, basis->blocks,
             E_var, eps, p2);
 
         *n_pairs = (int64)(p1.size() + p2.size() + p3.size());
