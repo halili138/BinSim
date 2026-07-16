@@ -51,10 +51,10 @@ FORCE_INLINE void precompute_phase_select(
         for (int i = 0; i < nza; ++i)
         {
             Tv phase = (std::popcount(str & zas[i]) & 1) ? Tv(-1) : Tv(1);
-            v0 += wa[i]         * phase;
-            v1 += wa[nza + i]   * phase;
+            v0 += wa[i] * phase;
+            v1 += wa[nza + i] * phase;
         }
-        dst[0]      = v0;
+        dst[0] = v0;
         dst[stride] = v1;
     }
 }
@@ -104,8 +104,16 @@ static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(const
         const auto &blk = basis->blocks[bi];
         const Ti *strs;
         int64 num;
-        if constexpr (IsAlpha) { strs = blk.astrs; num = blk.num_a; }
-        else                   { strs = blk.bstrs; num = blk.num_b; }
+        if constexpr (IsAlpha)
+        {
+            strs = blk.astrs;
+            num = blk.num_a;
+        }
+        else
+        {
+            strs = blk.bstrs;
+            num = blk.num_b;
+        }
         for (int64 j = 0; j < num; ++j)
             idx_map[strs[j]] = {static_cast<int>(j), static_cast<int>(bi)};
     }
@@ -129,9 +137,12 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
         {
             const auto &group = groups[g_begin + local_g];
             Ti exc;
-            if constexpr (IsAlpha) exc = group.ax;
-            else                   exc = group.bx;
-            if (exc == 0) continue;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
+            if (exc == 0)
+                continue;
             if (new_set.find(dst ^ exc) == new_set.end())
                 link[i].push_back(static_cast<int>(local_g));
         }
@@ -156,8 +167,10 @@ static std::vector<std::vector<int>> build_old2old_link_chunk(
         {
             const auto &group = groups[g_begin + local_g];
             Ti exc;
-            if constexpr (IsAlpha) exc = group.ax;
-            else                   exc = group.bx;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
             if (old_set.find(dst ^ exc) != old_set.end())
                 link[i].push_back(static_cast<int>(local_g));
         }
@@ -200,8 +213,10 @@ static ForwardShared<Tv> precompute_shared_chunk(
         {
             const auto &group = all_groups[g_begin + local_g];
             Ti exc;
-            if constexpr (IsAlpha) exc = group.ax;
-            else                   exc = group.bx;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
             Ti src = dst ^ exc;
             auto it = old_idx_map.find(src);
             if (it == old_idx_map.end())
@@ -1007,27 +1022,45 @@ static inline void dispatch_select_chunks_for_block(
         {
             switch (dispatch_rank)
             {
-            case 1: gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         else if constexpr (TypeCode == 2)
         {
             switch (dispatch_rank)
             {
-            case 1: gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         else
         {
             switch (dispatch_rank)
             {
-            case 1: gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         start = end;
@@ -1072,36 +1105,60 @@ static inline void dispatch_contract_chunks_for_block(
         {
             switch (dispatch_rank)
             {
-            case 1: gather_diag_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_diag_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_diag_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_diag_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_diag_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_diag_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         else if constexpr (TypeCode == 1)
         {
             switch (dispatch_rank)
             {
-            case 1: gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_pure_a_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_a_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_a_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         else if constexpr (TypeCode == 2)
         {
             switch (dispatch_rank)
             {
-            case 1: gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_pure_b_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_pure_b_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_pure_b_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         else
         {
             switch (dispatch_rank)
             {
-            case 1: gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            case 2: gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
-            default: gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc); break;
+            case 1:
+                gather_mixed_for_block<1>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            case 2:
+                gather_mixed_for_block<2>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
+            default:
+                gather_mixed_for_block<0>(tgt_block, src_basis, chunk_ptr, chunk_size, src_vec, dst_acc);
+                break;
             }
         }
         start = end;
