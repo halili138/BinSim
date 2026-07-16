@@ -1,8 +1,8 @@
 #include "sci_basis.hpp"
 #include <cassert>
 
-inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 9;
-inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 15;
+inline constexpr int64 GROUP_CHUNK_SIZE = 1 << 10;
+inline constexpr int64 TARGET_CHUNK_SIZE = 1 << 16;
 
 template <typename Tv>
 FORCE_INLINE auto sqnorm(const Tv &v)
