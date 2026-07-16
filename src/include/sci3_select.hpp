@@ -35,29 +35,36 @@ static std::vector<SVDGroup_OTF<Ti, Tv>> flatten_groups(const Network_OTF<Ti, Tv
     return all;
 }
 
-template <typename Ti>
-static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(
-    const SciBasisManager<Ti> *basis, bool is_alpha)
+template <typename Ti, bool IsAlpha>
+static ankerl::unordered_dense::map<Ti, std::pair<int, int>> build_idx_map(const SciBasisManager<Ti> *basis)
 {
     ankerl::unordered_dense::map<Ti, std::pair<int, int>> idx_map;
     for (int64 bi = 0; bi < basis->num_blocks; ++bi)
     {
         const auto &blk = basis->blocks[bi];
-        const Ti *strs = is_alpha ? blk.astrs : blk.bstrs;
-        const int64 num = is_alpha ? blk.num_a : blk.num_b;
+        const Ti *strs;
+        int64 num;
+        if constexpr (IsAlpha)
+        {
+            strs = blk.astrs;
+            num = blk.num_a;
+        }
+        else
+        {
+            strs = blk.bstrs;
+            num = blk.num_b;
+        }
         for (int64 j = 0; j < num; ++j)
             idx_map[strs[j]] = {static_cast<int>(j), static_cast<int>(bi)};
     }
     return idx_map;
 }
 
-template <typename Ti, typename Tv>
+template <typename Ti, typename Tv, bool IsAlpha>
 static std::vector<std::vector<int>> build_old2new_link_chunk(
     const Ti *dst_chunk, int64 n_dst_chunk,
     const ankerl::unordered_dense::set<Ti> &new_set,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    int64 g_begin, int64 g_end,
-    bool is_alpha)
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, int64 g_begin, int64 g_end)
 {
     const int64 ngs = std::max<int64>(0, g_end - g_begin);
     std::vector<std::vector<int>> link(n_dst_chunk);
@@ -69,7 +76,11 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
         for (int64 local_g = 0; local_g < ngs; ++local_g)
         {
             const auto &group = groups[g_begin + local_g];
-            Ti exc = is_alpha ? group.ax : group.bx;
+            Ti exc;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
             if (exc == 0)
                 continue;
             if (new_set.find(dst ^ exc) == new_set.end())
@@ -79,13 +90,11 @@ static std::vector<std::vector<int>> build_old2new_link_chunk(
     return link;
 }
 
-template <typename Ti, typename Tv>
+template <typename Ti, typename Tv, bool IsAlpha>
 static std::vector<std::vector<int>> build_old2old_link_chunk(
     const Ti *dst_chunk, int64 n_dst_chunk,
     const ankerl::unordered_dense::set<Ti> &old_set,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups,
-    int64 g_begin, int64 g_end,
-    bool is_alpha)
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &groups, int64 g_begin, int64 g_end)
 {
     const int64 ngs = std::max<int64>(0, g_end - g_begin);
     std::vector<std::vector<int>> link(n_dst_chunk);
@@ -97,7 +106,11 @@ static std::vector<std::vector<int>> build_old2old_link_chunk(
         for (int64 local_g = 0; local_g < ngs; ++local_g)
         {
             const auto &group = groups[g_begin + local_g];
-            Ti exc = is_alpha ? group.ax : group.bx;
+            Ti exc;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
             if (old_set.find(dst ^ exc) != old_set.end())
                 link[i].push_back(static_cast<int>(local_g));
         }
@@ -105,15 +118,11 @@ static std::vector<std::vector<int>> build_old2old_link_chunk(
     return link;
 }
 
-template <typename Ti, typename Tv>
+template <typename Ti, typename Tv, bool IsAlpha>
 static ForwardShared<Tv> precompute_shared_chunk(
-    const Ti *tgt_chunk, int64 n_tgt_chunk,
-    int64 tgt_global_offset,
-    int64 g_begin, int64 g_end,
-    const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_idx_map,
-    int64 num_blocks,
-    const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups,
-    bool is_alpha)
+    const Ti *tgt_chunk, int64 n_tgt_chunk, int64 tgt_global_offset, int64 g_begin, int64 g_end,
+    const ankerl::unordered_dense::map<Ti, std::pair<int, int>> &old_idx_map, int64 num_blocks,
+    const std::vector<SVDGroup_OTF<Ti, Tv>> &all_groups)
 {
     int64 ngs = std::max<int64>(0, g_end - g_begin);
     ForwardShared<Tv> result;
@@ -143,7 +152,11 @@ static ForwardShared<Tv> precompute_shared_chunk(
         for (int64 local_g = 0; local_g < ngs; ++local_g)
         {
             const auto &group = all_groups[g_begin + local_g];
-            Ti exc = is_alpha ? group.ax : group.bx;
+            Ti exc;
+            if constexpr (IsAlpha)
+                exc = group.ax;
+            else
+                exc = group.bx;
             Ti src = dst ^ exc;
             auto it = old_idx_map.find(src);
             if (it == old_idx_map.end())
@@ -155,11 +168,17 @@ static ForwardShared<Tv> precompute_shared_chunk(
 
             Tv phase_tmp[2] = {};
             if (exc == 0)
+            {
                 phase_tmp[0] = Tv(1);
-            else if (is_alpha)
+            }
+            else if constexpr (IsAlpha)
+            {
                 precompute_phase_select<Ti, Tv>(src, group.unique_zas, group.num_za, group.wa, phase_tmp, 1, group.rank);
+            }
             else
+            {
                 precompute_phase_select<Ti, Tv>(src, group.unique_zbs, group.num_zb, group.wb, phase_tmp, 1, group.rank);
+            }
 
             hits.push_back({local_g,
                             src_pos.second,
@@ -236,7 +255,7 @@ static void select_pass_a(
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
                 int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, old_b_num_blocks, all_groups, false));
+                shared_chunks.push_back(precompute_shared_chunk<Ti, Tv, false>(beta + b_begin, b_count, b_begin, g_begin, g_end, old_b_idx_map, old_b_num_blocks, all_groups));
             }
 
             for (int64 a_chunk = 0; a_chunk < num_a_chunks; ++a_chunk)
@@ -249,7 +268,7 @@ static void select_pass_a(
                 for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
                 {
                     int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end, true));
+                    link_chunks.push_back(build_old2new_link_chunk<Ti, Tv, true>(new_α + a_begin, a_count, new_a_set, all_groups, g_begin, g_end));
                 }
 
 #pragma omp parallel
@@ -345,7 +364,7 @@ static void select_pass_b(
         for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
         {
             int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv>(old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, old_a_num_blocks, all_groups, true));
+            shared_chunks.push_back(precompute_shared_chunk<Ti, Tv, true>(old_α + a_begin, a_count, a_begin, g_begin, g_end, old_a_idx_map, old_a_num_blocks, all_groups));
         }
 
         for (int64 b_chunk = 0; b_chunk < num_b_chunks; ++b_chunk)
@@ -358,7 +377,7 @@ static void select_pass_b(
             for (int64 g_begin = 0; g_begin < (int64)all_groups.size(); g_begin += GROUP_CHUNK_SIZE)
             {
                 int64 g_end = std::min<int64>(g_begin + GROUP_CHUNK_SIZE, (int64)all_groups.size());
-                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv>(new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end, false));
+                link_chunks.push_back(build_old2new_link_chunk<Ti, Tv, false>(new_β + b_begin, b_count, new_b_set, all_groups, g_begin, g_end));
             }
 
 #pragma omp parallel

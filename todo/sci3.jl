@@ -225,6 +225,16 @@ function select_pass_a!(
     output_p1 = Vector{Tuple{Ti,Ti}}()
     output_p3 = Vector{Tuple{Ti,Ti}}()
 
+    new_a_diag_ps = zeros(Tv, new_astrs * diag.rank);
+    new_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
+    old_b_diag_ps = zeros(Tv, new_bstrs * diag.rank);
+
+    # function precompute_diag_phases!(strs, ps, diag_group, side::Symbol)
+    #     for (i, str) in enumerate(strs)
+            
+    #     end
+    # end
+
     Threads.@threads for (ia, dst_a) in enumerate(new_astrs)
         accum_old = zeros(length(old_bstrs))
         accum_new = zeros(length(new_bstrs))

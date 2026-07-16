@@ -119,8 +119,8 @@ extern "C"
 
         auto all_groups = flatten_groups<uint32, double>(otf);
 
-        auto old_a_idx = build_idx_map<uint32>(basis, true);
-        auto old_b_idx = build_idx_map<uint32>(basis, false);
+        auto old_a_idx = build_idx_map<uint32, true>(basis);
+        auto old_b_idx = build_idx_map<uint32, false>(basis);
 
         std::vector<std::pair<uint32_t, uint32_t>> p1, p2, p3;
         select_pass_a<uint32, double>(
