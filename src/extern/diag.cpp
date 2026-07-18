@@ -1,4 +1,4 @@
-#include "diag.hpp"
+#include "diag/davidson.hpp"
 
 extern "C"
 {

@@ -1,6 +1,6 @@
-#include "dist.hpp"
-#include "expm.hpp"
-#include "backgrad.hpp"
+#include "op/dist.hpp"
+#include "op/expm.hpp"
+#include "op/backgrad.hpp"
 
 extern "C"
 {

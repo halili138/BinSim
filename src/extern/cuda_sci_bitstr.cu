@@ -1,4 +1,4 @@
-#include "cuda_sci_hvec.cuh"
+#include "cuda/sci_hvec.cuh"
 
 extern "C"
 {

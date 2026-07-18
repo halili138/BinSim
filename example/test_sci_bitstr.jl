@@ -14,7 +14,7 @@ include("data/fcis.jl")
 
 #     mole.e_scale = n2_6_31g[parse(Float64, ARGS[2])]
 
-#     # run_sci_bitstr(mole; max_iter=20, eps=parse(Float64, ARGS[4]), verbose=true)
+#     run_sci_bitstr(mole; max_iter=20, eps=parse(Float64, ARGS[4]), verbose=true)
 # end
 
 if abspath(PROGRAM_FILE) == @__FILE__
@@ -22,7 +22,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     mole.name  = ARGS[1]
     mole.ratio = parse(Float64, ARGS[2])
     mole.basis = ARGS[3]
-    
+
     build_pyscf_dist(mole)
 
     run_sci_bitstr(mole; max_iter=20, eps=parse(Float64, ARGS[4]), verbose=true)

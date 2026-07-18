@@ -1,7 +1,7 @@
 #include <iostream>
 
-#include "bitintegers.hpp"
-#include "ham.hpp"
+#include "core/bit.hpp"
+#include "ham/ham.hpp"
 
 extern "C"
 {

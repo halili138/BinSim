@@ -60,21 +60,22 @@ if is_rank0_or_serial()
     println("")
 end
 
-const jld2path   = joinpath(@__DIR__, "../jld2file/")
-const pypath     = joinpath(@__DIR__, "../py/")
-const libpath    = joinpath(@__DIR__, "../src/lib/")
+const jld2path          = joinpath(@__DIR__, "../jld2file/")
+const pypath            = joinpath(@__DIR__, "../py/")
+const libpath           = joinpath(@__DIR__, "../src/lib/")
 
-const LIB_BASIS         = joinpath(libpath, "libbasis.so"  )
-const LIB_HAM           = joinpath(libpath, "libham.so"    )
+const LIB_BASIS         = joinpath(libpath, "libbasis.so")
+const LIB_HAM           = joinpath(libpath, "libham.so")
 const LIB_HAM_REAL      = joinpath(libpath, "libham_real.so")
-const LIB_OTF           = joinpath(libpath, "libotf.so"    )
-const LIB_DIAG          = joinpath(libpath, "libdiag.so"   )
-const LIB_DIST          = joinpath(libpath, "libdist.so"   )
-const LIB_CUDIST        = joinpath(libpath, "libcudist.so" )
-const LIB_CUOTF         = joinpath(libpath, "libcuotf.so"  )
+
+const LIB_DIAG          = joinpath(libpath, "libdiag.so")
+const LIB_OTF           = joinpath(libpath, "libotf_native.so")
+const LIB_SCI_SELECT    = joinpath(libpath, "libotf_select.so")
+const LIB_DIST          = joinpath(libpath, "libdist.so")
+
+const LIB_CUOTF         = joinpath(libpath, "libcuotf.so")
 const LIB_CUDA_SCI      = joinpath(libpath, "libcuda_sci_bitstr.so") 
-const LIB_SCI_BITSTR    = joinpath(libpath, "libsci_otf.so")
-const LIB_SCI_NOSYM     = joinpath(libpath, "libsci_otf_nosym.so")
+const LIB_CUDIST        = joinpath(libpath, "libcudist.so")
 
 const eps1::Float64 = 1e-8
 const eps2::Float64 = 1e-12

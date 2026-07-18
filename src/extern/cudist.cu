@@ -1,4 +1,4 @@
-#include "cuda_dist.cuh"
+#include "cuda/dist.cuh"
 
 extern "C"
 {

@@ -1,16 +1,109 @@
-mutable struct SciBasisManager
+mutable struct SciBasisManager{Ti}
     ptr::Ptr{Cvoid}
     dim::Int64
     norb::Int64
     num_blocks::Int64
     na::Int64
     nb::Int64
-    astrs::Vector{UInt32}
-    bstrs::Vector{UInt32}
+    astrs::Vector{Ti}
+    bstrs::Vector{Ti}
 end
 
 function SciBasisManager()
-    SciBasisManager(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[])
+    SciBasisManager{UInt32}(C_NULL, 0, 0, 0, -1, -1, UInt32[], UInt32[])
+end
+
+_sci_suffix(::Type{UInt32}) = "_ui32"
+_sci_suffix(::Type{UInt64}) = "_ui64"
+_sci_suffix(::Type{UInt128}) = "_ui128"
+
+for Ti in (UInt32, UInt64, UInt128)
+    sfx = _sci_suffix(Ti)
+    @eval begin
+        function _create_sci_basis_manager(astrs::Vector{$Ti}, bstrs::Vector{$Ti}, norb, orbsym, total_sym, num_irreps)
+            @ccall LIB_SCI_SELECT.$(Symbol("create_sci_basis_manager_bitstr$(sfx)_f64"))(
+                astrs::Ptr{$Ti}, length(astrs)::Int64,
+                bstrs::Ptr{$Ti}, length(bstrs)::Int64,
+                norb::Int64, orbsym::Ptr{Int64},
+                total_sym::Int64, num_irreps::Int64
+            )::Ptr{Cvoid}
+        end
+
+        function sci_select_bitstr!(
+            new_α::Vector{$Ti}, new_β::Vector{$Ti},
+            old_α::Vector{$Ti}, old_β::Vector{$Ti},
+            src_basis::SciBasisManager{$Ti}, otf::OTF,
+            psi::Vector{Float64}, E_var::Float64, eps::Float64,
+            sel_a::Vector{$Ti}, sel_b::Vector{$Ti}
+        )
+            out_a_ref = Ref{Ptr{$Ti}}(C_NULL)
+            out_b_ref = Ref{Ptr{$Ti}}(C_NULL)
+            n_ref = Ref{Int64}(0)
+
+            @ccall LIB_SCI_SELECT.$(Symbol("sci_select_bitstr$(sfx)_f64"))(
+                new_α::Ptr{$Ti}, length(new_α)::Int64,
+                new_β::Ptr{$Ti}, length(new_β)::Int64,
+                old_α::Ptr{$Ti}, length(old_α)::Int64,
+                old_β::Ptr{$Ti}, length(old_β)::Int64,
+                src_basis.ptr::Ptr{Cvoid},
+                otf.ptr::Ptr{Cvoid},
+                psi::Ptr{Float64},
+                E_var::Cdouble, eps::Cdouble,
+                out_a_ref::Ptr{Ptr{$Ti}}, out_b_ref::Ptr{Ptr{$Ti}}, n_ref::Ptr{Int64}
+            )::Cvoid
+
+            n = n_ref[]
+            if n > 0
+                out_a = unsafe_wrap(Array, out_a_ref[], Int(n); own=false)
+                out_b = unsafe_wrap(Array, out_b_ref[], Int(n); own=false)
+                append!(sel_a, out_a)
+                append!(sel_b, out_b)
+                @ccall free(out_a_ref[]::Ptr{Cvoid})::Cvoid
+                @ccall free(out_b_ref[]::Ptr{Cvoid})::Cvoid
+            end
+        end
+
+        function hvec_svd!(basis::SciBasisManager{$Ti}, otf::OTF, src::Vector{Float64}, dst::Vector{Float64})
+            @ccall LIB_SCI_SELECT.$(Symbol("hvec_sci_full_bitstr$(sfx)_f64"))(
+                basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
+                src::Ptr{Float64}, dst::Ptr{Float64}
+            )::Cvoid
+        end
+
+        function get_diags_bitstr!(basis::SciBasisManager{$Ti}, otf::OTF, diags::Vector{Float64})
+            @ccall LIB_SCI_SELECT.$(Symbol("get_diags_elements_sci_bitstr$(sfx)_f64"))(
+                basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
+            )::Cvoid
+        end
+
+        function remap_wavefunction_bitstr!(
+            old::SciBasisManager{$Ti}, old_psi::Vector{Float64},
+            new::SciBasisManager{$Ti}, new_psi::Vector{Float64},
+            sel_a::Vector{$Ti}, sel_b::Vector{$Ti}, sel_v::Vector{Float64}
+        )
+            @ccall LIB_SCI_SELECT.$(Symbol("remap_wavefunction_sci_bitstr$(sfx)_f64"))(
+                old.ptr::Ptr{Cvoid}, old_psi::Ptr{Float64},
+                new.ptr::Ptr{Cvoid}, new_psi::Ptr{Float64},
+                sel_a::Ptr{$Ti}, sel_b::Ptr{$Ti}, sel_v::Ptr{Float64},
+                length(sel_a)::Int64
+            )::Cvoid
+        end
+
+        function destroy_sci_basis_manager_bitstr(sb::SciBasisManager{$Ti})
+            if sb.ptr != C_NULL
+                @ccall LIB_SCI_SELECT.$(Symbol("destroy_sci_basis_manager_bitstr$(sfx)_f64"))(sb.ptr::Ptr{Cvoid})::Cvoid
+                sb.ptr = C_NULL
+            end
+        end
+
+        function _sci_basis_dim(ptr::Ptr{Cvoid})::Int64
+            @ccall LIB_SCI_SELECT.$(Symbol("sci_basis_dim_bitstr$(sfx)_f64"))(ptr::Ptr{Cvoid})::Int64
+        end
+
+        function _sci_basis_num_blocks(ptr::Ptr{Cvoid})::Int64
+            @ccall LIB_SCI_SELECT.$(Symbol("sci_basis_num_blocks_bitstr$(sfx)_f64"))(ptr::Ptr{Cvoid})::Int64
+        end
+    end
 end
 
 function sort_by_sym(arr::Vector{Ti}, orbsym::Vector{Int64}, num_irreps::Int) where Ti
@@ -29,12 +122,12 @@ function sort_by_sym(arr::Vector{Ti}, orbsym::Vector{Int64}, num_irreps::Int) wh
     return result
 end
 
-function SciBasisManager(mole::Mole, astrs::Vector{UInt32}, bstrs::Vector{UInt32};
+function SciBasisManager(mole::Mole, astrs::Vector{Ti}, bstrs::Vector{Ti};
     sorted::Bool=false, num_irreps::Int=16, total_sym::Int=0
-)
+) where Ti
     na, nb = mole.nelec
-    astrs  = UInt32[a for a in astrs if count_ones(a) == na]
-    bstrs  = UInt32[b for b in bstrs if count_ones(b) == nb]
+    astrs  = Ti[a for a in astrs if count_ones(a) == na]
+    bstrs  = Ti[b for b in bstrs if count_ones(b) == nb]
 
     @assert all(count_ones.(astrs) .== na)
     @assert all(count_ones.(bstrs) .== nb)
@@ -44,22 +137,17 @@ function SciBasisManager(mole::Mole, astrs::Vector{UInt32}, bstrs::Vector{UInt32
         bstrs = sort_by_sym(bstrs, mole.orbsym, num_irreps)
     end
 
-    ptr = @ccall LIB_SCI_BITSTR.create_sci_basis_manager_bitstr_f64(
-        astrs::Ptr{UInt32}, length(astrs)::Int64,
-        bstrs::Ptr{UInt32}, length(bstrs)::Int64,
-        mole.norb::Int64, mole.orbsym::Ptr{Int64},
-        total_sym::Int64, num_irreps::Int64
-    )::Ptr{Cvoid}
+    ptr = _create_sci_basis_manager(astrs, bstrs, mole.norb, mole.orbsym, total_sym, num_irreps)
 
     ptr == C_NULL && error("Failed to create bitstr basis manager.")
 
-    dim = @ccall LIB_SCI_BITSTR.sci_basis_dim_bitstr(ptr::Ptr{Cvoid})::Int64
-    nbk = @ccall LIB_SCI_BITSTR.sci_basis_num_blocks_bitstr(ptr::Ptr{Cvoid})::Int64
-    obj = SciBasisManager(ptr, dim, mole.norb, nbk, na, nb, astrs, bstrs)
+    dim = _sci_basis_dim(ptr)
+    nbk = _sci_basis_num_blocks(ptr)
+    obj = SciBasisManager{Ti}(ptr, dim, mole.norb, nbk, na, nb, astrs, bstrs)
 
     finalizer(obj) do o
         if o.ptr != C_NULL
-            @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(o.ptr::Ptr{Cvoid})::Cvoid
+            destroy_sci_basis_manager_bitstr(o)
             o.ptr = C_NULL
         end
     end
@@ -111,73 +199,6 @@ function merge_bitstrings(
     return a_union, b_union
 end
 
-function remap_wavefunction_bitstr!(
-    old::SciBasisManager, old_psi::Vector{Float64},
-    new::SciBasisManager, new_psi::Vector{Float64},
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}, sel_v::Vector{Float64}
-)
-    @ccall LIB_SCI_BITSTR.remap_wavefunction_sci_bitstr_f64(
-        old.ptr::Ptr{Cvoid}, old_psi::Ptr{Float64},
-        new.ptr::Ptr{Cvoid}, new_psi::Ptr{Float64},
-        sel_a::Ptr{UInt32}, sel_b::Ptr{UInt32}, sel_v::Ptr{Float64},
-        length(sel_a)::Int64
-    )::Cvoid
-end
-
-function get_diags_bitstr!(basis::SciBasisManager, otf::OTF, diags::Vector{Float64})
-    @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-    )::Cvoid
-end
-
-function sci_select_bitstr!(
-    new_α::Vector{UInt32}, new_β::Vector{UInt32},
-    old_α::Vector{UInt32}, old_β::Vector{UInt32},
-    src_basis::SciBasisManager, otf::OTF,
-    psi::Vector{Float64}, E_var::Float64, eps::Float64,
-    sel_a::Vector{UInt32}, sel_b::Vector{UInt32}
-)
-    out_a_ref = Ref{Ptr{UInt32}}(C_NULL)
-    out_b_ref = Ref{Ptr{UInt32}}(C_NULL)
-    n_ref = Ref{Int64}(0)
-
-    @ccall LIB_SCI_BITSTR.sci_select_bitstr_f64(
-        new_α::Ptr{UInt32}, length(new_α)::Int64,
-        new_β::Ptr{UInt32}, length(new_β)::Int64,
-        old_α::Ptr{UInt32}, length(old_α)::Int64,
-        old_β::Ptr{UInt32}, length(old_β)::Int64,
-        src_basis.ptr::Ptr{Cvoid},
-        otf.ptr::Ptr{Cvoid},
-        psi::Ptr{Float64},
-        E_var::Cdouble, eps::Cdouble,
-        out_a_ref::Ptr{Ptr{UInt32}}, out_b_ref::Ptr{Ptr{UInt32}}, n_ref::Ptr{Int64}
-    )::Cvoid
-
-    n = n_ref[]
-    if n > 0
-        out_a = unsafe_wrap(Array, out_a_ref[], Int(n); own=false)
-        out_b = unsafe_wrap(Array, out_b_ref[], Int(n); own=false)
-        append!(sel_a, out_a)
-        append!(sel_b, out_b)
-        @ccall free(out_a_ref[]::Ptr{Cvoid})::Cvoid
-        @ccall free(out_b_ref[]::Ptr{Cvoid})::Cvoid
-    end
-end
-
-function hvec_svd!(basis::SciBasisManager, otf::OTF, src::Vector{Float64}, dst::Vector{Float64})
-    @ccall LIB_SCI_BITSTR.hvec_sci_full_bitstr_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid},
-        src::Ptr{Float64}, dst::Ptr{Float64}
-    )::Cvoid
-end
-
-function destroy_sci_basis_manager_bitstr(sb::SciBasisManager)
-    if sb.ptr != C_NULL
-        @ccall LIB_SCI_BITSTR.destroy_sci_basis_manager_bitstr_f64(sb.ptr::Ptr{Cvoid})::Cvoid
-        sb.ptr = C_NULL
-    end
-end
-
 function run_sci_bitstr(mole::Mole;
     max_iter::Int=20, eps::Float64=1e-6, verbose::Bool=true)
 
@@ -191,9 +212,7 @@ function run_sci_bitstr(mole::Mole;
     psi     = Float64[1.0]
 
     diags   = Float64[0.0]
-    @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-        basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-    )::Cvoid
+    get_diags_bitstr!(basis, otf, diags)
 
     current_energy = diags[1]
 
@@ -244,13 +263,9 @@ function run_sci_bitstr(mole::Mole;
         basis, psi = all_basis, all_psi
 
         diags = zeros(Float64, basis.dim)
-        @ccall LIB_SCI_BITSTR.get_diags_elements_sci_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, diags::Ptr{Float64}
-        )::Cvoid
+        get_diags_bitstr!(basis, otf, diags)
 
-        hvec = (v, Hv) -> @ccall LIB_SCI_BITSTR.hvec_sci_full_bitstr_f64(
-            basis.ptr::Ptr{Cvoid}, otf.ptr::Ptr{Cvoid}, v::Ptr{Float64}, Hv::Ptr{Float64}
-        )::Cvoid
+        hvec = (v, Hv) -> hvec_svd!(basis, otf, v, Hv)
 
         t6 = @elapsed current_energy, psi = davidson(hvec, psi, diags, verbose=false)
 
