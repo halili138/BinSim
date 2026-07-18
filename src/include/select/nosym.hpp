@@ -1,5 +1,6 @@
 #pragma once
 #include <cassert>
+#include <cstdlib>
 #include <vector>
 #include <utility>
 #include <ankerl/unordered_dense.h>
@@ -769,4 +770,97 @@ static void contract_hvec_sci_nosym(
     dispatch_contract_chunks_nosym<1, Ti, Tv>(basis->all_astrs, na, basis->all_bstrs, nb, basis->a_idx_map, basis->b_idx_map, net->pure_a_groups, src, dst);
     dispatch_contract_chunks_nosym<2, Ti, Tv>(basis->all_astrs, na, basis->all_bstrs, nb, basis->a_idx_map, basis->b_idx_map, net->pure_b_groups, src, dst);
     dispatch_contract_chunks_nosym<3, Ti, Tv>(basis->all_astrs, na, basis->all_bstrs, nb, basis->a_idx_map, basis->b_idx_map, net->mixed_groups, src, dst);
+}
+
+template <typename Ti, typename Tv>
+static void sci_select_nosym_impl(
+    const Ti *new_a, int64 n_new_a,
+    const Ti *new_b, int64 n_new_b,
+    const Ti *old_a, int64 n_old_a,
+    const Ti *old_b, int64 n_old_b,
+    void *src_basis,
+    void *net,
+    Tv *src_psi, Tv E_var, Tv eps,
+    Ti **out_a, Ti **out_b, int64 *n_pairs)
+{
+    auto *basis = static_cast<SciBasisManagerNosym<Ti> *>(src_basis);
+    auto *otf = static_cast<Network_OTF<Ti, Tv> *>(net);
+
+    auto all_groups = flatten_groups<Ti, Tv>(otf);
+
+    auto old_a_idx = build_idx_map_nosym<Ti, true>(basis);
+    auto old_b_idx = build_idx_map_nosym<Ti, false>(basis);
+
+    const auto &dg = otf->diag_groups;
+    int diag_rank = 0;
+    std::vector<Tv> pa_d, pb_do, pb_dn, pa_do;
+
+    if (!dg.empty() && dg[0].rank > 0)
+    {
+        diag_rank = dg[0].rank;
+        const auto &g = dg[0];
+        auto alloc = [&](int64 n)
+        {
+            return std::vector<Tv>((size_t)(n * diag_rank), Tv{});
+        };
+
+        pa_d = alloc(n_new_a);
+        pb_do = alloc(n_old_b);
+        pb_dn = alloc(n_new_b);
+        pa_do = alloc(n_old_a);
+
+        precompute_diag_phases<Ti, Tv>(new_a, n_new_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_d.data());
+        precompute_diag_phases<Ti, Tv>(old_b, n_old_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_do.data());
+        precompute_diag_phases<Ti, Tv>(new_b, n_new_b, g.unique_zbs, g.wb, g.num_zb, g.rank, pb_dn.data());
+        precompute_diag_phases<Ti, Tv>(old_a, n_old_a, g.unique_zas, g.wa, g.num_za, g.rank, pa_do.data());
+    }
+
+    std::vector<std::pair<Ti, Ti>> p1, p2, p3;
+    select_pass_a_nosym<Ti, Tv>(
+        new_a, n_new_a, old_b, n_old_b, new_b, n_new_b,
+        old_a_idx, old_b_idx,
+        basis->num_b,
+        all_groups, src_psi,
+        pa_d.data(), pb_do.data(), pb_dn.data(),
+        diag_rank,
+        E_var, eps, p1, p3);
+    select_pass_b_nosym<Ti, Tv>(
+        new_b, n_new_b, old_a, n_old_a,
+        old_b_idx, old_a_idx,
+        basis->num_b,
+        all_groups, src_psi,
+        pb_dn.data(), pa_do.data(),
+        diag_rank,
+        E_var, eps, p2);
+
+    *n_pairs = (int64)(p1.size() + p2.size() + p3.size());
+    if (*n_pairs == 0)
+    {
+        *out_a = nullptr;
+        *out_b = nullptr;
+        return;
+    }
+
+    *out_a = (Ti *)malloc((size_t)(*n_pairs) * sizeof(Ti));
+    *out_b = (Ti *)malloc((size_t)(*n_pairs) * sizeof(Ti));
+
+    int64 idx = 0;
+    for (const auto &[a, b] : p1)
+    {
+        (*out_a)[idx] = a;
+        (*out_b)[idx] = b;
+        ++idx;
+    }
+    for (const auto &[a, b] : p2)
+    {
+        (*out_a)[idx] = a;
+        (*out_b)[idx] = b;
+        ++idx;
+    }
+    for (const auto &[a, b] : p3)
+    {
+        (*out_a)[idx] = a;
+        (*out_b)[idx] = b;
+        ++idx;
+    }
 }
