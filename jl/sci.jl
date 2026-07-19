@@ -229,8 +229,9 @@ function run_sci_bitstr(mole::Mole;
         new_β = new_bstrs[is_new_b]
 
         if verbose
-            @printf("Iter %d: |newα|=%d |newβ|=%d |oldα|=%d |oldβ|=%d\n",
-                iter, length(new_α), length(new_β), length(old_α), length(old_β))
+            @printf("Iter %d:\n", iter)
+            @printf("  Old: (%da %db)\n", length(old_α), length(old_β)) 
+            @printf("  New: (%da %db)\n", length(new_α), length(new_β))    
         end
 
         sel_a = UInt32[]
@@ -243,7 +244,7 @@ function run_sci_bitstr(mole::Mole;
 
         unique!(sel_a); unique!(sel_b)
         num_sel = length(sel_a) + length(sel_b)
-        verbose && @printf("  select=%d (%da %db)\n", num_sel, length(sel_a), length(sel_b))
+        verbose && @printf("  Sel: (%da %db)\n", length(sel_a), length(sel_b))
 
         if num_sel == 0
             verbose && println("Done.")
@@ -254,7 +255,7 @@ function run_sci_bitstr(mole::Mole;
             basis.astrs, basis.bstrs, sel_a, sel_b, mole.orbsym
         )
         all_basis = SciBasisManager(mole, all_astrs, all_bstrs, sorted=true)
-        verbose && @printf("  merge=%d\n", all_basis.dim)
+        verbose && @printf("  Ndet: %d\n\n", all_basis.dim)
 
         all_psi = zeros(Float64, all_basis.dim)
         t5 = @elapsed remap_wavefunction_bitstr!(basis, psi, all_basis, all_psi, UInt32[], UInt32[], Float64[])
@@ -270,9 +271,12 @@ function run_sci_bitstr(mole::Mole;
         t6 = @elapsed current_energy, psi = davidson(hvec, psi, diags, verbose=false)
 
         if verbose
-            @printf("  E=%.14f  err=%.3e  t:exp=%.1fs sel=%.1fs mrg=%.1fs rmp=%.1fs dg=%.1fs\n\n",
-                current_energy, abs(current_energy - mole.e_scale),
-                t1, t2, t4, t5, t6)
+            @printf("  E:    %.14f\n  err:  %.3e\n\n", current_energy, abs(current_energy - mole.e_scale))
+            @printf("  Expand:  %.3fs\n", t1)
+            @printf("  Select:  %.3fs\n", t2)
+            @printf("  Merge:   %.3fs\n", t4)
+            @printf("  Remap:   %.3fs\n", t5)
+            @printf("  Diag:    %.3fs\n\n", t6)
         end
     end
 

@@ -102,8 +102,8 @@ static void get_diags_elements_sci_nosym(
     const Tv *wb = group.wb;
     const int nza = group.num_za;
     const int nzb = group.num_zb;
-    const int na = (int)basis->num_a;
-    const int nb = (int)basis->num_b;
+    const int64 na = basis->num_a;
+    const int64 nb = basis->num_b;
 
 #pragma omp parallel
     {
@@ -124,6 +124,6 @@ static void get_diags_elements_sci_nosym(
 #pragma omp for collapse(2) schedule(static)
         for (int a = 0; a < na; ++a)
             for (int b = 0; b < nb; ++b)
-                diags[(int64)a * nb + b] += compute_coeff<0, Tv>(a, b, pa, pb, na, nb, rank);
+                diags[a * nb + b] += compute_coeff<0, Tv>(a, b, pa, pb, na, nb, rank);
     }
 }

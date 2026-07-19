@@ -328,18 +328,17 @@ void get_diags_elements_sci(
         for (int64 bi = 0; bi < num_blocks; ++bi)
         {
             const BlockDesc<Ti> &blk = blocks[bi];
-            Tv *pa0 = local_a_phase.data();
-            Tv *pb0 = local_b_phase.data();
+            Tv *pa = local_a_phase.data();
+            Tv *pb = local_b_phase.data();
             for (int i = 0; i < blk.num_a; ++i)
-                precompute_phase<0, Ti, Tv>(blk.astrs[i], zas, num_za, wa0, pa0 + i, max_a_count, rank);
+                precompute_phase<0, Ti, Tv>(blk.astrs[i], zas, num_za, wa0, pa + i, max_a_count, rank);
             for (int i = 0; i < blk.num_b; ++i)
-                precompute_phase<0, Ti, Tv>(blk.bstrs[i], zbs, num_zb, wb0, pb0 + i, max_b_count, rank);
-            const Tv *pa = local_a_phase.data();
-            const Tv *pb = local_b_phase.data();
+                precompute_phase<0, Ti, Tv>(blk.bstrs[i], zbs, num_zb, wb0, pb + i, max_b_count, rank);
+
 #pragma omp for collapse(2) schedule(static) nowait
             for (int a = 0; a < blk.num_a; ++a)
                 for (int b = 0; b < blk.num_b; ++b)
-                    diags[blk.offset + (int64)a * blk.num_b + b] +=
+                    diags[blk.offset + a * blk.num_b + b] +=
                         compute_coeff<0, Tv>(a, b, pa, pb, max_a_count, max_b_count, rank);
         }
     }
