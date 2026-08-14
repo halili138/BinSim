@@ -23,7 +23,7 @@ function test_adapt_vqe(mole)
     x0      = Float64[]
     idxs    = Int64[]
 
-    run_adapt_vqe2(funcs, lv, rv, v0_idxs, v0_vals, mole.e_scale, nparams, x0, idxs, 
+    run_adapt_vqe(funcs, lv, rv, v0_idxs, v0_vals, mole.e_scale, nparams, x0, idxs, 
         ADAPT_OPTIONS(
             maxiter   = 99999, 
             Gtol      = 1e-3, 

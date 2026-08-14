@@ -78,55 +78,6 @@ function BasisManager(norb::Int64, astrs::Vector{UInt32}, bstrs::Vector{UInt32},
     return obj
 end
 
-function BasisManager(
-    norb::Int64,
-    nelec::Tuple{Int64,Int64},
-    physical_orbsym::Vector{Int64},
-    partition::VirtualSymmetryPartition;
-    physical_total_sym::Int64=0,
-    physical_num_irreps::Int64=16,
-)
-    @assert length(physical_orbsym) == norb
-    @assert length(partition.orbsym) == norb
-    na, nb = nelec
-
-    ptr = @ccall LIB_BASIS.create_partitioned_basis_manager(
-        norb::Int64, na::Int64, nb::Int64,
-        physical_total_sym::Int64,
-        physical_orbsym::Ptr{Int64},
-        partition.orbsym::Ptr{Int64},
-        physical_num_irreps::Int64,
-        partition.num_irreps::Int64,
-    )::Ptr{Cvoid}
-
-    ptr == C_NULL && error("Failed to create partitioned C++ BasisManager.")
-
-    dim = @ccall LIB_BASIS.get_subspace_dim(ptr::Ptr{Cvoid})::Int64
-    num_blocks = get_num_symmetry_blocks(ptr)
-    combined_orbsym = combine_orbsym(physical_orbsym, partition.orbsym; physical_num_irreps=physical_num_irreps)
-
-    if is_rank0_or_serial()
-        @printf("Num virtual-symmetry partitioned elements: %d    %.4f GB\n", dim, dim * 8 / (1 << 30))
-        @printf("Num wavefunction symmetry blocks: %d\n", num_blocks)
-        isfinite(partition.balance_score) && @printf(
-            "Virtual partition balance: score %.6f    max block %d    nonzero blocks %d\n",
-            partition.balance_score, partition.max_block_dim, partition.nonzero_blocks,
-        )
-        @printf("Virtual symmetry: Z2^%d (%d labels)\n\n", partition.k, partition.num_irreps)
-    end
-
-    obj = BasisManager(ptr, dim, norb, nelec, combined_orbsym)
-
-    finalizer(obj) do o
-        if o.ptr != C_NULL
-            @ccall LIB_BASIS.destroy_basis_manager(o.ptr::Ptr{Cvoid})::Cvoid
-            o.ptr = C_NULL
-        end
-    end
-
-    return obj
-end
-
 function get_hf(basis::BasisManager; Tv::DataType=Float64)
     hf = zeros(Tv, basis.dim)
     na, nb = basis.nelec

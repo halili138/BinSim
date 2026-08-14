@@ -21,29 +21,25 @@ ham   = BinaryQubitAABB(ham.axs, ham.bxs, ham.azs, ham.bzs, Tv.(ham.cs))
 
 # 对角化相关
 e_fci, v_fci = run_fci(basis, ham, get_hf(basis, Tv=Tv))
-e_fcis, v_fcis = run_fci(basis, ham, k=3)
-
-orbs = Orbitals()
-kernel(mole, orbs, generalize=false)
-pool = FEB(orbs, Tv=Tv)
 
 # VQE相关
 orbs = Orbitals()
 kernel(mole, orbs, generalize=true)
 pool = FEB(orbs, Tv=Tv)
-e_vqe, v_vqe, x_vqe = run_vqe(basis, ham, pool, get_hf(basis), e_fci)
-run_exact_vqe(basis, ham, pool, get_hf(basis), e_fci)
-run_adapt_vqe(basis, ham, pool, get_hf(basis), e_fci, vqe_options=VQE_OPTIONS(ftol=1e-8, gtol=1e-6))
 
-# 后处理相关
-orbs = Orbitals();
-kernel(mole, orbs, generalize=true);
-pool = FEB(orbs)
-run_enpt2(basis, ham, v_vqe, e_fci)
-run_qse(basis, ham, pool, v_vqe, e_scales=e_fcis)
-run_qeom(basis, ham, pool, v_vqe, e_scales=e_fcis)
+v0      = get_hf(basis, Tv=Tv)
+v0_idxs = findall(x -> x != 0, v0)
+v0_vals = v0[v0_idxs]
+lv      = zeros(Tv, basis.dim)
+rv      = zeros(Tv, basis.dim)
 
-# 虚时演化相关
-run_rk4_ite(basis, ham, get_hf(basis), e_fci, dt=1e-1)
-run_euler_ite(basis, ham, get_hf(basis), e_fci)
-run_krylov_ite(basis, ham, get_hf(basis), e_fci, dt=5e-1)
+funcs = OTF_Functions(basis, ham, pool)
+x0    = zeros(Float64, length(pool))
+idxs  = [i for i in eachindex(pool)]
+
+e_vqe, v_vqe, x_vqe = run_vqe(funcs, lv, rv, v0_idxs, v0_vals, e_fci, x0, idxs,
+    VQE_OPTIONS(ftol=1e-8, gtol=1e-6, maxiter=10000, verbose=1))
+
+run_adapt_vqe(funcs, lv, rv, v0_idxs, v0_vals, e_fci, length(pool), Float64[], Int64[],
+    ADAPT_OPTIONS(maxiter=100, verbose=1),
+    VQE_OPTIONS(ftol=1e-8, gtol=1e-6, maxiter=10000, verbose=1))

@@ -123,8 +123,18 @@ function load_x(read_path::String)
     @assert isfile(read_path)
     jldopen(read_path, "r") do file
         x::Array{Float64,1} = file["x"]
-        println("Successfully load precalculated amplitudes from $(read_path)\n")
+        println("Successfully load x from $(read_path)\n")
         return x
+    end
+end
+
+function load_idxs(read_path::String)
+    @assert isfile(read_path)
+    jldopen(read_path, "r") do file
+        amplitudes::Array{Float64,1} = file["amplitudes"]
+        selec_idxs::Array{Int64,1} = file["selec_idxs"]
+        println("Successfully load precalculated amplitudes and selec_idxs from $(read_path)\n")
+        return amplitudes, selec_idxs
     end
 end
 
@@ -150,87 +160,136 @@ function ADAPT_OPTIONS(;
     ADAPT_OPTIONS(maxiter, Gtol, gtol, htol, Δtol, verbose, save_path)
 end
 
-function _adapt_vqe(
-    f_hvec::Function,
-    f_expm::Function,
-    f_backgrad::Function,
-    f_batchgrad::Function,
-    idxs::Vector{Int64},
-    v0::Vector{Tv},
-    lv::Vector{Tv},
-    rv::Vector{Tv},
-    e_scale::Float64,
-    amplitudes::Vector{Float64}, 
-    selec_idxs::Vector{Int64}, 
-    adapt_options::ADAPT_OPTIONS,
-    vqe_options::VQE_OPTIONS,
-) where Tv
-    @assert length(amplitudes) == length(selec_idxs)
+function run_vqe(funcs, lv, rv, v0_idxs, v0_vals, e_scale::Float64, x0::Vector{Float64}, idxs::Vector{Int64}, options::VQE_OPTIONS)
+    energy  = Ref(0.0)
+    gnorm   = Ref(0.0)
+    δ²H     = Ref(0.0)
+    error   = Ref(0.0)
+
+    obj_func = x -> begin
+        if !isempty(options.save_path)
+            jldopen(options.save_path, "w") do file
+                file["x"] = x
+            end
+        end
+
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+
+        result = @timed energy_objective(
+            funcs.hvec, 
+            funcs.expm, 
+            funcs.backgrad, 
+            idxs, x, lv, rv
+            )
+            
+        energy[], grads, δ²H[] = result.value
+        gnorm[] = norm(grads)
+        error[] = abs(energy[] - e_scale)
+        options.verbose > 1 && show_optimze(energy[], gnorm[], δ²H[], error[])
+        options.verbose > 2 && show_time(result)
+
+        return energy[], grads
+    end
+
+    println("Performing VQE optimization ... ")
+    time_ops = @elapsed e_opt, x_opt = optimze_fg!(x0, obj_func, options.optimizer, options.options, options.verbose)
+    @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n",
+            time_ops, energy[], gnorm[], δ²H[], error[])
+    println("\n")
+
+    fill!(lv, 0.0)
+    lv[v0_idxs] .= v0_vals
+
+    for (i, t) in zip(idxs, x_opt)
+        funcs.expm(i, t, lv)
+    end
+
+    return e_opt, lv, x_opt
+end
+
+function run_adapt_vqe(funcs, lv, rv, v0_idxs, v0_vals, e_scale::Float64, nparams::Int64, amplitudes::Vector{Float64}, selec_idxs::Vector{Int64}, adapt_options::ADAPT_OPTIONS, vqe_options::VQE_OPTIONS)
+    println("Performing ADAPT-VQE ... ")
     
     if !isempty(amplitudes)
-        lv .= v0
-        for i in eachindex(amplitudes)
-            f_expm(selec_idxs[i], amplitudes[i], lv)
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+        for (i, t) in zip(selec_idxs, amplitudes)
+            funcs.expm(i, t, lv)
         end
     end
 
-    iter::Int  = length(amplitudes); maxiter::Int  = adapt_options.maxiter 
-    G::Float64               = 999.; Gtol::Float64 = adapt_options.Gtol
-    gi_max::Float64          = 999.; gtol::Float64 = adapt_options.gtol
-    δ²H::Float64             = 999.; htol::Float64 = adapt_options.htol
-    e_hist::Array{Float64,1} = [];   Δtol::Float64 = adapt_options.Δtol
+    zero_grads  = similar(lv, nparams)
+    _zero_grads = zeros(Float64, nparams)
+    zero_amp    = similar(lv, Float64, nparams)
+    zero_amp   .= 0.0
+    iter        = length(amplitudes)
+    gnorm       = 999.
+    gmax        = 999.
+    e_hist      = Float64[]  
+    converged   = false
 
-    zero_grads = Vector{Float64}(undef, length(idxs))
-    zero_amp = zeros(length(idxs))
-    converged::Bool = false
-    while !converged
+    @time while !converged
         iter += 1
         
-        f_hvec(lv, rv)
-        
-        f_batchgrad(lv, rv, zero_grads, zero_amp)
-        @. zero_grads = real(zero_grads) * 2
-        
-        max_idx = sortperm(abs.(zero_grads), rev=true)[1]
-        G       = norm(zero_grads)
-        gi_max  = abs(zero_grads[max_idx])
+        funcs.hvec(lv, rv)
+        funcs.batchgrad(lv, rv, zero_grads, zero_amp)
+        copyto!(_zero_grads, zero_grads)
+        @. _zero_grads = real(_zero_grads) * 2
 
-        if length(selec_idxs) > 0 && max_idx == selec_idxs[end]
-            println("Have selected same operator, ADAPT loop finished!")
+        permarray = sortperm(abs.(_zero_grads), rev=true)
+        gnorm     = norm(_zero_grads)
+        max_idx   = 0
+
+        if length(selec_idxs) == 0
+            max_idx = permarray[1]
+        else
+            for idx in permarray
+                if idx != selec_idxs[end]
+                    max_idx = idx
+                    break
+                end
+            end
+        end
+
+        if max_idx == 0
+            println("Cannot add new operator, ADAPT loop finished!")
             break
         end
 
-        push!(amplitudes, 0.0)
-        push!(selec_idxs, idxs[max_idx])
+        gmax = abs(_zero_grads[max_idx])
 
-        e_l   = Ref(0.0)
-        ng_l  = Ref(0.0)
-        δ²H_l = Ref(0.0)
-        err_l = Ref(0.0)
+        push!(amplitudes, 0.0)
+        push!(selec_idxs, max_idx)
+
+        cur_energy   = Ref(0.0)
+        cur_gnorm    = Ref(0.0)
+        cur_variance = Ref(0.0)
+        cur_error    = Ref(0.0)
 
         obj_func = x -> begin
-            lv .= v0
-            result = @timed energy_objective(f_hvec, f_expm, f_backgrad, selec_idxs, x, lv, rv)
-            e_l[], gradient, δ²H_l[] = result.value
+            fill!(lv, 0.0)
+            lv[v0_idxs] .= v0_vals
 
-            ng_l[]  = norm(gradient)
-            err_l[] = abs(e_l[] - e_scale)
-            vqe_options.verbose > 1 && show_optimze(e_l[], ng_l[], δ²H_l[], err_l[])
+            result = @timed energy_objective(funcs.hvec, funcs.expm, funcs.backgrad, selec_idxs, x, lv, rv)
+
+            cur_energy[], gradient, cur_variance[] = result.value
+            cur_gnorm[] = norm(gradient)
+            cur_error[] = abs(cur_energy[] - e_scale)
+
+            vqe_options.verbose > 1 && show_optimze(cur_energy[], cur_gnorm[], cur_variance[], cur_error[])
             vqe_options.verbose > 2 && show_time(result)
 
-            return e_l[], gradient
+            return cur_energy[], gradient
         end
 
-        vqe_options.verbose > 0 && println("Performing VQE optimization ... ")
-        time_ops = @elapsed e_opt, amplitudes = optimze_fg!(
-            amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
+        vqe_options.verbose >= 1 && println("Performing VQE optimization ... ")
 
-        if vqe_options.verbose == 1
-            @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n", 
-                    time_ops, e_l[], ng_l[], δ²H_l[], err_l[])
-        elseif vqe_options.verbose >= 2
-            @printf("Converged in %.4f seconds\n", time_ops)
-        end
+        time_ops = @elapsed e_opt, amplitudes = optimze_fg!(amplitudes, obj_func, vqe_options.optimizer, vqe_options.options, vqe_options.verbose)
+
+        vqe_options.verbose == 1 && @printf("Converged in %.4f seconds with: f = %.14f  |g| = %.3e  δ²H = %.3e  err = %.3e\n", 
+                                             time_ops, cur_energy[], cur_gnorm[], cur_variance[], cur_error[])
+        vqe_options.verbose >= 2 && @printf("Converged in %.4f seconds\n", time_ops)
 
         if !isempty(adapt_options.save_path)
             jldopen(adapt_options.save_path, "w") do file
@@ -241,21 +300,21 @@ function _adapt_vqe(
 
         push!(e_hist, e_opt)
 
-        lv .= v0
-        for i in eachindex(amplitudes)
-            f_expm(selec_idxs[i], amplitudes[i], lv)
+        fill!(lv, 0.0)
+        lv[v0_idxs] .= v0_vals
+
+        for (i, t) in zip(selec_idxs, amplitudes)
+            funcs.expm(i, t, lv)
         end
 
-        cond1::Bool = iter > maxiter
-        cond2::Bool = (G < Gtol && gi_max < gtol && δ²H_l[] < htol)
+        cond1::Bool = iter > adapt_options.maxiter
+        cond2::Bool = (gnorm < adapt_options.Gtol && gmax < adapt_options.gtol && cur_variance[] < adapt_options.htol)
         cond3::Bool = false
 
         if length(e_hist) > 5
-            Δe_max = maximum(abs.(diff(e_hist[end-4:end])))
-            if Δe_max < Δtol
-                @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", Δe_max, Δtol)
-                cond3 = true
-            end
+            delta_e = maximum(abs.(diff(e_hist[end-4:end])))
+            cond3 = delta_e < adapt_options.Δtol
+            cond3 && @printf("  \nΔE: %9.3e < %.1e, ADAPT loop finished!\n", delta_e, adapt_options.Δtol)
         end
 
         converged = cond1 || cond2 || cond3
@@ -263,21 +322,11 @@ function _adapt_vqe(
         if adapt_options.verbose > 0
             @printf("\nIteration: %d\n",                            iter)
             @printf("   E0: %.14f\n",                               e_opt)
-            @printf("  err: %9.3e\n",                               e_opt-e_scale)
-            @printf("  |G|: %9.3e    gmax: %9.3e     δ²H: %9.3e\n", G, gi_max, δ²H_l[])
+            @printf("  err: %9.3e\n",                               e_opt - e_scale)
+            @printf("  |G|: %9.3e    gmax: %9.3e     δ²H: %9.3e\n", gnorm, gmax, cur_variance[])
             println("============================================================================")
         end
     end
 
-    return amplitudes, selec_idxs 
+    return amplitudes, selec_idxs
 end
-
-function load_idxs(read_path::String)
-    @assert isfile(read_path)
-    jldopen(read_path, "r") do file
-        amplitudes::Array{Float64,1} = file["amplitudes"]
-        selec_idxs::Array{Int64,1} = file["selec_idxs"]
-        println("Successfully load precalculated amplitudes and selec_idxs from $(read_path)\n")
-        return amplitudes, selec_idxs
-    end
-end  

@@ -8,7 +8,6 @@ using Dates
 using Combinatorics
 using SparseArrays
 using Random
-using MPI
 
 # 辅助函数：多进程场景下，仅 rank 0 打印诊断信息
 function _preinit_mpi_rank()
@@ -27,19 +26,15 @@ function _preinit_mpi_rank()
 end
 
 function is_rank0_or_serial()
-    return MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) == 0 : _preinit_mpi_rank() == 0
+    return _preinit_mpi_rank() == 0
 end
 
 using Optim
 using NLSolversBase
 using LineSearches
-using CPUTime
-using FFTW
 using DataFrames
 using Arpack
 using LinearMaps
-using DifferentialEquations
-using RecursiveArrayTools
 using PyCall
 
 slurm_cpus      = get(ENV, "SLURM_CPUS_PER_TASK", "Not Set")
@@ -70,12 +65,8 @@ const LIB_HAM_REAL      = joinpath(libpath, "libham_real.so")
 
 const LIB_DIAG          = joinpath(libpath, "libdiag.so")
 const LIB_OTF           = joinpath(libpath, "libotf_native.so")
-const LIB_SCI_SELECT    = joinpath(libpath, "libotf_select.so")
-const LIB_DIST          = joinpath(libpath, "libdist.so")
 
 const LIB_CUOTF         = joinpath(libpath, "libcuotf.so")
-const LIB_CUDA_SCI      = joinpath(libpath, "libcuda_sci_bitstr.so") 
-const LIB_CUDIST        = joinpath(libpath, "libcudist.so")
 
 const eps1::Float64 = 1e-8
 const eps2::Float64 = 1e-12
@@ -91,14 +82,9 @@ include("geo_pyscf_dist.jl")
 include("binqubitabab.jl")
 include("binqubitaabb.jl")
 include("hamiltonian.jl")
-include("symm.jl")
 include("network.jl")
 include("davidson.jl")
+include("fci.jl")
 include("ansatz.jl")
 include("vqe.jl")
-include("method.jl")
-include("vqite.jl")
 include("vqrte.jl")
-include("dist.jl")
-include("sci.jl")
-include("sci_nosym.jl")
