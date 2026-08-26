@@ -95,6 +95,12 @@ function int2ham_ui256_f64(
 end
 
 
+# ============================================================
+# real 专用引擎 (LIB_HAM_REAL.generate_hamiltonian_real_*_f64)
+#   实数分子积分 (Mole) 的 JW 变换统一走该接口, 与 default 引擎
+#   逐项一致 (已修 insert_1body_real/insert_2body_real), 但扫描
+#   空间降到 1/4, 生成更快。复数路径 (Pbc) 仍走 LIB_HAM c64。
+# ============================================================
 function int2ham_real_ui64_f64(
     norb::Int64,
     energy_nuc::Float64,
@@ -182,62 +188,30 @@ function int2ham_real_ui256_f64(
 end
 
 
-
-function JW_hamiltonian_real(
-    mole::Mole;
-    tol::Float64=1e-12,
-    spin::String="aabb",
-    verbose::Bool=false,
-)
-    return _JW_hamiltonian_real(
-        mole.norb, mole.energy_nuc, mole.one_body_mo, mole.two_body_mo,
-        tol=tol,
-        spin=spin,
-        verbose=verbose,
-    )
-end
-
-function _JW_hamiltonian_real(
+function int2ham_real_f64(
     norb::Int64,
     energy_nuc::Float64,
     one_body_mo::Array{Float64,2},
-    two_body_mo::Array{Float64,4};
-    tol::Float64=1e-12,
-    spin::String="aabb",
-    verbose::Bool=false,
+    two_body_mo::Array{Float64,4},
+    tol::Float64,
+    verbose::Bool,
 )
     if 0 <= norb < 32
-        Haabb = int2ham_real_ui64_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+        return int2ham_real_ui64_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
     elseif 32 <= norb < 64
-        Haabb = int2ham_real_ui128_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+        return int2ham_real_ui128_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
     elseif 64 <= norb < 128
-        Haabb = int2ham_real_ui256_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
+        return int2ham_real_ui256_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
     else
         error("Maximum supported is (127o, 254q)")
     end
-
-    gs = get_bounds_1based(Haabb.axs, Haabb.bxs)
-
-    if is_rank0_or_serial()
-        println("  ngs: $(length(gs)-1)")
-        println("  ncs: $(length(Haabb.cs))\n")
-    end
-
-    if spin == "aabb"
-        return Haabb
-    elseif spin == "abab"
-        xs = unzip_even_bit.(Haabb.axs) .| unzip_odd_bit.(Haabb.bxs)
-        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)
-        return BinaryQubitABAB(xs, zs, Haabb.cs)
-    else
-        throw(ArgumentError("Undefined spin: $(spin)"))
-    end
 end
 
+
 function JW_hamiltonian(
-    mole::Mole; 
-    tol::Float64=1e-12, 
-    spin::String="aabb", 
+    mole::Mole;
+    tol::Float64=1e-12,
+    spin::String="aabb",
     verbose::Bool=false,
 )
     return _JW_hamiltonian(
@@ -258,18 +232,10 @@ function _JW_hamiltonian(
     spin::String="aabb",
     verbose::Bool=false,
 )
-    if 0 <= norb < 32
-        Haabb = int2ham_ui64_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
-    elseif 32 <= norb < 64
-        Haabb = int2ham_ui128_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
-    elseif 64 <= norb < 128
-        Haabb = int2ham_ui256_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
-    else
-        error("Maximum supported is (127o, 254q)")
-    end
+    Haabb = int2ham_real_f64(norb, energy_nuc, one_body_mo, two_body_mo, tol, verbose)
 
     gs = get_bounds_1based(Haabb.axs, Haabb.bxs)
-    
+
     if is_rank0_or_serial()
         println("  ngs: $(length(gs)-1)")
         println("  ncs: $(length(Haabb.cs))\n")
@@ -279,7 +245,7 @@ function _JW_hamiltonian(
         return Haabb
     elseif spin == "abab"
         xs = unzip_even_bit.(Haabb.axs) .| unzip_odd_bit.(Haabb.bxs)
-        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)  
+        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)
         return BinaryQubitABAB(xs, zs, Haabb.cs)
     else
         throw(ArgumentError("Undefined spin: $(spin)"))
@@ -385,9 +351,9 @@ end
 
 
 function JW_hamiltonian(
-    pbc::Pbc; 
-    tol::Float64=1e-12, 
-    spin::String="aabb", 
+    pbc::Pbc;
+    tol::Float64=1e-12,
+    spin::String="aabb",
     verbose::Bool=false,
 )
     return _JW_hamiltonian(
@@ -427,7 +393,7 @@ function _JW_hamiltonian(
         return Haabb
     elseif spin == "abab"
         xs = unzip_even_bit.(Haabb.axs) .| unzip_odd_bit.(Haabb.bxs)
-        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)  
+        zs = unzip_even_bit.(Haabb.azs) .| unzip_odd_bit.(Haabb.bzs)
         return BinaryQubitABAB(xs, zs, Haabb.cs)
     else
         throw(ArgumentError("Undefined spin: $(spin)"))
@@ -438,7 +404,7 @@ end
 function quantum_operator_aabb(norb::Int, Ti::Type, Tv::Type)
     nq::Int = norb * 2
 
-    N  = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}()
+    N = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}()
     Sx = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}()
     Sy = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}()
     Sz = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}()
@@ -465,23 +431,23 @@ function apply_constraint(
 )
     N, S2, Sz = quantum_operator_aabb(norb, eltype(H0b.axs), eltype(H0b.cs))
 
-    return linearcombine([H0b, (N-sum(nelec))^2, S2, Sz], [1.0, constr_c...], 0.0, 1e-12)
+    return linearcombine([H0b, (N - sum(nelec))^2, S2, Sz], [1.0, constr_c...], 0.0, 1e-12)
 end
 
 
-function ising_module(nq::Int64, J::Float64=1.0, h::Float64=0.5; 
+function ising_module(nq::Int64, J::Float64=1.0, h::Float64=0.5;
     Ti::DataType=UInt32, Tv::DataType=Float64, is_pbc::Bool=false)
 
     ops = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
-    cs  = Tv[]
+    cs = Tv[]
 
     for i in 0:nq-2
-        push!(ops, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], -J, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "Z"), (i + 1, "Z")], -J, Ti, Tv))
         push!(cs, 1)
     end
 
     if is_pbc
-        push!(ops, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], -J, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq - 1, "Z"), (0, "Z")], -J, Ti, Tv))
         push!(cs, 1)
     end
 
@@ -498,19 +464,19 @@ function heisenberg_module(nq::Int, jx::Float64=1.0, jy::Float64=1.0, jz::Float6
     Ti::DataType=UInt32, Tv::DataType=Float64, is_pbc::Bool=false)
 
     ops = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
-    cs  = Tv[]
+    cs = Tv[]
 
     for i in 0:nq-2
-        push!(ops, QubitOperatorAABB([(i, "X"), (i+1, "X")], jx, Ti, Tv))
-        push!(ops, QubitOperatorAABB([(i, "Y"), (i+1, "Y")], jy, Ti, Tv))
-        push!(ops, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], jz, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "X"), (i + 1, "X")], jx, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "Y"), (i + 1, "Y")], jy, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(i, "Z"), (i + 1, "Z")], jz, Ti, Tv))
         append!(cs, Tv[1, 1, 1])
     end
 
     if is_pbc
-        push!(ops, QubitOperatorAABB([(nq-1, "X"), (0, "X")], jx, Ti, Tv))
-        push!(ops, QubitOperatorAABB([(nq-1, "Y"), (0, "Y")], jy, Ti, Tv))
-        push!(ops, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], jz, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq - 1, "X"), (0, "X")], jx, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq - 1, "Y"), (0, "Y")], jy, Ti, Tv))
+        push!(ops, QubitOperatorAABB([(nq - 1, "Z"), (0, "Z")], jz, Ti, Tv))
         append!(cs, Tv[1, 1, 1])
     end
 
@@ -518,13 +484,13 @@ function heisenberg_module(nq::Int, jx::Float64=1.0, jy::Float64=1.0, jz::Float6
 end
 
 
-function ising_pool(nq::Int64; 
-    Ti::DataType=UInt32, Tv::DataType=Float64, 
+function ising_pool(nq::Int64;
+    Ti::DataType=UInt32, Tv::DataType=Float64,
     is_pbc::Bool=false, pool_type::String="local")
-    
-    # 算符池是一个由单一 Pauli 字符串构成的数组，不需要 linearcombine
+
+    # 算符池是一个由单一 Pauli 字符串构成的数组,不需要 linearcombine
     pool = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
-    
+
     # ==========================================
     # 1. 单体算符 (Weight-1)
     # 必须包含 1 个 Y。由 [ZZ, X] 原始对易子产生。
@@ -535,17 +501,17 @@ function ising_pool(nq::Int64;
 
     # ==========================================
     # 2. 双体算符 (Weight-2)
-    # 必须包含 1 个 Y 和 1 个非 Y (Z 或 X)，保证总 Y 数量为奇数
+    # 必须包含 1 个 Y 和 1 个非 Y (Z 或 X),保证总 Y 数量为奇数
     # ==========================================
-    
-    # 根据用户选择，决定是只用近邻(local)还是全连接(all2all)
-    pairs = Tuple{Int, Int}[]
+
+    # 根据用户选择,决定是只用近邻(local)还是全连接(all2all)
+    pairs = Tuple{Int,Int}[]
     if pool_type == "local"
         for i in 0:nq-2
-            push!(pairs, (i, i+1))
+            push!(pairs, (i, i + 1))
         end
         if is_pbc
-            push!(pairs, (nq-1, 0))
+            push!(pairs, (nq - 1, 0))
         end
     elseif pool_type == "all2all"
         for i in 0:nq-1
@@ -556,11 +522,11 @@ function ising_pool(nq::Int64;
     end
 
     for (i, j) in pairs
-        # ZY 和 YZ 组合：通常在 TFIM 中贡献最大的双体梯度
+        # ZY 和 YZ 组合:通常在 TFIM 中贡献最大的双体梯度
         push!(pool, QubitOperatorAABB([(i, "Z"), (j, "Y")], 1.0, Ti, Tv))
         push!(pool, QubitOperatorAABB([(i, "Y"), (j, "Z")], 1.0, Ti, Tv))
-        
-        # XY 和 YX 组合：为了进一步增加算符池的表达能力 (过完备性补充)
+
+        # XY 和 YX 组合:为了进一步增加算符池的表达能力 (过完备性补充)
         push!(pool, QubitOperatorAABB([(i, "X"), (j, "Y")], 1.0, Ti, Tv))
         push!(pool, QubitOperatorAABB([(i, "Y"), (j, "X")], 1.0, Ti, Tv))
     end
@@ -571,10 +537,10 @@ function ising_pool(nq::Int64;
 end
 
 
-function heisenberg_pool(nq::Int64; 
-    Ti::DataType=UInt32, Tv::DataType=Float64, 
+function heisenberg_pool(nq::Int64;
+    Ti::DataType=UInt32, Tv::DataType=Float64,
     is_pbc::Bool=false, pool_type::String="local")
-    
+
     pool = BinaryQubitAABB{Ti,Tv,Vector{Ti},Vector{Tv}}[]
 
     if pool_type == "local"
@@ -583,15 +549,15 @@ function heisenberg_pool(nq::Int64;
             push!(pool, QubitOperatorAABB([(i, "Y")], -im, Ti, Tv))
             push!(pool, QubitOperatorAABB([(i, "Z")], -im, Ti, Tv))
         end
-        for i in 0:nq-2 
-            push!(pool, QubitOperatorAABB([(i, "X"), (i+1, "X")], -im, Ti, Tv))
-            push!(pool, QubitOperatorAABB([(i, "Y"), (i+1, "Y")], -im, Ti, Tv))
-            push!(pool, QubitOperatorAABB([(i, "Z"), (i+1, "Z")], -im, Ti, Tv))
+        for i in 0:nq-2
+            push!(pool, QubitOperatorAABB([(i, "X"), (i + 1, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Y"), (i + 1, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(i, "Z"), (i + 1, "Z")], -im, Ti, Tv))
         end
         if is_pbc
-            push!(pool, QubitOperatorAABB([(nq-1, "X"), (0, "X")], -im, Ti, Tv))
-            push!(pool, QubitOperatorAABB([(nq-1, "Y"), (0, "Y")], -im, Ti, Tv))
-            push!(pool, QubitOperatorAABB([(nq-1, "Z"), (0, "Z")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(nq - 1, "X"), (0, "X")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(nq - 1, "Y"), (0, "Y")], -im, Ti, Tv))
+            push!(pool, QubitOperatorAABB([(nq - 1, "Z"), (0, "Z")], -im, Ti, Tv))
         end
     else
         for i in 0:nq-1
@@ -599,7 +565,7 @@ function heisenberg_pool(nq::Int64;
             push!(pool, QubitOperatorAABB([(i, "Y")], -im, Ti, Tv))
             push!(pool, QubitOperatorAABB([(i, "Z")], -im, Ti, Tv))
         end
-        for i in 0:nq-2 
+        for i in 0:nq-2
             for j in i+1:nq-1
                 push!(pool, QubitOperatorAABB([(i, "X"), (j, "X")], -im, Ti, Tv))
                 push!(pool, QubitOperatorAABB([(i, "Y"), (j, "Y")], -im, Ti, Tv))
@@ -609,7 +575,7 @@ function heisenberg_pool(nq::Int64;
     end
 
     println("Size of $(pool_type) operator pool: $(length(pool))")
-    
+
     return pool
 end
 

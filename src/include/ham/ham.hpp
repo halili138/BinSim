@@ -658,10 +658,14 @@ namespace binsim::ham
 
         Pauli<Ti> k;
         k.x = x12;
-        k.z = z11 ^ z21;
-        (*dict)[k] += c1; // XX
-        k.z = z12 ^ z22;
-        (*dict)[k] -= c2; // YY
+
+        // For a real Hermitian one-body matrix we store only one representative
+        // of (p,q) and (q,p), with coeff already multiplied by the orbit size.
+        // The two surviving Pauli strings are the cross combinations below.
+        k.z = z11 ^ z22;
+        (*dict)[k] -= c1;
+        k.z = z12 ^ z21;
+        (*dict)[k] += c2;
     }
 
     template <typename Ti, typename Tv>
@@ -717,6 +721,97 @@ namespace binsim::ham
         (*dict)[k] += c42; // YYYY
     }
 
+    // Insert the four spin blocks used by the general real-valued Hamiltonian path.
+    // This is algebraically identical to stage2_reduce_dictionaries().
+    template <typename Ti, typename Tv>
+    FORCE_INLINE void insert_2body_spin_block_generic(
+        FastDict<Ti, Tv> *__restrict dict,
+        int p, int q, int r, int s, Tv ci)
+    {
+        insert_2body<Ti, Tv>(dict, 2 * p, 2 * q, 2 * r, 2 * s, ci);
+        insert_2body<Ti, Tv>(dict, 2 * p + 1, 2 * q + 1, 2 * r + 1, 2 * s + 1, ci);
+        insert_2body<Ti, Tv>(dict, 2 * p, 2 * q + 1, 2 * r + 1, 2 * s, ci);
+        insert_2body<Ti, Tv>(dict, 2 * p + 1, 2 * q, 2 * r, 2 * s + 1, ci);
+    }
+
+    // Fast 8-term real reduction. This is used only when the four spatial
+    // indices are pairwise distinct; in that case the fourfold integral
+    // symmetry orbit has no degeneracy and the discarded imaginary pieces
+    // cancel pairwise exactly across the orbit.
+    template <typename Ti, typename Tv>
+    FORCE_INLINE void insert_2body_spin_block_real_fast(
+        FastDict<Ti, Tv> *__restrict dict,
+        int p, int q, int r, int s, Tv ci)
+    {
+        insert_2body_real<Ti, Tv>(dict, 2 * p, 2 * q, 2 * r, 2 * s, ci);
+        insert_2body_real<Ti, Tv>(dict, 2 * p + 1, 2 * q + 1, 2 * r + 1, 2 * s + 1, ci);
+        insert_2body_real<Ti, Tv>(dict, 2 * p, 2 * q + 1, 2 * r + 1, 2 * s, ci);
+        insert_2body_real<Ti, Tv>(dict, 2 * p + 1, 2 * q, 2 * r, 2 * s + 1, ci);
+    }
+
+    FORCE_INLINE bool four_spatial_indices_distinct(int p, int q, int r, int s)
+    {
+        return p != q && p != r && p != s &&
+               q != r && q != s && r != s;
+    }
+
+    // Exact fallback for degenerate symmetry orbits.
+    //
+    // stage1 stores coeff_weighted = integral * orbit_size, where the orbit is
+    //   (p,q,r,s), (q,p,s,r), (s,r,q,p), (r,s,p,q).
+    // When indices repeat, the fixed 8-term reduction is not generally valid.
+    // Reconstruct the raw integral, enumerate only UNIQUE orbit members, and
+    // feed each one through the original 16-term insert_2body().
+    template <typename Ti, typename Tv>
+    FORCE_INLINE void insert_2body_real_exact_fallback(
+        FastDict<Ti, Tv> *__restrict dict,
+        int p, int q, int r, int s, Tv coeff_weighted)
+    {
+        const int ps[4] = {p, q, s, r};
+        const int qs[4] = {q, p, r, s};
+        const int rs[4] = {r, s, q, p};
+        const int ss[4] = {s, r, p, q};
+
+        int orbit_size = 0;
+        for (int a = 0; a < 4; ++a)
+        {
+            bool seen = false;
+            for (int b = 0; b < a; ++b)
+            {
+                if (ps[a] == ps[b] && qs[a] == qs[b] &&
+                    rs[a] == rs[b] && ss[a] == ss[b])
+                {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen)
+                ++orbit_size;
+        }
+
+        // stage2 in the general path uses 0.5 * two_body_mo[pqrs].
+        const Tv raw_ci = (coeff_weighted / static_cast<Tv>(orbit_size)) * static_cast<Tv>(0.5);
+
+        for (int a = 0; a < 4; ++a)
+        {
+            bool seen = false;
+            for (int b = 0; b < a; ++b)
+            {
+                if (ps[a] == ps[b] && qs[a] == qs[b] &&
+                    rs[a] == rs[b] && ss[a] == ss[b])
+                {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen)
+            {
+                insert_2body_spin_block_generic<Ti, Tv>(
+                    dict, ps[a], qs[a], rs[a], ss[a], raw_ci);
+            }
+        }
+    }
+
     template <typename Ti, typename Tv>
     void stage1_allocate_and_scan_real(
         int nthreads, int nblocks, int norbs, Tv tol,
@@ -732,7 +827,7 @@ namespace binsim::ham
         size_t N3 = N2 * N1;
         size_t N4 = N3 * N1;
 
-        // 因为扫描空间降到了 1/4，预分配相应下调
+        // 因为扫描空间降到了 1/4,预分配相应下调
         size_t revsize = (N4 / (4 * nthreads * nblocks)) * 0.1 + 10;
         for (int t = 0; t < nthreads; ++t)
         {
@@ -753,7 +848,7 @@ namespace binsim::ham
             {
                 for (int q = 0; q < norbs; ++q)
                 {
-                    // 1-body 是厄米矩阵，只提取上三角作为代表元
+                    // 1-body 是厄米矩阵,只提取上三角作为代表元
                     if (p > q)
                         continue;
 
@@ -787,7 +882,7 @@ namespace binsim::ham
                             size_t i3 = p * N3 + q * N2 + r * N1 + s; // (s,r,q,p) 厄米共轭
                             size_t i4 = q * N3 + p * N2 + s * N1 + r; // (r,s,p,q) 厄米共轭的算符等价
 
-                            // 仅当当前 i1 是这 4 个等价元中的最大值时，才进行处理（选作代表元）
+                            // 仅当当前 i1 是这 4 个等价元中的最大值时,才进行处理(选作代表元)
                             size_t max_idx = std::max({i1, i2, i3, i4});
                             if (i1 == max_idx)
                             {
@@ -837,9 +932,12 @@ namespace binsim::ham
             size_t raw_inserts = 0;
             for (int t = 0; t < nthreads; ++t)
             {
-                // 容量预估大幅下调：1-body产生2项，2-body产生8项
-                raw_inserts += (*local_single)[t][b].size() * 2 +
-                               (*local_double)[t][b].size() * 8;
+                // 1-body real path inserts 2 Pauli terms per spin block.
+                // 2-body normally uses the 8-term fast path, while repeated-index
+                // cases may fall back to the generic expansion. Keep the reserve
+                // estimate moderate to avoid excessive upfront allocation.
+                raw_inserts += (*local_single)[t][b].size() * 4 +
+                               (*local_double)[t][b].size() * 16;
             }
 
             (*dicts)[b].reserve(raw_inserts / 2 + 100);
@@ -866,35 +964,26 @@ namespace binsim::ham
                 const DoubleTerm<Tv> *d_ptr = (*local_double)[t][b].data();
                 for (size_t i = 0, d_len = (*local_double)[t][b].size(); i < d_len; ++i)
                 {
-                    Tv ci = d_ptr[i].val * 0.5;
-                    insert_2body_real<Ti, Tv>(
-                        dict_ptr,
-                        2 * d_ptr[i].p,
-                        2 * d_ptr[i].q,
-                        2 * d_ptr[i].r,
-                        2 * d_ptr[i].s,
-                        ci);
-                    insert_2body_real<Ti, Tv>(
-                        dict_ptr,
-                        2 * d_ptr[i].p + 1,
-                        2 * d_ptr[i].q + 1,
-                        2 * d_ptr[i].r + 1,
-                        2 * d_ptr[i].s + 1,
-                        ci);
-                    insert_2body_real<Ti, Tv>(
-                        dict_ptr,
-                        2 * d_ptr[i].p,
-                        2 * d_ptr[i].q + 1,
-                        2 * d_ptr[i].r + 1,
-                        2 * d_ptr[i].s,
-                        ci);
-                    insert_2body_real<Ti, Tv>(
-                        dict_ptr,
-                        2 * d_ptr[i].p + 1,
-                        2 * d_ptr[i].q,
-                        2 * d_ptr[i].r,
-                        2 * d_ptr[i].s + 1,
-                        ci);
+                    const int p = d_ptr[i].p;
+                    const int q = d_ptr[i].q;
+                    const int r = d_ptr[i].r;
+                    const int s = d_ptr[i].s;
+
+                    if (four_spatial_indices_distinct(p, q, r, s))
+                    {
+                        // Safe fast path: d_ptr[i].val already contains the
+                        // fourfold-orbit weight (which is exactly 4 here).
+                        const Tv ci = d_ptr[i].val * static_cast<Tv>(0.5);
+                        insert_2body_spin_block_real_fast<Ti, Tv>(
+                            dict_ptr, p, q, r, s, ci);
+                    }
+                    else
+                    {
+                        // Degenerate orbit: reconstruct all unique symmetry
+                        // partners and use the original exact 16-term mapping.
+                        insert_2body_real_exact_fallback<Ti, Tv>(
+                            dict_ptr, p, q, r, s, d_ptr[i].val);
+                    }
                 }
             }
         }
